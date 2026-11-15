@@ -37,7 +37,7 @@ import ProfileImagePicker from "../../components/admin/ProfileImagePicker.astro"
             <label>国・地域<input data-profile-field="country" maxlength="120" /></label>
             <label>タイムゾーン<input data-profile-field="timezone" maxlength="80" /></label>
           </div>
-          <label>運営外自己紹介<textarea data-profile-field="bio" maxlength="4000"></textarea></label>
+          <label>運営内自己紹介<textarea data-profile-field="bio" maxlength="4000"></textarea></label>
           <div class="member-profile-avatar-row"><span class="member-profile-avatar-preview" data-member-avatar-preview aria-label="プロフィール画像">画像なし</span><div class="member-profile-avatar-actions"><ProfileImagePicker id="member-management-avatar" label="プロフィール画像を選択" /><small>画像を選ばない場合は現在の画像を保持します。</small><button type="button" data-remove-member-avatar>画像を削除</button></div></div>
           <output data-profile-form-message aria-live="polite"></output>
           <div class="member-profile-editor-actions"><button type="button" data-cancel-profile-edit>キャンセル</button><button type="submit" data-save-profile>保存</button></div>

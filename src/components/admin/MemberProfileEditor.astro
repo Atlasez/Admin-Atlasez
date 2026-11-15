@@ -94,7 +94,7 @@ const memberYears = [
         ))}
       </datalist>
       <label class="bio-field">
-        運営外自己紹介
+        運営内自己紹介
         <textarea data-bio maxlength="4000"></textarea>
       </label>
       <div class="actions">
@@ -180,6 +180,7 @@ const memberYears = [
   .avatar-row {
     align-items: center;
     display: flex;
+    flex-wrap: wrap;
     gap: 1rem;
   }
 
@@ -193,13 +194,13 @@ const memberYears = [
     border-radius: 50%;
     color: var(--on-accent);
     display: flex;
-    flex: 0 0 5rem;
-    font-size: 1.6rem;
+    flex: 0 0 9rem;
+    font-size: 2.4rem;
     font-weight: 800;
-    height: 5rem;
+    height: 9rem;
     justify-content: center;
     overflow: hidden;
-    width: 5rem;
+    width: 9rem;
   }
 
   .form-grid {
@@ -278,6 +279,12 @@ const memberYears = [
 
     .form-grid {
       grid-template-columns: 1fr;
+    }
+
+    .avatar-preview {
+      flex-basis: 8rem;
+      height: 8rem;
+      width: 8rem;
     }
 
     .actions,
@@ -642,7 +649,14 @@ const memberYears = [
         const pendingNotice = document.querySelector<HTMLElement>("[data-member-profile] [data-approval-state]");
         if (pendingNotice) {
           pendingNotice.hidden = false;
-          pendingNotice.textContent = "基本情報の変更申請は承認待ちです。プロフィール画像はすぐに反映されます。";
+          const pendingMessage = pendingNotice.querySelector<HTMLElement>("[data-approval-state-message]");
+          const dismissButton = pendingNotice.querySelector<HTMLButtonElement>("[data-dismiss-approval-state]");
+          if (pendingMessage) {
+            pendingMessage.textContent = "基本情報の変更申請は承認待ちです。プロフィール画像はすぐに反映されます。";
+          } else {
+            pendingNotice.textContent = "基本情報の変更申請は承認待ちです。プロフィール画像はすぐに反映されます。";
+          }
+          if (dismissButton) dismissButton.hidden = true;
         }
       }
       profileLoaded = true;

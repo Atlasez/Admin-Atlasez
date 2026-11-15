@@ -15286,7 +15286,7 @@ async function completeOnboarding(
   const bio = text(payload.bio, 4_000);
   const internalBio = text(payload.internalBio, 4_000).trim();
   if (!displayName || !bio)
-    return json({ error: "表示名と運営外自己紹介を入力してください。" }, 400);
+    return json({ error: "表示名と運営内自己紹介を入力してください。" }, 400);
   if (!current.projectId)
     return json({ error: "参加先プロジェクトを確認できません。" }, 409);
   const now = new Date().toISOString();
