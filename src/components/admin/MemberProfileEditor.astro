@@ -602,7 +602,13 @@ const memberYears = [
           }
           profileSubmitted = true;
         } catch (error) {
-          errors.push(error instanceof Error ? error.message : "変更申請を送信できませんでした。");
+          errors.push(
+            error instanceof TypeError
+              ? "通信に失敗しました。"
+              : error instanceof Error
+                ? error.message
+                : "変更申請を送信できませんでした。",
+          );
           profileResultUncertain = profileResultUncertain || error instanceof TypeError;
         }
       }
@@ -611,7 +617,7 @@ const memberYears = [
         profileLoaded = false;
         setFormLocked(true);
         retry.hidden = false;
-        message.value = `${errors.join(" ")} 申請状態を再読み込みして確認してください。`;
+        message.value = `${errors.join(" ")}申請が受け付けられたか確認できません。プロフィールを再読み込みして確認してください。`;
         return;
       }
 
