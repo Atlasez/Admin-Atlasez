@@ -49,7 +49,7 @@ const isAtlas = project === "atlas";
       </dl>
 
       <section class="bio-card" aria-labelledby="bio-heading">
-        <div class="section-heading"><h2 id="bio-heading">運営内自己紹介</h2><button class="quiet-action" type="button" data-open-project-bio-edit aria-haspopup="dialog">編集</button></div>
+        <div class="section-heading"><h2 id="bio-heading">運営内自己紹介</h2><div class="section-actions"><a class="quiet-action" data-project-introductions-link href={`/admin/introductions/?project=${project}`}>自己紹介一覧を見る</a><button class="quiet-action" type="button" data-open-project-bio-edit aria-haspopup="dialog">編集</button></div></div>
         <p data-project-bio>読み込み中…</p>
         <aside class="project-request-notice" data-project-request-notice hidden aria-live="polite">
           <span data-project-request-message></span>
@@ -122,7 +122,7 @@ const isAtlas = project === "atlas";
   .profile-facts{display:grid;gap:.65rem;grid-template-columns:repeat(3,minmax(0,1fr));margin:0}
   .profile-facts div{background:var(--alt);border:1px solid var(--border);padding:.7rem}.profile-facts dt{color:var(--muted);font-size:.73rem;font-weight:800}.profile-facts dd{font-size:.95rem;margin:.3rem 0 0;overflow-wrap:anywhere}
   .bio-card{border-bottom:1px solid var(--border);border-top:1px solid var(--border);display:grid;gap:.65rem;padding:1rem 0}
-  .section-heading{align-items:center;display:flex;gap:1rem;justify-content:space-between}.section-heading h2{font-size:1.1rem;margin:0}.bio-card>p{line-height:1.75;margin:0;overflow-wrap:anywhere;white-space:pre-wrap}.bio-card a,.project-profile-preview a{color:var(--accent);font-weight:700}
+  .section-heading{align-items:center;display:flex;gap:1rem;justify-content:space-between}.section-heading h2{font-size:1.1rem;margin:0}.section-actions{align-items:center;display:flex;flex-wrap:wrap;gap:.45rem}.bio-card>p{line-height:1.75;margin:0;overflow-wrap:anywhere;white-space:pre-wrap}.bio-card a,.project-profile-preview a{color:var(--accent);font-weight:700}
   .project-request-notice{align-items:start;background:var(--alt);border-left:3px solid var(--accent);display:flex;gap:.75rem;justify-content:space-between;padding:.65rem .75rem}.project-request-notice[hidden]{display:none}.project-request-notice span{line-height:1.5}.notice-dismiss{background:transparent;border:1px solid var(--border);color:var(--text);cursor:pointer;font:inherit;font-size:.75rem;padding:.25rem .5rem}
   .assignment-panel{background:var(--alt);border:1px solid var(--border);display:grid;gap:.65rem;padding:.85rem}.assignment-panel h2{font-size:1.05rem;margin:0}.assignment-panel ul{display:flex;flex-wrap:wrap;gap:.45rem;list-style:none;margin:0;padding:0}.assignment-panel li{background:var(--surface);border:1px solid var(--border);font-size:.8rem;font-weight:800;padding:.4rem .6rem}
   .project-profile-dialog{background:var(--surface);border:1px solid var(--border);border-radius:.65rem;color:var(--text);margin:auto;max-height:min(92dvh,900px);max-width:min(760px,calc(100vw - 1.5rem));overflow:auto;padding:0;width:100%}.project-profile-dialog::backdrop{backdrop-filter:blur(2px);background:rgb(12 18 26 / 55%)}
@@ -153,8 +153,8 @@ const isAtlas = project === "atlas";
       location.replace("/admin/member-profile/");
       return;
     }
-    const projectId = ["atlas", "secretariat", "seminar-platform"].includes(queryProject ?? "")
-      ? queryProject!
+    const projectId = queryProject && /^[a-z0-9][a-z0-9-]{0,79}$/.test(queryProject)
+      ? queryProject
       : root.dataset.project ?? "atlas";
     const isAtlas = projectId === "atlas";
     root.dataset.project = projectId;
@@ -164,6 +164,10 @@ const isAtlas = project === "atlas";
       target.searchParams.set("project", projectId);
       link.href = target.pathname + target.search;
     });
+    const reviewLink = root.querySelector<HTMLAnchorElement>("[data-profile-review-link]");
+    if (reviewLink) reviewLink.href = `/admin/project-profile-requests/?project=${encodeURIComponent(projectId)}`;
+    const introductionsLink = root.querySelector<HTMLAnchorElement>("[data-project-introductions-link]");
+    if (introductionsLink) introductionsLink.href = `/admin/introductions/?project=${encodeURIComponent(projectId)}`;
 
     const name = root.querySelector<HTMLElement>("[data-profile-name]")!;
     const email = root.querySelector<HTMLElement>("[data-profile-email]")!;
@@ -241,6 +245,7 @@ const isAtlas = project === "atlas";
         : "Discordサーバー参加に必要な本人同意を行えます。";
       const discordLink = root.querySelector<HTMLAnchorElement>("[data-discord-link]")!;
       discordLink.textContent = connected ? "Discord連携を更新" : "Discordと連携";
+      discordLink.href = `/auth/discord/start?returnTo=${encodeURIComponent(`/admin/workspace/?project=${projectId}`)}`;
     };
 
     const applyProjectProfile = (data: ProjectProfileResponse, member: Profile) => {
