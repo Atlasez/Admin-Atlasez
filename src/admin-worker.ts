@@ -12082,12 +12082,14 @@ async function listApplications(request: Request, env: Env): Promise<Response> {
       i.mode AS interview_mode,i.zoom_url AS interview_zoom_url,i.location AS interview_location,
       i.status AS interview_status,i.notified_at AS interview_notified_at,
       i.notification_count AS interview_notification_count,i.completed_at AS interview_completed_at,
+      r.decision AS interview_decision,r.finalized_at AS interview_finalized_at,
       COALESCE(d.discord_user_id, '') AS verified_discord_user_id,
       COALESCE(d.oauth_connected_at, '') AS discord_oauth_connected_at,
       COALESCE(d.oauth_scope, '') AS discord_oauth_scope
      FROM atlasez_member_applications a
      LEFT JOIN atlasez_member_discord_accounts d ON d.email = a.email
      LEFT JOIN atlasez_application_interviews i ON i.application_id = a.id
+     LEFT JOIN atlasez_application_interview_reviews r ON r.application_id = a.id
      WHERE ${where}
      ORDER BY a.created_at DESC,a.id DESC LIMIT ?`,
     )
@@ -24503,8 +24505,6 @@ async function handleAdminRequest(
       "/admin/workflow/",
       "/admin/ui-prototype",
       "/admin/ui-prototype/",
-      "/admin/ui-prototype/learning-content",
-      "/admin/ui-prototype/learning-content/",
       "/admin/portal-prototype",
       "/admin/portal-prototype/",
       ...globalAdminPrototypePaths,

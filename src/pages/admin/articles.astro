@@ -50,10 +50,12 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
         <h1>編集・フィードバック</h1>
       </div>
     </header>
-    <nav class="workflow-actions" aria-label="編集・フィードバックの作業入口">
+    <nav class="workflow-actions" aria-label="記事の表示">
       <a href="/admin/editor/?new=1&from=articles"><strong>新規記事作成</strong></a>
+      <button type="button" data-workflow-action="all"><strong>すべて</strong></button>
       <button type="button" data-workflow-action="revise"><strong>加筆・修正</strong></button>
       <button type="button" data-workflow-action="review"><strong>フィードバック</strong></button>
+      <button type="button" data-workflow-action="request"><strong>依頼できる記事</strong></button>
     </nav>
     <section class="filters" id="article-list" aria-label="原稿一覧の絞り込み">
       <div class="filters__primary">
@@ -110,15 +112,12 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
                 <option value="only">テスト原稿のみ</option>
               </select>
             </label>
-            <label class="filter-control">
-              <span>作業対象</span>
-              <select data-workflow-filter aria-label="作業対象">
-                <option value="all">すべての原稿</option>
-                <option value="revise">自分が加筆・修正する記事</option>
-                <option value="review">フィードバック対象</option>
-                <option value="request">フィードバックを依頼する記事</option>
-              </select>
-            </label>
+            <select data-workflow-filter aria-label="記事の表示条件" hidden tabindex="-1" aria-hidden="true">
+              <option value="all">すべて</option>
+              <option value="revise">加筆・修正</option>
+              <option value="review">フィードバック</option>
+              <option value="request">依頼できる記事</option>
+            </select>
             <label class="filter-control">
               <span>アーカイブ</span>
               <select data-archive aria-label="アーカイブ表示">
@@ -207,9 +206,9 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
   .workflow-actions {
     display: grid;
     gap: 0.65rem;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     margin: 1.25rem auto;
-    max-width: 60rem;
+    max-width: 72rem;
   }
   .workflow-actions a,
   .workflow-actions button {
