@@ -3,22 +3,38 @@ import AdminLayout from "../../layouts/AdminLayout.astro";
 import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
 ---
 
-<AdminLayout title="面談メモ" description="応募者の面談情報と選考メモを管理します">
+<AdminLayout title="応募者対応" description="応募内容、面談、結果、参加準備を応募者ごとに確認します">
   <main class="interview-page" data-interview-page>
     <a class="back-link" data-back-link href="/admin/applications/">← 応募一覧へ戻る</a>
     <header>
-      <h1>面談メモ</h1>
+      <h1>応募者対応</h1>
     </header>
     <section class="app-summary" aria-labelledby="app-summary-title">
       <div><span class="summary-label">応募者</span><h2 id="app-summary-title" data-applicant-name>読み込み中…</h2><p data-applicant-email></p></div>
       <span class="status-pill" data-applicant-status>—</span>
     </section>
+    <section class="application-content" data-application-content aria-label="応募内容"><p class="muted">応募内容を読み込んでいます…</p></section>
+    <section class="workflow-summary" aria-label="対応状況">
+      <div><span>応募</span><strong data-workflow-application>読み込み中…</strong></div>
+      <div><span>面談</span><strong data-workflow-interview>読み込み中…</strong></div>
+      <div><span>応募結果</span><strong data-workflow-decision>読み込み中…</strong></div>
+      <div><span>参加準備</span><strong data-workflow-intake>読み込み中…</strong></div>
+      <p data-next-action>応募内容と面談情報を確認してください。</p>
+    </section>
     <output class="notice" data-notice aria-live="polite"></output>
     <AdminRetryNotice />
     <form class="review-form" data-review-form>
       <section class="form-section" aria-labelledby="meeting-title">
-        <div class="section-heading"><div><h2 id="meeting-title">面談情報</h2></div><span data-meeting-status>—</span></div>
-        <dl class="meeting-summary"><div><dt>日時</dt><dd data-meeting-date>未設定</dd></div><div><dt>形式</dt><dd data-meeting-format>未設定</dd></div><div><dt>Zoom</dt><dd data-meeting-zoom>—</dd></div></dl>
+        <div class="section-heading"><div><h2 id="meeting-title">面談日程</h2></div><span data-meeting-status>未設定</span></div>
+        <fieldset class="interview-fields" data-interview-fields>
+          <legend>面談日時の設定</legend>
+          <label class="field">日時<input type="datetime-local" data-interview-date /></label>
+          <label class="field">形式<select data-interview-format><option value="online">オンライン</option><option value="in_person">対面</option></select></label>
+          <label class="field interview-zoom-field">Zoomリンク<input type="url" inputmode="url" data-interview-zoom placeholder="https://zoom.us/j/..." autocomplete="url" /></label>
+          <label class="field interview-location-field">場所<input type="text" data-interview-location placeholder="建物名・部屋など" maxlength="500" /></label>
+          <p class="field-help">面談日時を保存してから、応募者へ案内を送れます。</p>
+          <div class="form-actions"><button class="button button--quiet" type="button" data-interview-save>面談日程を保存</button><button class="button" type="button" data-interview-notify>応募者へ通知</button></div>
+        </fieldset>
       </section>
       <section class="form-section" aria-labelledby="notes-title">
         <div class="section-heading"><div><h2 id="notes-title">面談の内容</h2></div><span>運営内メモ</span></div>
@@ -26,11 +42,28 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       </section>
       <section class="form-section" aria-labelledby="decision-title">
         <div class="section-heading"><div><h2 id="decision-title">担当分野と応募結果</h2></div><span>受け入れ確定時に担当分野を反映</span></div>
-        <fieldset class="field-group"><legend>担当分野</legend><p class="field-hint">面談後に担当する分野を選択してください（複数可）。</p><div class="subject-options" data-subject-options><span class="muted">読み込み中…</span></div></fieldset>
+        <p class="field-help" data-no-interview-help hidden>面談を行わない場合も、この画面で応募結果を確定できます。</p>
+        <fieldset class="field-group"><legend>担当分野</legend><p class="field-hint">受け入れ後に担当する分野を選択してください（複数可）。</p><div class="subject-options" data-subject-options><span class="muted">読み込み中…</span></div></fieldset>
         <label class="field">応募結果<select data-decision><option value="pending">未判定</option><option value="hold">保留</option><option value="accepted">受け入れ</option><option value="rejected">見送り</option></select></label>
         <label class="confirm-check" data-confirm-wrap hidden><input type="checkbox" data-confirm-accept /> <span>受け入れを確定し、選択した担当分野を応募者の権限へ反映することを確認しました。</span></label>
       </section>
-      <div class="form-actions"><a class="button button--quiet" data-cancel-link href="/admin/applications/">キャンセル</a><button class="button" type="submit" data-save>メモを保存</button></div>
+      <div class="form-actions"><a class="button button--quiet" data-cancel-link href="/admin/applications/">応募一覧へ戻る</a><button class="button" type="submit" data-save>審査メモを保存</button></div>
+    </form>
+    <form class="intake-form" data-intake-form>
+      <section class="form-section" aria-labelledby="intake-title">
+        <div class="section-heading"><div><h2 id="intake-title">参加準備・連絡記録</h2></div><span data-intake-summary>読み込み中…</span></div>
+        <div class="intake-fields">
+          <label class="field">担当運営者<select data-intake-responsible><option value="">担当未設定</option></select></label>
+          <label class="field">相談先<select data-intake-consultation><option value="">相談先未設定</option></select></label>
+          <label class="field">連絡状況<select data-intake-contact-status><option value="not_contacted">未連絡</option><option value="contacted">連絡済み</option><option value="replied">返信あり</option></select></label>
+          <label class="field">次回確認予定<input type="datetime-local" data-intake-follow-up /></label>
+          <label class="field field--wide">連絡メモ<textarea data-intake-contact-note maxlength="2000" placeholder="連絡の要点や次に確認すること"></textarea><small>連絡や招待はここから送信されません。</small></label>
+          <label class="field" data-new-task-field><span data-new-task-label>参加前の準備タスク</span><input type="text" data-intake-first-task maxlength="200" placeholder="例：参加前に確認する資料を案内する" /></label>
+          <div class="field field--wide" data-existing-task-field hidden><span>作成済みのタスク</span><a data-intake-task-link href="#"></a></div>
+          <label class="intake-check"><input type="checkbox" data-intake-follow-completed />今回の確認は完了</label>
+        </div>
+        <div class="form-actions"><output data-intake-message aria-live="polite"></output><button class="button" type="submit" data-intake-save>対応記録を保存</button></div>
+      </section>
     </form>
   </main>
 </AdminLayout>
@@ -39,7 +72,17 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
   .interview-page{margin:0 auto;max-width:850px;padding:1.6rem 1.25rem 4rem}.back-link{color:var(--accent-primary);font-size:.8rem;font-weight:800;text-decoration:none}.back-link:hover{text-decoration:underline}.interview-page header{border-bottom:1px solid var(--border-default);padding:1.1rem 0 1.3rem}.eyebrow{color:var(--accent-primary);font-size:.68rem;font-weight:900;letter-spacing:.1em;margin:0 0 .35rem}.interview-page h1{font-size:clamp(1.8rem,4vw,2.35rem);margin:0}.lead{color:var(--text-secondary);font-size:.85rem;margin:.5rem 0 0}.app-summary{align-items:center;background:var(--background-secondary);border:1px solid var(--border-default);border-left:3px solid var(--accent-primary);display:flex;gap:1rem;justify-content:space-between;margin-top:1.25rem;padding:.9rem 1rem}.summary-label{color:var(--text-secondary);display:block;font-size:.68rem;font-weight:800}.app-summary h2{font-size:1.1rem;margin:.18rem 0}.app-summary p{color:var(--text-secondary);font-size:.76rem;margin:0}.status-pill{border:1px solid var(--border-default);border-radius:999px;font-size:.72rem;font-weight:800;padding:.3rem .65rem;white-space:nowrap}.status-pill[data-status="accepted"]{background:#e7f6ec;color:#176b32}.status-pill[data-status="rejected"]{background:#fff0f0;color:#922b24}.notice{display:block;min-height:1.5rem;padding:.7rem 0 0}.notice[data-error="true"]{color:#b42318}.review-form{display:grid;gap:.8rem}.form-section{background:var(--background-secondary);border:1px solid var(--border-default);border-radius:.65rem;padding:1rem}.section-heading{align-items:baseline;display:flex;gap:.75rem;justify-content:space-between;margin-bottom:.75rem}.section-heading h2{font-size:1.05rem;margin:0}.section-heading>span{color:var(--text-secondary);font-size:.7rem}.meeting-summary{display:grid;gap:.55rem;grid-template-columns:repeat(3,1fr);margin:0}.meeting-summary div{background:var(--background-primary);border:1px solid var(--border-default);border-radius:.45rem;padding:.65rem .7rem}.meeting-summary dt{color:var(--text-secondary);font-size:.67rem;font-weight:800}.meeting-summary dd{font-size:.8rem;line-height:1.5;margin:.25rem 0 0;overflow-wrap:anywhere}.meeting-summary a{color:var(--accent-primary);font-weight:700}.field{display:grid;gap:.35rem;font-size:.78rem;font-weight:800;margin-top:.75rem}.field--wide{margin-top:0}.field textarea,.field select{background:var(--background-primary);border:1px solid var(--border-default);border-radius:.35rem;box-sizing:border-box;color:var(--text-primary);font:inherit;padding:.65rem;width:100%}.field textarea{min-height:14rem;resize:vertical;line-height:1.7}.field small,.field-hint{color:var(--text-secondary);font-size:.7rem;font-weight:500}.field-hint{margin:.1rem 0 .65rem}.field-group{border:0;margin:0;padding:0}.field-group legend{font-size:.78rem;font-weight:800;padding:0}.subject-options{display:grid;gap:.5rem;grid-template-columns:repeat(3,minmax(0,1fr))}.subject-option{align-items:center;background:var(--background-primary);border:1px solid var(--border-default);border-radius:.35rem;display:flex;font-size:.78rem;font-weight:700;gap:.45rem;min-height:2.4rem;padding:.35rem .5rem}.subject-option:has(input:checked){background:color-mix(in srgb,var(--accent-primary) 12%,var(--background-primary));border-color:var(--accent-primary)}.subject-option input{accent-color:var(--accent-primary);margin:0}.muted{color:var(--text-secondary);font-size:.75rem}.confirm-check{align-items:flex-start;background:color-mix(in srgb,#d97706 10%,var(--background-primary));border:1px solid color-mix(in srgb,#d97706 38%,var(--border-default));border-radius:.4rem;display:flex;font-size:.74rem;gap:.5rem;line-height:1.55;margin-top:.85rem;padding:.7rem}.confirm-check input{accent-color:var(--accent-primary);flex:0 0 auto;margin-top:.15rem}.form-actions{display:flex;gap:.55rem;justify-content:flex-end;padding-top:.2rem}.button{appearance:none;background:var(--accent-primary);border:1px solid var(--accent-primary);border-radius:.35rem;color:#fff;cursor:pointer;font:inherit;font-size:.78rem;font-weight:800;min-height:2.4rem;padding:.55rem .8rem;text-decoration:none}.button--quiet{background:transparent;color:var(--accent-primary)}.button:disabled{cursor:wait;opacity:.55}@media(max-width:620px){.interview-page{padding:1.2rem .85rem 3rem}.app-summary{align-items:flex-start;display:grid}.status-pill{justify-self:start}.meeting-summary{grid-template-columns:1fr}.subject-options{grid-template-columns:repeat(2,minmax(0,1fr))}.form-actions{display:grid}.form-actions .button{justify-content:center;text-align:center;width:100%}}@media(max-width:390px){.subject-options{grid-template-columns:1fr}}
 </style>
 
+<style>
+  .workflow-summary{background:var(--background-secondary);border:1px solid var(--border-default);display:grid;gap:.65rem;grid-template-columns:repeat(4,minmax(0,1fr));margin:1rem 0;padding:.85rem}.workflow-summary>div{display:grid;gap:.25rem;min-width:0}.workflow-summary>div span{color:var(--text-secondary);font-size:.68rem;font-weight:800}.workflow-summary>div strong{font-size:.78rem;overflow-wrap:anywhere}.workflow-summary>p{border-top:1px solid var(--border-default);color:var(--text-secondary);font-size:.76rem;grid-column:1/-1;line-height:1.5;margin:0;padding-top:.65rem}.interview-fields{border:0;display:grid;gap:.65rem;grid-template-columns:repeat(2,minmax(0,1fr));margin:0;padding:0}.interview-fields legend{color:var(--text-secondary);font-size:.7rem;font-weight:800;padding:0 0 .35rem}.interview-fields .field{margin:0}.interview-fields .field-help{grid-column:1/-1}.interview-fields[data-mode="online"] .interview-location-field,.interview-fields[data-mode="in_person"] .interview-zoom-field{display:none}.field input,.field select,.field textarea{background:var(--background-primary);border:1px solid var(--border-default);border-radius:.35rem;box-sizing:border-box;color:var(--text-primary);font:inherit;min-height:2.4rem;padding:.55rem .65rem;width:100%}.field textarea{min-height:7rem;line-height:1.6}.field-help{color:var(--text-secondary);font-size:.72rem;line-height:1.5;margin:0}.intake-form{margin-top:.8rem}.intake-fields{display:grid;gap:.65rem;grid-template-columns:repeat(2,minmax(0,1fr))}.intake-fields .field{margin:0}.field--wide{grid-column:1/-1}.intake-fields [data-existing-task-field]{align-content:start}.intake-fields [data-existing-task-field] span{color:var(--text-secondary);font-size:.72rem;font-weight:800}.intake-fields [data-existing-task-field] a{color:var(--accent-primary);font-size:.78rem;font-weight:700}.intake-check{align-items:center;color:var(--text-secondary);display:flex;font-size:.75rem;gap:.45rem}.intake-check input{accent-color:var(--accent-primary);margin:0}.intake-form .form-actions{align-items:center;justify-content:space-between}.intake-form output{color:var(--text-secondary);font-size:.72rem}.form-actions{flex-wrap:wrap}.form-actions button:focus-visible,.form-actions a:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}@media(max-width:620px){.workflow-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.interview-fields,.intake-fields{grid-template-columns:1fr}.interview-fields .field-help,.intake-fields .field--wide{grid-column:auto}.intake-form .form-actions{align-items:stretch}.intake-form .form-actions output{min-height:1.4rem}}
+</style>
+
 <style is:global>
+  .application-content{background:var(--background-secondary);border:1px solid var(--border-default);border-radius:.65rem;margin:1rem 0;padding:1rem}.application-content h2{font-size:1rem;margin:0}.application-content .application-section-heading{align-items:baseline;display:flex;gap:.75rem;justify-content:space-between;margin-bottom:.75rem}.application-content .application-section-heading p{color:var(--accent-primary);font-size:.68rem;font-weight:800;margin:0}.application-content .application-section-heading span,.application-content .field-help{color:var(--text-secondary);font-size:.7rem}.application-meta-grid{display:grid;gap:.5rem;grid-template-columns:repeat(3,minmax(0,1fr))}.application-meta-item{background:var(--background-primary);border:1px solid var(--border-default);border-radius:.4rem;display:grid;gap:.2rem;min-width:0;padding:.6rem}.application-meta-item span{color:var(--text-secondary);font-size:.65rem;font-weight:800}.application-meta-item strong{font-size:.76rem;line-height:1.4;overflow-wrap:anywhere}.application-content .application-section{border-top:1px solid var(--border-default);margin-top:.85rem;padding-top:.8rem}.application-content .application-section--subjects .facts{display:flex;flex-wrap:wrap;gap:.35rem}.application-content .application-section--subjects .facts span{background:var(--background-primary);border:1px solid var(--border-default);border-radius:999px;font-size:.72rem;padding:.25rem .5rem}.application-content .application-response-grid{display:grid;gap:.55rem;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:.8rem}.application-content .response-block{background:var(--background-primary);border:1px solid var(--border-default);border-radius:.45rem;min-width:0;padding:.65rem}.application-content .response-block h3{font-size:.75rem;margin:0 0 .4rem}.application-content .response-block pre{font:inherit;font-size:.75rem;line-height:1.6;margin:0;overflow-wrap:anywhere;white-space:pre-wrap}.application-content .response-block--wide{grid-column:1/-1}.application-content .application-original-fields{background:var(--background-primary);border:1px solid var(--border-default);border-radius:.4rem;margin-top:.65rem;padding:.6rem .7rem}.application-content .application-original-fields summary{color:var(--accent-primary);cursor:pointer;font-size:.75rem;font-weight:800}.application-content .application-original-fields .application-response-grid{margin-top:.7rem}.delivery-list{display:grid;gap:.5rem;list-style:none;margin:.7rem 0 0;padding:0}.delivery-list li{background:var(--background-primary);border:1px solid var(--border-default);border-radius:.4rem;padding:.6rem}.delivery-list li strong{font-size:.75rem}.delivery-list li span{float:right;color:var(--text-secondary);font-size:.7rem}.delivery-list li p,.delivery-list li small{color:var(--text-secondary);display:block;font-size:.68rem;margin:.25rem 0 0}
+  @media(max-width:620px){.application-meta-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.application-content .application-response-grid{grid-template-columns:1fr}.application-content .response-block--wide{grid-column:auto}}
+</style>
+
+<style is:global>
+  .application-provisioning{align-items:center;display:flex;flex-wrap:wrap;gap:.6rem;justify-content:space-between}.application-provisioning>div{display:grid;gap:.2rem}.application-provisioning>div span{color:var(--text-secondary);font-size:.68rem;font-weight:800}.application-provisioning>div strong{font-size:.76rem}.application-provisioning>p{color:var(--text-secondary);font-size:.68rem;margin:0}.application-provisioning button{appearance:none;background:transparent;border:1px solid var(--accent-primary);border-radius:.35rem;color:var(--accent-primary);cursor:pointer;font:inherit;font-size:.72rem;font-weight:800;min-height:2rem;padding:.35rem .6rem}.application-provisioning button:disabled{cursor:wait;opacity:.55}.delivery-heading{align-items:center;display:flex;flex-wrap:wrap;gap:.25rem .75rem;justify-content:space-between}.delivery-heading strong{font-size:.75rem}.delivery-heading span{color:var(--text-secondary);font-size:.7rem}.delivery-list li .delivery-error{color:var(--danger);font-weight:700}
   [data-pref-bg="dark"] .interview-page .status-pill[data-status="accepted"] {
     background: color-mix(in srgb, var(--success) 14%, var(--background-primary));
     border-color: color-mix(in srgb, var(--success) 48%, var(--border-default));
@@ -54,22 +97,386 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
 
 <script>
   import { createAdminLoadRetry } from "../../scripts/admin-load-retry";
-  const initializeInterviewPage=()=>{const root=document.querySelector<HTMLElement>('[data-interview-page]');
-  if(root && root.dataset.initialized !== 'true'){root.dataset.initialized='true';
-    type Interview={scheduledAt?:string|null;mode?:string|null;zoomUrl?:string|null;location?:string|null;completedAt?:string|null};
-    type Review={note?:string|null;assignedSubjects?:string[]|null;decision?:string|null;finalizedAt?:string|null};
-    type InterviewResponse={application?:{id?:string;name?:string;email?:string;status?:string};interview?:Interview|null;review?:Review|null;subjectLabels?:Record<string,string>;error?:string};
-    const params=new URLSearchParams(location.search);const applicationId=params.get('application')?.trim()??'';const project=params.get('project')?.trim()??'';
-    let interviewCompleted=false;
-    const get=<T extends Element>(selector:string)=>root.querySelector<T>(selector)!;const notice=get<HTMLOutputElement>('[data-notice]');const form=get<HTMLFormElement>('[data-review-form]');const decision=get<HTMLSelectElement>('[data-decision]');const confirmWrap=get<HTMLElement>('[data-confirm-wrap]');const confirm=get<HTMLInputElement>('[data-confirm-accept]');
-    const setNotice=(message:string,error=false)=>{notice.value=message;notice.dataset.error=String(error)};const formatDate=(value:unknown)=>{if(!value)return '未設定';const date=new Date(String(value));return Number.isNaN(date.getTime())?'未設定':new Intl.DateTimeFormat('ja-JP',{dateStyle:'medium',timeStyle:'short'}).format(date)};
-    const showDecisionConfirm=()=>{confirmWrap.hidden=decision.value!=='accepted';if(decision.value!=='accepted')confirm.checked=false};decision.addEventListener('change',showDecisionConfirm);
-    const apply=(data:InterviewResponse)=>{const app=data.application??{};get<HTMLElement>('[data-applicant-name]').textContent=app.name||'応募者';get<HTMLElement>('[data-applicant-email]').textContent=app.email||'';const status=get<HTMLElement>('[data-applicant-status]');status.textContent=({new:'新規',reviewing:'確認中',accepted:'受け入れ済み',rejected:'見送り'} as Record<string,string>)[app.status??'']??'—';status.dataset.status=app.status??'';const interview=data.interview??{};interviewCompleted=Boolean(interview.completedAt);get<HTMLElement>('[data-meeting-date]').textContent=formatDate(interview.scheduledAt);get<HTMLElement>('[data-meeting-format]').textContent=interview.mode==='in_person'?'対面':interview.mode==='online'?'オンライン（Zoom）':'未設定';const zoom=get<HTMLElement>('[data-meeting-zoom]');if(interview.zoomUrl){zoom.innerHTML='';const link=document.createElement('a');link.href=interview.zoomUrl;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Zoomを開く';zoom.append(link)}else zoom.textContent=interview.location||'—';get<HTMLElement>('[data-meeting-status]').textContent=interview.completedAt?`実施済み：${formatDate(interview.completedAt)}`:'予定';const review=data.review??{};get<HTMLTextAreaElement>('[data-notes]').value=review.note??'';decision.value=review.decision==='pending'?'pending':review.decision==='hold'?'hold':review.decision==='accepted'?'accepted':review.decision==='rejected'?'rejected':'pending';const selected=new Set(review.assignedSubjects??[]);const options=get<HTMLElement>('[data-subject-options]');const labels=data.subjectLabels??{};const keys=Object.keys(labels);options.innerHTML=keys.length?keys.map(key=>`<label class="subject-option"><input type="checkbox" value="${key.replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]??char))}" ${selected.has(key)?'checked':''} /> <span>${String(labels[key]).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]??char))}</span></label>`).join(''):'<span class="muted">担当分野の候補がありません。</span>';showDecisionConfirm()};
-    const retry=createAdminLoadRetry(root,()=>load(),'面談情報を読み込めませんでした。');
-    const load=async()=>{if(!applicationId){retry.success();setNotice('応募者が指定されていません。',true);form.querySelectorAll('input,textarea,select,button[type="submit"]').forEach((element)=>{(element as HTMLInputElement).disabled=true});return}retry.begin();try{const response=await fetch(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview?project=${encodeURIComponent(project)}`,{credentials:'same-origin',cache:'no-store'});const data=await response.json() as InterviewResponse;if(!response.ok)throw Error(data.error??'面談情報を読み込めませんでした。');apply(data);retry.success()}catch(error){retry.fail(error);throw error}};
-    form.addEventListener('submit',async(event)=>{event.preventDefault();if(decision.value==='accepted'&&!confirm.checked){setNotice('受け入れを確定する場合は確認欄にチェックしてください。',true);confirm.focus();return}const subjects=[...root.querySelectorAll<HTMLInputElement>('[data-subject-options] input:checked')].map(input=>input.value);const note=get<HTMLTextAreaElement>('[data-notes]').value;const save=get<HTMLButtonElement>('[data-save]');save.disabled=true;setNotice('面談メモを保存中…');try{const reviewResponse=await fetch(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview-review?project=${encodeURIComponent(project)}`,{method:'PUT',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({note,assignedSubjects:subjects,decision:decision.value})});const reviewData=await reviewResponse.json().catch(()=>({}));if(!reviewResponse.ok)throw Error(reviewData.error??'面談メモを保存できませんでした。');if(!interviewCompleted&&(decision.value==='accepted'||decision.value==='rejected')){const completeResponse=await fetch(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview/complete?project=${encodeURIComponent(project)}`,{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({note,assignedSubjects:subjects,decision:decision.value})});const completeData=await completeResponse.json().catch(()=>({}));if(!completeResponse.ok)throw Error(completeData.error??'面談の完了処理に失敗しました。');interviewCompleted=true;setNotice(decision.value==='accepted'?'面談を完了し、受け入れと担当分野を反映しました。':'面談を完了し、見送りとして記録しました。')}else setNotice('面談メモを保存しました。');await load()}catch(error){setNotice(error instanceof Error?error.message:'面談メモを保存できませんでした。',true)}finally{save.disabled=false}});
-    const back=`/admin/applications/?project=${encodeURIComponent(project)}`;get<HTMLAnchorElement>('[data-back-link]').href=back;get<HTMLAnchorElement>('[data-cancel-link]').href=back;void load().catch(()=>undefined);
-  }};
-  document.addEventListener('astro:page-load',initializeInterviewPage);
+  const initializeInterviewPage = () => {
+    const root = document.querySelector<HTMLElement>("[data-interview-page]");
+    if (!root || root.dataset.initialized === "true") return;
+    root.dataset.initialized = "true";
+
+    type Application = {
+      id?: string; name?: string; email?: string; project_slug?: string; status?: string;
+      form_language?: string; affiliation_type?: string; institution?: string; grade?: string; country?: string;
+      timezone?: string; birth_date?: string; residence_city?: string; nickname?: string; affiliation_email?: string;
+      desired_subjects?: string; article_ideas?: string; interests?: string; message?: string; availability_note?: string;
+      project_answers?: string; referral_source?: string; current_organizations?: string; motivation_reasons?: string;
+      desired_roles?: string; interview_availability?: string; applicant_questions?: string; created_at?: string;
+      provisioning_status?: string; provisioning_error?: string; provisioning_next_attempt_at?: string;
+      verified_discord_user_id?: string;
+      discord_oauth_connected_at?: string; email_deliveries?: Array<Record<string, unknown>>;
+    };
+    type Interview = { scheduledAt?: string | null; mode?: string | null; zoomUrl?: string | null; location?: string | null; completedAt?: string | null; completed_at?: string | null; notifiedAt?: string | null; notified_at?: string | null; status?: string };
+    type Review = { note?: string | null; assignedSubjects?: string[] | null; decision?: string | null; finalizedAt?: string | null };
+    type InterviewResponse = { application?: Application; interview?: Interview | null; review?: Review | null; subjectLabels?: Record<string, string>; error?: string };
+    type IntakeEntry = { email?: string; application_id?: string | null; is_member?: number; responsible_email?: string | null; consultation_email?: string | null; contact_status?: string | null; contact_note?: string | null; first_task_id?: string | null; first_task_title?: string | null; first_task_type?: string | null; follow_up_at?: string | null; follow_up_completed_at?: string | null; revision?: number | null };
+    type IntakeResponse = { entries?: IntakeEntry[]; responsibleCandidates?: Array<{ email: string; displayName: string }>; error?: string };
+    type ApplicationListResponse = { applications?: Application[]; subjectLabels?: Record<string, string>; error?: string };
+
+    const params = new URLSearchParams(location.search);
+    const applicationId = params.get("application")?.trim() ?? "";
+    const project = params.get("project")?.trim().toLowerCase() ?? "";
+    const get = <T extends Element>(selector: string) => root.querySelector<T>(selector)!;
+    const notice = get<HTMLOutputElement>("[data-notice]");
+    const reviewForm = get<HTMLFormElement>("[data-review-form]");
+    const intakeForm = get<HTMLFormElement>("[data-intake-form]");
+    const decision = get<HTMLSelectElement>("[data-decision]");
+    const confirmWrap = get<HTMLElement>("[data-confirm-wrap]");
+    const confirm = get<HTMLInputElement>("[data-confirm-accept]");
+    const statusLabels: Record<string, string> = { new: "新規", reviewing: "確認中", accepted: "受け入れ済み", rejected: "見送り" };
+    const decisionLabels: Record<string, string> = { pending: "未判定", hold: "保留", accepted: "受け入れ", rejected: "見送り" };
+    const contactLabels: Record<string, string> = { not_contacted: "未連絡", contacted: "連絡済み", replied: "返信あり" };
+    const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] ?? char);
+    const setNotice = (message: string, error = false) => { notice.value = message; notice.dataset.error = String(error); };
+    const setIntakeMessage = (message: string, error = false) => { const output = get<HTMLOutputElement>("[data-intake-message]"); output.value = message; output.dataset.error = String(error); };
+    const formatDate = (value: unknown) => { if (!value) return "未設定"; const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? "未設定" : new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" }).format(date); };
+    const toLocalDateTime = (value: unknown) => { if (!value) return ""; const date = new Date(String(value)); if (Number.isNaN(date.getTime())) return ""; return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16); };
+    const fromLocalDateTime = (value: string) => value ? new Date(value).toISOString() : null;
+    const requestJson = async <T,>(url: string, init: RequestInit | undefined, failureMessage: string): Promise<T> => {
+      const response = await fetch(url, { credentials: "same-origin", cache: "no-store", ...init });
+      const data = await response.json().catch(() => ({})) as T & { error?: string };
+      if (!response.ok) throw new Error(data.error ?? failureMessage);
+      return data;
+    };
+    let application: Application = {};
+    let interview: Interview | null = null;
+    let review: Review = {};
+    let intake: IntakeEntry | null = null;
+    let intakeRevision = 0;
+    let responsibleCandidates: Array<{ email: string; displayName: string }> = [];
+    let interviewCompleted = false;
+    let interviewBusy = false;
+    let intakeBusy = false;
+    let reviewBusy = false;
+    let load: () => Promise<void> = async () => {};
+    const retry = createAdminLoadRetry(root, () => load(), "応募者対応を読み込めませんでした。");
+
+    const renderWorkflow = () => {
+      get<HTMLElement>("[data-workflow-application]").textContent = statusLabels[application.status ?? ""] ?? "状態要確認";
+      get<HTMLElement>("[data-workflow-interview]").textContent = interviewCompleted ? "実施済み" : interview?.scheduledAt ? "日程設定済み" : "日程未設定";
+      get<HTMLElement>("[data-workflow-decision]").textContent = decisionLabels[review.decision ?? "pending"] ?? "未判定";
+      const contact = intake?.contact_status ? contactLabels[intake.contact_status] ?? "状態要確認" : "未記録";
+      get<HTMLElement>("[data-workflow-intake]").textContent = contact;
+      const next = application.status === "accepted"
+        ? intakeRevision === 0 ? "受け入れ済みです。担当者と参加準備を記録してください。" : "参加準備と次回確認予定を確認してください。"
+        : review.decision === "accepted" || review.decision === "rejected"
+          ? "応募結果を確認し、参加準備・連絡記録を更新してください。"
+          : interview?.scheduledAt ? "面談内容を記録し、応募結果を確認してください。" : "応募内容を確認し、面談を行う場合は日程を設定してください。";
+      get<HTMLElement>("[data-next-action]").textContent = next;
+    };
+
+    const renderApplication = (data: ApplicationListResponse) => {
+      const full = data.applications?.[0];
+      if (!full) throw new Error("応募内容が見つかりません。");
+      application = { ...application, ...full };
+      const content = get<HTMLElement>("[data-application-content]");
+      const meta = (label: string, value: unknown) => `<div class="application-meta-item"><span>${escape(label)}</span><strong>${escape(value || "—")}</strong></div>`;
+      const answer = (label: string, value: unknown) => `<div class="response-block"><h3>${escape(label)}</h3><pre>${escape(value || "—")}</pre></div>`;
+      const extraLabels: Record<string, string> = { theme: "参加してみたいテーマ", councilStatus: "生徒会への所属または所属経験", councilRole: "生徒会での役職名", councilPlans: "活動・企画案", strengths: "得意なこと・資格・実績", problemAwareness: "問題意識", plans: "本協議会で取り組みたいこと" };
+      let projectAnswers: Record<string, string> = {};
+      try { const parsed = JSON.parse(full.project_answers ?? "{}"); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) projectAnswers = parsed; } catch { /* 古い形式の回答は他の欄で表示する */ }
+      const extraAnswers = Object.entries(projectAnswers).map(([key, value]) => answer(extraLabels[key] ?? key, value)).join("");
+      const subjectTags = String(full.desired_subjects ?? "").split(",").filter(Boolean).map((subject) => `<span>${escape(data.subjectLabels?.[subject] ?? subject)}</span>`).join("") || "<span>未設定</span>";
+      const emailKinds: Record<string, string> = { applicant_confirmation: "応募受付確認", operator_notification: "運営への新着通知", applicant_acceptance: "受け入れ案内", applicant_discord_success: "Discord連携完了", applicant_discord_failure: "Discord連携状況", applicant_interview_invitation: "面談案内" };
+      const emailErrors: Record<string, string> = { invalid_recipient: "宛先形式を確認してください", provider_idempotency_window_expired: "冪等性の保持期間を過ぎた可能性があるため自動再送を停止しました", claim_expired_max_attempts: "送信処理の試行上限に達しました", timeout: "送信結果を確認してください", network_or_provider: "送信結果を確認してください" };
+      const deliveries = (full.email_deliveries ?? []).map((delivery) => {
+        const state = delivery.failed ? "要確認" : delivery.retry ? "自動再試行待ち" : delivery.sending ? "送信処理中" : delivery.pending ? "送信待ち" : Number(delivery.sent) === Number(delivery.total) ? "Resend受付済み" : "状態要確認";
+        const lastError = String(delivery.lastError ?? "");
+        const errorLabel = emailErrors[lastError] ?? (/^provider_\d+$/.test(lastError) ? `Resend応答エラー（HTTP ${lastError.slice(9)}）` : lastError ? "送信エラー" : "");
+        const nextAttempt = delivery.nextAttemptAt ? `<p>次回処理予定：${escape(formatDate(delivery.nextAttemptAt))}</p>` : "";
+        const attempts = Number(delivery.attemptCount ?? 0);
+        return `<li><div class="delivery-heading"><strong>${escape(emailKinds[String(delivery.kind)] ?? "応募関連メール")}</strong><span>${state}</span></div><p>Resend受付 ${Number(delivery.sent ?? 0)} / ${Number(delivery.total ?? 0)} 件${attempts ? ` ・最大試行 ${attempts} 回` : ""}</p>${errorLabel ? `<p class="delivery-error">${escape(errorLabel)}</p>` : ""}${nextAttempt}<small>状態更新：${escape(formatDate(delivery.updatedAt))}</small></li>`;
+      }).join("");
+      const discord = full.discord_oauth_connected_at ? "OAuth同意済み・連携済み" : full.verified_discord_user_id ? "手動確認済み・ID登録済み" : "未連携";
+      const provisioningLabels: Record<string, string> = { not_started: "未実行", pending: "Discord同期準備中", synced: "Discord同期済み", skipped: "Discord未連携・未実行", failed: "Discord同期要確認" };
+      const provisioningStatus = full.provisioning_status ?? "not_started";
+      const canRetryDiscord = full.status === "accepted" && provisioningStatus !== "synced";
+      content.innerHTML = `<div class="application-section-heading"><div><p>応募内容</p><h2>応募者の回答</h2></div><span>${escape(formatDate(full.created_at))}</span></div>
+        <div class="application-meta-grid">${meta("所属", `${full.affiliation_type || "未設定"}：${full.institution || "—"}`)}${meta("呼称", full.nickname)}${meta("所属先メール", full.affiliation_email)}${meta("学年", full.grade)}${meta("国・居住地", `${full.country || "—"} / ${full.residence_city || "都市未登録"}`)}${meta("生年月日", full.birth_date)}${meta("タイムゾーン", full.timezone)}${meta("Discord連携", discord)}</div>
+        <section class="application-section application-provisioning" aria-label="参加環境の同期状況"><div><span>参加環境</span><strong data-provisioning-status>${escape(provisioningLabels[provisioningStatus] ?? "状態要確認")}</strong></div>${full.provisioning_next_attempt_at ? `<p>次回確認予定：${escape(formatDate(full.provisioning_next_attempt_at))}</p>` : ""}${canRetryDiscord ? `<button class="button button--quiet" type="button" data-discord-retry>Discord情報を再確認</button>` : ""}</section>
+        <section class="application-section application-section--subjects" aria-label="希望分野"><div class="application-section-heading"><p>希望分野</p><span>担当候補</span></div><div class="facts">${subjectTags}</div></section>
+        <div class="application-response-grid"><div class="response-block"><h3>書きたい記事・テーマ</h3><pre>${escape(full.article_ideas || "—")}</pre></div><div class="response-block"><h3>できること・関心</h3><pre>${escape(full.interests || "—")}</pre></div><div class="response-block response-block--wide"><h3>参加理由・自己紹介</h3><pre>${escape(full.message || "—")}</pre></div>${full.availability_note ? answer("参加可能な時間帯", full.availability_note) : ""}</div>
+        <details class="application-original-fields"><summary>応募フォームの詳細を開く</summary><div class="application-response-grid">${answer("知ったきっかけ", full.referral_source)}${answer("現在のサークル・学生団体", full.current_organizations)}${answer("参加理由", full.motivation_reasons)}${answer("希望担当", full.desired_roles)}${answer("面談候補日", full.interview_availability)}${answer("質問", full.applicant_questions)}${extraAnswers}</div></details>
+        <details class="application-original-fields" aria-label="応募関連メールの状態"><summary>応募関連メールの状況</summary>${deliveries ? `<ul class="delivery-list">${deliveries}</ul><p class="field-help">「Resend受付済み」は送信APIの受付を示し、受信箱への到達確認ではありません。</p>` : `<p class="field-help">配信記録はありません。応募の保存状態を示すものではないため、応募内容と管理画面通知も確認してください。</p>`}</details>
+        ${full.provisioning_error ? `<p class="provisioning-error">${escape(full.provisioning_error)}</p>` : ""}`;
+    };
+
+    const renderIntake = (data: IntakeResponse) => {
+      intake = Array.isArray(data.entries) ? data.entries[0] ?? null : null;
+      intakeRevision = Math.max(0, Number(intake?.revision ?? 0));
+      responsibleCandidates = Array.isArray(data.responsibleCandidates) ? data.responsibleCandidates : [];
+      const responsible = get<HTMLSelectElement>("[data-intake-responsible]");
+      const consultation = get<HTMLSelectElement>("[data-intake-consultation]");
+      const candidateEmails = new Set(responsibleCandidates.map((item) => item.email.toLowerCase()));
+      for (const email of [intake?.responsible_email, intake?.consultation_email]) {
+        if (email && !candidateEmails.has(email.toLowerCase())) responsibleCandidates.push({ email, displayName: email });
+      }
+      const options = (select: HTMLSelectElement, emptyLabel: string, selectedEmail: string | null | undefined) => {
+        select.replaceChildren(new Option(emptyLabel, ""));
+        for (const candidate of responsibleCandidates) {
+          const option = new Option(candidate.displayName, candidate.email);
+          select.add(option);
+        }
+        select.value = selectedEmail ?? "";
+      };
+      options(responsible, "担当未設定", intake?.responsible_email);
+      options(consultation, "相談先未設定", intake?.consultation_email);
+      get<HTMLSelectElement>("[data-intake-contact-status]").value = intake?.contact_status ?? "not_contacted";
+      get<HTMLInputElement>("[data-intake-follow-up]").value = toLocalDateTime(intake?.follow_up_at);
+      get<HTMLTextAreaElement>("[data-intake-contact-note]").value = intake?.contact_note ?? "";
+      get<HTMLInputElement>("[data-intake-follow-completed]").checked = Boolean(intake?.follow_up_completed_at);
+      const newTaskField = get<HTMLElement>("[data-new-task-field]");
+      const existingTaskField = get<HTMLElement>("[data-existing-task-field]");
+      const firstTask = get<HTMLInputElement>("[data-intake-first-task]");
+      const taskLink = get<HTMLAnchorElement>("[data-intake-task-link]");
+      if (intake?.first_task_id) {
+        newTaskField.hidden = true;
+        existingTaskField.hidden = false;
+        taskLink.href = `/admin/task-detail/?task=${encodeURIComponent(intake.first_task_id)}`;
+        taskLink.textContent = `${intake.first_task_title || "初回タスク"} を開く →`;
+      } else {
+        newTaskField.hidden = false;
+        existingTaskField.hidden = true;
+        firstTask.value = "";
+        const isMember = Number(intake?.is_member ?? 0) === 1;
+        get<HTMLElement>("[data-new-task-label]").textContent = isMember ? "最初のタスク" : "参加前の準備タスク";
+      }
+      get<HTMLElement>("[data-intake-summary]").textContent = intake?.follow_up_completed_at
+        ? `確認済み：${formatDate(intake.follow_up_completed_at)}`
+        : intake?.follow_up_at ? `次回確認：${formatDate(intake.follow_up_at)}` : "次回確認予定なし";
+      setIntakeMessage(intakeRevision ? "保存済みの対応記録です。" : "対応記録はまだありません。");
+      renderWorkflow();
+    };
+
+    const applyInterview = (data: InterviewResponse) => {
+      application = data.application ?? {};
+      interview = data.interview ? { ...data.interview, completedAt: data.interview.completedAt ?? data.interview.completed_at, notifiedAt: data.interview.notifiedAt ?? data.interview.notified_at } : null;
+      review = data.review ?? {};
+      interviewCompleted = Boolean(interview?.completedAt) || interview?.status === "completed";
+      get<HTMLElement>("[data-applicant-name]").textContent = application.name || "応募者";
+      get<HTMLElement>("[data-applicant-email]").textContent = application.email || "";
+      const status = get<HTMLElement>("[data-applicant-status]");
+      status.textContent = statusLabels[application.status ?? ""] ?? "—";
+      status.dataset.status = application.status ?? "";
+      get<HTMLInputElement>("[data-interview-date]").value = toLocalDateTime(interview?.scheduledAt);
+      const mode = get<HTMLSelectElement>("[data-interview-format]");
+      mode.value = interview?.mode === "in_person" ? "in_person" : "online";
+      get<HTMLInputElement>("[data-interview-zoom]").value = interview?.zoomUrl ?? "";
+      get<HTMLInputElement>("[data-interview-location]").value = interview?.location ?? "";
+      get<HTMLElement>("[data-interview-fields]").dataset.mode = mode.value;
+      get<HTMLElement>("[data-meeting-status]").textContent = interviewCompleted
+        ? `実施済み：${formatDate(interview?.completedAt)}`
+        : interview?.scheduledAt ? `日程設定済み${interview.notifiedAt ? `・通知済み ${formatDate(interview.notifiedAt)}` : "・未通知"}` : "日程未設定";
+      get<HTMLButtonElement>("[data-interview-save]").textContent = "面談日程を保存";
+      get<HTMLButtonElement>("[data-interview-notify]").textContent = interview?.notifiedAt ? "面談情報を再通知" : "応募者へ通知";
+      root.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-interview-fields] input, [data-interview-fields] select").forEach((input) => { input.disabled = interviewCompleted; });
+      get<HTMLButtonElement>("[data-interview-save]").disabled = interviewCompleted;
+      get<HTMLButtonElement>("[data-interview-notify]").disabled = interviewCompleted || !interview?.scheduledAt;
+      get<HTMLTextAreaElement>("[data-notes]").value = review.note ?? "";
+      decision.value = ["pending", "hold", "accepted", "rejected"].includes(review.decision ?? "") ? review.decision! : "pending";
+      const selected = new Set(review.assignedSubjects ?? []);
+      const options = get<HTMLElement>("[data-subject-options]");
+      options.replaceChildren();
+      const labels = data.subjectLabels ?? {};
+      for (const [key, label] of Object.entries(labels)) {
+        const item = document.createElement("label");
+        item.className = "subject-option";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = key;
+        checkbox.checked = selected.has(key);
+        const text = document.createElement("span");
+        text.textContent = label;
+        item.append(checkbox, text);
+        options.append(item);
+      }
+      if (!Object.keys(labels).length) options.textContent = "担当分野の候補がありません。";
+      get<HTMLElement>("[data-no-interview-help]").hidden = Boolean(interview);
+      get<HTMLButtonElement>("[data-save]").textContent = review.finalizedAt ? "審査記録を保存" : "審査メモを保存";
+      renderWorkflow();
+    };
+
+    load = async () => {
+      if (!applicationId || !project) {
+        setNotice("応募者またはプロジェクトが指定されていません。", true);
+        reviewForm.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement>("input,select,textarea,button[type=submit]").forEach((input) => { input.disabled = true; });
+        intakeForm.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement>("input,select,textarea,button").forEach((input) => { input.disabled = true; });
+        return;
+      }
+      retry.begin();
+      try {
+        const interviewUrl = `/api/admin/applications/${encodeURIComponent(applicationId)}/interview?project=${encodeURIComponent(project)}`;
+        const applicationUrl = `/api/admin/applications?project=${encodeURIComponent(project)}&applicationId=${encodeURIComponent(applicationId)}`;
+        const intakeUrl = `/api/admin/member-intake?project=${encodeURIComponent(project)}&applicationId=${encodeURIComponent(applicationId)}`;
+        const [interviewData, applicationData, intakeData] = await Promise.all([
+          requestJson<InterviewResponse>(interviewUrl, undefined, "応募者対応を読み込めませんでした。"),
+          requestJson<ApplicationListResponse>(applicationUrl, undefined, "応募内容を読み込めませんでした。"),
+          requestJson<IntakeResponse>(intakeUrl, undefined, "参加準備の記録を読み込めませんでした。"),
+        ]);
+        applyInterview(interviewData);
+        renderApplication(applicationData);
+        renderIntake(intakeData);
+        retry.success();
+      } catch (error) {
+        retry.fail(error);
+        setNotice(error instanceof Error ? error.message : "応募者対応を読み込めませんでした。", true);
+        throw error;
+      }
+    };
+
+    const showDecisionConfirm = () => {
+      confirmWrap.hidden = decision.value !== "accepted";
+      if (decision.value !== "accepted") confirm.checked = false;
+    };
+    decision.addEventListener("change", showDecisionConfirm);
+    get<HTMLSelectElement>("[data-interview-format]").addEventListener("change", (event) => {
+      get<HTMLElement>("[data-interview-fields]").dataset.mode = (event.currentTarget as HTMLSelectElement).value;
+    });
+
+    const saveInterview = async (notifyApplicant: boolean) => {
+      if (interviewBusy || interviewCompleted) return;
+      const dateValue = get<HTMLInputElement>("[data-interview-date]").value;
+      const mode = get<HTMLSelectElement>("[data-interview-format]").value;
+      const zoomUrl = get<HTMLInputElement>("[data-interview-zoom]").value.trim();
+      const locationValue = get<HTMLInputElement>("[data-interview-location]").value.trim();
+      if (!dateValue) { setNotice("面談日時を入力してください。", true); get<HTMLInputElement>("[data-interview-date]").focus(); return; }
+      if (mode === "online") {
+        try { const url = new URL(zoomUrl); if (url.protocol !== "https:") throw new Error(); }
+        catch { setNotice("オンライン面談にはHTTPSのZoomリンクを設定してください。", true); get<HTMLInputElement>("[data-interview-zoom]").focus(); return; }
+      }
+      if (mode === "in_person" && !locationValue) { setNotice("対面面談の場所を入力してください。", true); get<HTMLInputElement>("[data-interview-location]").focus(); return; }
+      const values = { scheduledAt: fromLocalDateTime(dateValue), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Tokyo", mode, zoomUrl, location: locationValue };
+      interviewBusy = true;
+      const saveButton = get<HTMLButtonElement>("[data-interview-save]");
+      const notifyButton = get<HTMLButtonElement>("[data-interview-notify]");
+      saveButton.disabled = true; notifyButton.disabled = true;
+      root.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-interview-fields] input, [data-interview-fields] select").forEach((input) => { input.disabled = true; });
+      saveButton.setAttribute("aria-busy", "true"); notifyButton.setAttribute("aria-busy", "true");
+      setNotice(notifyApplicant ? "面談日程を保存して応募者へ通知しています…" : "面談日程を保存しています…");
+      let saved = false;
+      try {
+        await requestJson(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview?project=${encodeURIComponent(project)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(values) }, "面談日程を保存できませんでした。");
+        saved = true;
+        if (notifyApplicant) await requestJson(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview/notify?project=${encodeURIComponent(project)}`, { method: "POST" }, "面談通知を準備できませんでした。");
+        setNotice(notifyApplicant ? "面談日程を保存し、応募者へ通知しました。" : "面談日程を保存しました。");
+        await load();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "面談日程を保存できませんでした。";
+        setNotice(saved ? `面談日程は保存済みです。${message}` : message, true);
+        if (saved) void load().catch(() => undefined);
+      } finally {
+        interviewBusy = false;
+        saveButton.removeAttribute("aria-busy"); notifyButton.removeAttribute("aria-busy");
+        root.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-interview-fields] input, [data-interview-fields] select").forEach((input) => { input.disabled = interviewCompleted; });
+        saveButton.disabled = interviewCompleted; notifyButton.disabled = interviewCompleted || !interview?.scheduledAt;
+      }
+    };
+    get<HTMLButtonElement>("[data-interview-save]").addEventListener("click", () => { void saveInterview(false); });
+    get<HTMLButtonElement>("[data-interview-notify]").addEventListener("click", () => { void saveInterview(true); });
+    root.addEventListener("click", async (event) => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-discord-retry]");
+      if (!button || !applicationId || button.disabled) return;
+      button.disabled = true;
+      setNotice("Discord情報を再確認しています…");
+      try {
+        const result = await requestJson<{ provisioning?: { status?: string; warnings?: string[] } }>(`/api/admin/applications/${encodeURIComponent(applicationId)}/discord-retry?project=${encodeURIComponent(project)}`, { method: "POST" }, "Discord同期を再試行できませんでした。");
+        const status = result.provisioning?.status ?? "synced";
+        application.provisioning_status = status;
+        get<HTMLElement>("[data-provisioning-status]").textContent = ({ not_started: "未実行", pending: "Discord同期準備中", synced: "Discord同期済み", skipped: "Discord未連携・未実行", failed: "Discord同期要確認" } as Record<string, string>)[status] ?? "状態要確認";
+        button.remove();
+        const warnings = Array.isArray(result.provisioning?.warnings) ? result.provisioning.warnings.join(" ") : "";
+        setNotice(warnings ? `Discord情報を再確認しました。${warnings}` : "Discord情報を再確認しました。");
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : "Discord同期を再試行できませんでした。", true);
+        if (button.isConnected) button.disabled = false;
+      }
+    });
+
+    reviewForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (reviewBusy) return;
+      if (decision.value === "accepted" && !confirm.checked) { setNotice("受け入れを確定する場合は確認欄にチェックしてください。", true); confirm.focus(); return; }
+      const subjects = [...root.querySelectorAll<HTMLInputElement>("[data-subject-options] input:checked")].map((input) => input.value);
+      const note = get<HTMLTextAreaElement>("[data-notes]").value;
+      const saveButton = get<HTMLButtonElement>("[data-save]");
+      reviewBusy = true; saveButton.disabled = true; saveButton.setAttribute("aria-busy", "true");
+      setNotice("審査記録を保存しています…");
+      let reviewSaved = false;
+      try {
+        await requestJson(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview-review?project=${encodeURIComponent(project)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ note, assignedSubjects: subjects, decision: decision.value }) }, "審査記録を保存できませんでした。");
+        reviewSaved = true;
+        if (!interviewCompleted && (decision.value === "accepted" || decision.value === "rejected")) {
+          if (interview?.status === "scheduled") {
+            await requestJson(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview/complete?project=${encodeURIComponent(project)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ note, assignedSubjects: subjects, decision: decision.value }) }, "面談の完了処理に失敗しました。");
+            setNotice(decision.value === "accepted" ? "面談を完了し、受け入れと担当分野を反映しました。" : "面談を完了し、見送りとして記録しました。");
+          } else if (!interview) {
+            await requestJson(`/api/admin/applications/${encodeURIComponent(applicationId)}?project=${encodeURIComponent(project)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: decision.value, desiredSubjects: subjects }) }, "応募状態を更新できませんでした。");
+            setNotice(decision.value === "accepted" ? "受け入れを確定し、参加案内の準備を開始しました。" : "見送りとして記録しました。");
+          } else {
+            setNotice("面談結果は確定済みです。審査メモを保存しました。応募状態は変更していません。");
+          }
+        } else {
+          setNotice("審査記録を保存しました。");
+        }
+        await load();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "審査記録を保存できませんでした。";
+        setNotice(reviewSaved ? `審査メモは保存済みです。${message}` : message, true);
+        if (reviewSaved) void load().catch(() => undefined);
+      } finally {
+        reviewBusy = false; saveButton.disabled = false; saveButton.removeAttribute("aria-busy");
+      }
+    });
+
+    intakeForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (intakeBusy) return;
+      const email = application.email?.trim().toLowerCase() ?? "";
+      if (!email) { setIntakeMessage("応募者のメールアドレスを確認できません。", true); return; }
+      const followUpValue = get<HTMLInputElement>("[data-intake-follow-up]").value;
+      const followUpCompleted = get<HTMLInputElement>("[data-intake-follow-completed]").checked;
+      if (followUpCompleted && !followUpValue) { setIntakeMessage("確認済みにする前に次回確認予定を入力してください。", true); get<HTMLInputElement>("[data-intake-follow-up]").focus(); return; }
+      const firstTaskInput = get<HTMLInputElement>("[data-intake-first-task]");
+      const body = {
+        email,
+        applicationId,
+        expectedRevision: intakeRevision,
+        responsibleEmail: get<HTMLSelectElement>("[data-intake-responsible]").value,
+        consultationEmail: get<HTMLSelectElement>("[data-intake-consultation]").value,
+        contactStatus: get<HTMLSelectElement>("[data-intake-contact-status]").value,
+        contactNote: get<HTMLTextAreaElement>("[data-intake-contact-note]").value,
+        firstTaskTitle: intake?.first_task_id ? "" : firstTaskInput.value.trim(),
+        followUpAt: fromLocalDateTime(followUpValue),
+        followUpCompleted,
+      };
+      intakeBusy = true;
+      const button = get<HTMLButtonElement>("[data-intake-save]"); button.disabled = true; button.setAttribute("aria-busy", "true");
+      setIntakeMessage("対応記録を保存しています…");
+      try {
+        await requestJson(`/api/admin/member-intake?project=${encodeURIComponent(project)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }, "対応記録を保存できませんでした。");
+        firstTaskInput.value = "";
+        setIntakeMessage("対応記録を保存しました。");
+        const data = await requestJson<IntakeResponse>(`/api/admin/member-intake?project=${encodeURIComponent(project)}&applicationId=${encodeURIComponent(applicationId)}`, undefined, "対応記録を再読み込みできませんでした。");
+        renderIntake(data);
+      } catch (error) {
+        setIntakeMessage(error instanceof Error ? error.message : "対応記録を保存できませんでした。", true);
+      } finally {
+        intakeBusy = false; button.disabled = false; button.removeAttribute("aria-busy");
+      }
+    });
+
+    const back = `/admin/applications/?project=${encodeURIComponent(project)}&application=${encodeURIComponent(applicationId)}`;
+    get<HTMLAnchorElement>("[data-back-link]").href = back;
+    get<HTMLAnchorElement>("[data-cancel-link]").href = back;
+    void load().catch(() => undefined);
+  };
+  document.addEventListener("astro:page-load", initializeInterviewPage);
   initializeInterviewPage();
 </script>

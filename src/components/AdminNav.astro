@@ -27,11 +27,11 @@ const projectHome = new Set<NonNullable<Props["current"]>>(["atlas", "semi-platf
   <button type="button" class="admin-menu-toggle" data-admin-menu-toggle aria-label="メニュー" aria-expanded="false" aria-controls="admin-primary-nav"><span aria-hidden="true">☰</span><span>メニュー</span></button>
   <nav id="admin-primary-nav" aria-label="運営用サイトメニュー">
       <a class="admin-action-center-link" data-requires-admin href="/admin/action-center/" data-admin-page="action-center" data-admin-action-center-tab aria-current={current === "action-center" ? "page" : undefined} aria-label="要対応一覧（アクションセンター）" title="要対応一覧を開く"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3 4.5h10M3 8h7M3 11.5h5" /></svg><span>要対応</span></a>
-      <a href="/admin/member-tasks/" data-admin-site="portal" data-admin-page="member-tasks" hidden={site !== "portal"} aria-current={current === "member-tasks" ? "page" : undefined}>タスク管理</a>
-      <a href="/admin/member-calendar/" data-admin-site="portal" data-admin-page="member-calendar" hidden={site !== "portal"} aria-current={current === "member-calendar" ? "page" : undefined}>カレンダー</a>
+      <a href="/admin/member-tasks/" data-admin-site="portal" data-admin-page="member-tasks" hidden={site !== "portal"} aria-current={current === "member-tasks" ? "page" : undefined}>自分の担当タスク</a>
+      <a href="/admin/member-calendar/" data-admin-site="portal" data-admin-page="member-calendar" hidden={site !== "portal"} aria-current={current === "member-calendar" ? "page" : undefined}>自分の予定</a>
       <a href="/admin/articles/" data-requires-admin data-admin-site="atlas" data-admin-page="articles" hidden={site !== "atlas"} aria-current={current === "articles" && site === "atlas" ? "page" : undefined}>編集・フィードバック</a>
-      <a href="/admin/operations/?project=atlas" data-admin-site="atlas" data-admin-page="operations" hidden={site !== "atlas"} aria-current={current === "operations" && site === "atlas" ? "page" : undefined}>タスク管理</a>
-      <a href="/admin/calendar/?project=atlas" data-admin-site="atlas" data-admin-page="calendar" hidden={site !== "atlas"} aria-current={current === "calendar" && site === "atlas" ? "page" : undefined}>カレンダー</a>
+      <a href="/admin/operations/?project=atlas" data-admin-site="atlas" data-admin-page="operations" hidden={site !== "atlas"} aria-current={current === "operations" && site === "atlas" ? "page" : undefined}>運営タスク</a>
+      <a href="/admin/calendar/?project=atlas" data-admin-site="atlas" data-admin-page="calendar" hidden={site !== "atlas"} aria-current={current === "calendar" && site === "atlas" ? "page" : undefined}>運営カレンダー</a>
       <a href="/admin/operations/?project=secretariat" data-admin-site="secretariat" data-admin-page="operations" hidden={site !== "secretariat"} aria-current={current === "operations" && site === "secretariat" ? "page" : undefined}>事務局タスク管理</a>
       <a href="/admin/calendar/?project=secretariat" data-admin-site="secretariat" data-admin-page="calendar" hidden={site !== "secretariat"} aria-current={current === "calendar" && site === "secretariat" ? "page" : undefined}>事務局カレンダー</a>
       <a href="/admin/profile-requests/" data-project-manager-only data-admin-site="secretariat" data-admin-page="profile-requests" hidden={site !== "secretariat"} aria-current={current === "profile-requests" && site === "secretariat" ? "page" : undefined}>メンバー情報の承認</a>
@@ -50,7 +50,7 @@ const projectHome = new Set<NonNullable<Props["current"]>>(["atlas", "semi-platf
     <SettingsMenu locale="ja" showGlass />
     <button type="button" class="admin-notifications" data-admin-notifications aria-expanded="false" aria-controls="admin-notification-panel" aria-haspopup="dialog" aria-label="通知を開く"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg><span data-admin-notification-count hidden>0</span></button>
     <div id="admin-notification-panel" class="admin-notification-panel" data-admin-notification-panel role="dialog" aria-labelledby="admin-notification-heading" hidden><div class="notification-panel-heading"><strong id="admin-notification-heading">通知</strong><button type="button" class="mark-all-read" data-mark-all-notifications-read>すべて既読</button><button type="button" data-close-notifications aria-label="通知を閉じる">×</button></div><p class="notification-panel-status" data-legacy-reminder-status role="status" hidden></p><p class="notification-panel-status" data-legacy-reminder-failed role="status" hidden>日時またはタイムゾーンが不正なリマインダーがあります。該当タスクを修正してください。他の通知は利用できます。</p><div data-admin-notification-list aria-live="polite"><span class="admin-notification-loading">通知を確認しています…</span></div><a class="notification-inbox-link" href="/admin/notifications/">通知一覧を見る <span aria-hidden="true">→</span></a></div>
-    <a class="admin-account-profile" data-admin-account-profile href={site === "portal" ? "/admin/member-profile/" : `/admin/workspace/?project=${projectSlug}`} aria-label="マイページを開く">
+    <a class="admin-account-profile" data-admin-account-profile href={site === "portal" ? "/admin/member-profile/" : `/admin/workspace/?project=${projectSlug}`} aria-label={site === "portal" ? "プロフィールを開く" : "担当・自己紹介を開く"}>
       <span class="admin-account-avatar" data-admin-account-avatar aria-hidden="true"><img data-admin-account-image alt="" hidden /><span data-admin-account-fallback>A</span></span>
       <span class="admin-account-email" data-admin-account-email>アカウント</span>
     </a>
@@ -411,14 +411,14 @@ const projectHome = new Set<NonNullable<Props["current"]>>(["atlas", "semi-platf
       const adminCommands: Command[] = [
         { label: "要対応", detail: "確認・実行が必要な項目", group: 'quick', icon: 'actions', href: "/admin/action-center/", keepDialogOpen: true, run: () => { void openActionCenter(); } },
         { label: "編集・フィードバック", detail: "記事とフィードバック", group: 'quick', icon: 'articles', href: "/admin/articles/" },
-        { label: "タスク管理", detail: "担当タスクと期限", group: 'quick', icon: 'tasks', href: "/admin/operations/?project=atlas" },
-        { label: "カレンダー", detail: "予定と締切", group: 'quick', icon: 'calendar', href: "/admin/calendar/?project=atlas" },
+        { label: "運営タスク", detail: "担当タスクと期限", group: 'quick', icon: 'tasks', href: "/admin/operations/?project=atlas" },
+        { label: "運営カレンダー", detail: "予定と締切", group: 'quick', icon: 'calendar', href: "/admin/calendar/?project=atlas" },
         { label: "管理トップ", detail: "設定・権限・状態", group: 'quick', icon: 'manage', href: "/admin/manage/?project=atlas" },
         { label: "表示設定を開く", detail: "テーマ・文字サイズ", group: 'quick', icon: 'settings', run: () => document.querySelector<HTMLElement>("[data-settings-menu] summary")?.click() },
       ];
       const memberCommands: Command[] = [
-        { label: "自分のタスク", detail: "担当タスクと期限", group: 'quick', icon: 'tasks', href: "/admin/member-tasks/" },
-        { label: "カレンダー", detail: "予定と締切", group: 'quick', icon: 'calendar', href: "/admin/member-calendar/" },
+        { label: "自分の担当タスク", detail: "担当タスクと期限", group: 'quick', icon: 'tasks', href: "/admin/member-tasks/" },
+        { label: "自分の予定", detail: "予定と締切", group: 'quick', icon: 'calendar', href: "/admin/member-calendar/" },
         { label: "通知", detail: "自分への通知", group: 'quick', icon: 'actions', href: "/admin/notifications/" },
         { label: "表示設定を開く", detail: "テーマ・文字サイズ", group: 'quick', icon: 'settings', run: () => document.querySelector<HTMLElement>("[data-settings-menu] summary")?.click() },
       ];

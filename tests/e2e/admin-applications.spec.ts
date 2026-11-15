@@ -76,7 +76,7 @@ for (const width of [1440, 800, 390]) {
     await expect(select).toHaveValue("latest");
     await select.selectOption("old");
     newestId = "new-arrival";
-    await page.reload();
+    await page.goto("./admin/applications/?project=atlas");
     await expect(select).toHaveValue("new-arrival");
     await page.locator("[data-filter-status]").selectOption("new");
     await expect(select).toHaveValue("old");
@@ -218,42 +218,66 @@ test("応募メールの失敗理由を担当応募にだけ表示しメール�
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route("**/api/admin/**", async (route) => {
     const url = new URL(route.request().url());
+    const application = {
+      id: "application-with-failed-email",
+      form_language: "ja",
+      family_name: "検証",
+      given_name: "応募者",
+      email: "applicant@example.invalid",
+      project_slug: "atlas",
+      status: "new",
+      email_deliveries: [
+        {
+          kind: "applicant_confirmation",
+          total: 1,
+          sent: 0,
+          pending: 0,
+          sending: 0,
+          retry: 0,
+          failed: 1,
+          attemptCount: 5,
+          nextAttemptAt: null,
+          updatedAt: "2026-10-12T10:00:00.000Z",
+          lastError: "provider_idempotency_window_expired",
+          body: "PRIVATE_BODY",
+          htmlBody: "PRIVATE_HTML",
+        },
+      ],
+    };
+    if (url.pathname.endsWith("/interview")) {
+      await route.fulfill({
+        json: {
+          application: {
+            id: application.id,
+            name: "検証 応募者",
+            email: application.email,
+            status: application.status,
+          },
+          interview: null,
+          review: null,
+          subjectLabels: { mathematics: "数学" },
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/member-intake") {
+      await route.fulfill({ json: { entries: [], responsibleCandidates: [] } });
+      return;
+    }
     await route.fulfill({
       json:
         url.pathname === "/api/admin/applications"
           ? {
-              applications: [
-                {
-                  id: "application-with-failed-email",
-                  form_language: "ja",
-                  family_name: "検証",
-                  given_name: "応募者",
-                  email: "applicant@example.invalid",
-                  project_slug: "atlas",
-                  status: "new",
-                  email_deliveries: [
-                    {
-                      kind: "applicant_confirmation",
-                      total: 1,
-                      sent: 0,
-                      pending: 0,
-                      sending: 0,
-                      retry: 0,
-                      failed: 1,
-                      attemptCount: 5,
-                      nextAttemptAt: null,
-                      updatedAt: "2026-10-12T10:00:00.000Z",
-                      lastError: "provider_idempotency_window_expired",
-                    },
-                  ],
-                },
-              ],
+              applications: [application],
+              subjectLabels: { mathematics: "数学" },
             }
           : {},
     });
   });
   await page.goto("./admin/applications/?project=atlas");
+  await page.getByRole("link", { name: "応募者対応を開く →" }).click();
   const panel = page.locator('[aria-label="応募関連メールの状態"]');
+  await panel.locator("summary").click();
   await expect(panel).toContainText("応募受付確認");
   await expect(panel).toContainText("要確認");
   await expect(panel).toContainText("自動再送を停止しました");
@@ -292,7 +316,28 @@ test("応募管理の導線は現在のプロジェクトに引き継がれる",
 test("OAuth連携済みの受入応募はDiscord同期を再試行できる", async ({ page }) => {
   let provisioningStatus = "failed";
   let retryCalled = false;
-  await page.route("**/api/admin/applications/**", async (route) => {
+  const application = {
+    id: "11111111-1111-4111-8111-111111111111",
+    form_language: "ja",
+    family_name: "山田",
+    given_name: "太郎",
+    name: "山田 太郎",
+    email: "taro@example.com",
+    affiliation_type: "大学",
+    institution: "東京大学",
+    grade: "B1",
+    country: "JP",
+    timezone: "Asia/Tokyo",
+    desired_subjects: "mathematics",
+    project_slug: "atlas",
+    status: "accepted",
+    provisioning_status: provisioningStatus,
+    provisioning_attempt_count: 1,
+    provisioning_next_attempt_at: "2026-08-29T12:00:00.000Z",
+    discord_oauth_connected_at: "2026-08-29T11:00:00.000Z",
+    verified_discord_user_id: "123456789012345678",
+  };
+  await page.route("**/api/admin/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith("/discord-retry")) {
       retryCalled = route.request().method() === "POST";
@@ -307,148 +352,173 @@ test("OAuth連携済みの受入応募はDiscord同期を再試行できる", as
       });
       return;
     }
-    await route.fallback();
-  });
-  await page.route("**/api/admin/applications?project=atlas", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        project: { slug: "atlas", name: "学習サイト「アトラス」" },
-        subjectLabels: { mathematics: "数学" },
-        formLabels: { atlas: "学習サイト「アトラス」" },
-        applications: [
-          {
-            id: "11111111-1111-4111-8111-111111111111",
-            form_language: "ja",
-            family_name: "山田",
-            given_name: "太郎",
-            email: "taro@example.com",
-            affiliation_type: "大学",
-            institution: "東京大学",
-            grade: "B1",
-            country: "JP",
-            timezone: "Asia/Tokyo",
-            desired_subjects: "mathematics",
-            project_slug: "atlas",
-            status: "accepted",
-            provisioning_status: provisioningStatus,
-            provisioning_attempt_count: 1,
-            provisioning_next_attempt_at: "2026-08-29T12:00:00.000Z",
-            discord_oauth_connected_at: "2026-08-29T11:00:00.000Z",
-            verified_discord_user_id: "123456789012345678",
+    if (url.pathname.endsWith("/interview")) {
+      await route.fulfill({
+        json: {
+          application: {
+            id: application.id,
+            name: application.name,
+            email: application.email,
+            status: application.status,
           },
-        ],
-      }),
-    });
+          interview: null,
+          review: null,
+          subjectLabels: { mathematics: "数学" },
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/member-intake") {
+      await route.fulfill({ json: { entries: [], responsibleCandidates: [] } });
+      return;
+    }
+    if (url.pathname === "/api/admin/applications") {
+      await route.fulfill({
+        json: {
+          project: { slug: "atlas", name: "学習サイト「アトラス」" },
+          subjectLabels: { mathematics: "数学" },
+          formLabels: { atlas: "学習サイト「アトラス」" },
+          applications: [
+            { ...application, provisioning_status: provisioningStatus },
+          ],
+        },
+      });
+      return;
+    }
+    await route.fulfill({ json: {} });
   });
 
   await page.goto("./admin/applications/?project=atlas");
-  await expect(page.locator(".application-list")).toContainText(
+  await expect(page.locator("[data-retry]")).toHaveCount(0);
+  await page.getByRole("link", { name: "応募者対応を開く →" }).click();
+  await expect(page.locator(".application-meta-grid")).toContainText(
     "OAuth同意済み・連携済み",
   );
-  await expect(page.locator("[data-retry]")).toBeVisible();
-  await page.locator("[data-retry]").click();
+  const retry = page.locator("[data-discord-retry]");
+  await expect(retry).toBeVisible();
+  await retry.click();
   await expect.poll(() => retryCalled).toBe(true);
-  await expect(page.locator(".application-list")).toContainText(
+  await expect(page.locator("[data-provisioning-status]")).toHaveText(
     "Discord同期済み",
   );
+  await expect(page.locator("[data-discord-retry]")).toHaveCount(0);
 });
 
-test("面談の入力は追加読込・応募者切替・検索・受入取消でも保持される", async ({
+test("応募一覧から応募者対応を開き、一覧へ戻っても選択した応募者を保つ", async ({
   page,
 }) => {
-  let releasePage!: () => void;
-  const pageReady = new Promise<void>((resolve) => {
-    releasePage = resolve;
-  });
-  const newest = {
+  const applicant = {
     id: "newest-draft",
     family_name: "入力中",
     given_name: "応募者",
-    created_at: "2026-09-05T09:00:00Z",
+    email: "applicant@example.test",
+    form_language: "ja",
+    project_slug: "atlas",
     status: "new",
-    interview: { mode: "in_person", location: "保存済み会場" },
+    created_at: "2026-09-05T09:00:00Z",
+    desired_subjects: "mathematics",
+    article_ideas: "群論",
+    interests: "数学",
+    message: "参加希望",
+  };
+  const interview = {
+    status: "scheduled",
+    mode: "in_person",
+    location: "保存済み会場",
+    scheduledAt: "2026-10-06T06:30:00Z",
   };
   await page.route("**/api/admin/**", async (route) => {
     const url = new URL(route.request().url());
-    if (url.pathname !== "/api/admin/applications") {
-      await route.fulfill({ json: {} });
-      return;
-    }
-    if (url.searchParams.has("cursor")) {
-      await pageReady;
-      await route.fulfill({
-        json: {
-          applications: [
+    if (url.pathname === "/api/admin/applications") {
+      const applications = url.searchParams.has("applicationId")
+        ? [applicant]
+        : [
+            applicant,
             {
               id: "older-draft",
               family_name: "別の",
               given_name: "応募者",
+              email: "older@example.test",
+              project_slug: "atlas",
               status: "new",
               created_at: "2026-09-01T09:00:00Z",
             },
-          ],
+          ];
+      await route.fulfill({
+        json: {
+          applications,
+          subjectLabels: { mathematics: "数学" },
+          formLabels: { atlas: "学習サイト「アトラス」" },
+          summary: { total: 2, new: 2, reviewing: 0, accepted: 0, rejected: 0 },
           pagination: { hasMore: false, nextCursor: null },
         },
       });
-    } else
+      return;
+    }
+    if (url.pathname.endsWith("/interview")) {
       await route.fulfill({
         json: {
-          applications: [newest],
-          pagination: { hasMore: true, nextCursor: "page-two" },
+          application: {
+            id: applicant.id,
+            name: "入力中 応募者",
+            email: applicant.email,
+            status: applicant.status,
+          },
+          interview,
+          review: { decision: "pending" },
+          subjectLabels: { mathematics: "数学" },
         },
       });
+      return;
+    }
+    if (url.pathname === "/api/admin/member-intake") {
+      await route.fulfill({ json: { entries: [], responsibleCandidates: [] } });
+      return;
+    }
+    await route.fulfill({ json: {} });
   });
+
   await page.goto("admin/applications/?project=atlas");
-  const location = page.locator('[data-interview-location="newest-draft"]');
-  const date = page.locator('[data-interview-date="newest-draft"]');
-  await location.fill("未保存の会場");
-  await date.fill("2026-10-06T15:30");
-  await location.focus();
-  releasePage();
-  await expect(page.locator("[data-application-select] option")).toHaveCount(2);
-  await expect(location).toHaveValue("未保存の会場");
-  await expect(date).toHaveValue("2026-10-06T15:30");
-  await expect(location).toBeFocused();
-  await page.locator("[data-application-select]").selectOption("older-draft");
-  await page.locator("[data-application-select]").selectOption("newest-draft");
-  await expect(location).toHaveValue("未保存の会場");
-  await page.locator("[data-search]").fill("存在しない氏名");
-  await expect(page.locator(".application-list")).toContainText(
-    "条件に一致する応募はありません",
+  await expect(page.locator("[data-application-select]")).toHaveValue(
+    "newest-draft",
   );
-  await page.locator("[data-clear-filter]").click();
-  await expect(location).toHaveValue("未保存の会場");
-  await page.locator('[data-id="newest-draft"]').selectOption("accepted");
-  await page.locator("[data-accept-cancel]").click();
-  await expect(location).toHaveValue("未保存の会場");
-  await expect(
-    page.locator('[data-interview-draft-state="newest-draft"]'),
-  ).toContainText("未保存");
-  const stored = await page.evaluate(() =>
-    JSON.stringify({
-      local: { ...localStorage },
-      session: { ...sessionStorage },
-    }),
+  const detailLink = page.getByRole("link", { name: "応募者対応を開く →" });
+  await expect(detailLink).toHaveAttribute("href", /application=newest-draft/);
+  await detailLink.click();
+  await expect(page.getByRole("heading", { name: "応募者対応" })).toBeVisible();
+  await expect(page.locator("[data-application-content]")).toContainText(
+    "群論",
   );
-  expect(stored).not.toContain("未保存の会場");
+  await expect(page.locator("[data-interview-location]")).toHaveValue(
+    "保存済み会場",
+  );
+  await page.locator("[data-back-link]").click();
+  await expect(page).toHaveURL(/application=newest-draft/);
+  await expect(page.locator("[data-application-select]")).toHaveValue(
+    "newest-draft",
+  );
 });
 
-test("面談保存の失敗は入力を保持し、保存後の通知失敗は保存済みと表示する", async ({
+test("応募者対応では日程保存の失敗を保ち、保存後の通知失敗を区別する", async ({
   page,
 }) => {
   let failSave = true;
-  const application = {
+  const applicant = {
     id: "save-draft",
     family_name: "面談",
     given_name: "応募者",
+    email: "applicant@example.test",
+    form_language: "ja",
+    project_slug: "atlas",
     status: "new",
-    interview: {
-      mode: "in_person",
-      location: "以前の会場",
-      scheduledAt: "2026-10-06T06:30:00Z",
-    },
+    created_at: "2026-09-05T09:00:00Z",
+    article_ideas: "記事案",
+  };
+  let interview: Record<string, unknown> = {
+    status: "scheduled",
+    mode: "in_person",
+    location: "以前の会場",
+    scheduledAt: "2026-10-06T06:30:00Z",
   };
   let savedLocation = "";
   await page.route("**/api/admin/**", async (route) => {
@@ -472,62 +542,82 @@ test("面談保存の失敗は入力を保持し、保存後の通知失敗は�
         return;
       }
       const values = route.request().postDataJSON();
-      application.interview = values;
-      savedLocation = values.location;
+      interview = { ...values, status: "scheduled" };
+      savedLocation = String(values.location);
       await route.fulfill({ json: { ok: true } });
       return;
     }
-    await route.fulfill({
-      json:
-        url.pathname === "/api/admin/applications"
-          ? { applications: [application] }
-          : {},
-    });
+    if (url.pathname.endsWith("/interview")) {
+      await route.fulfill({
+        json: {
+          application: {
+            id: applicant.id,
+            name: "面談 応募者",
+            email: applicant.email,
+            status: applicant.status,
+          },
+          interview,
+          review: { decision: "pending" },
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/applications") {
+      await route.fulfill({
+        json: {
+          applications: [applicant],
+          subjectLabels: {},
+          formLabels: { atlas: "学習サイト「アトラス」" },
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/member-intake") {
+      await route.fulfill({ json: { entries: [], responsibleCandidates: [] } });
+      return;
+    }
+    await route.fulfill({ json: {} });
   });
-  await page.goto("admin/applications/?project=atlas");
-  const location = page.locator('[data-interview-location="save-draft"]');
+
+  await page.goto(
+    "admin/application-interview/?application=save-draft&project=atlas",
+  );
+  const location = page.locator("[data-interview-location]");
   await location.fill("新しい会場");
-  await page.locator('[data-interview-save="save-draft"]').click();
+  await page.locator("[data-interview-save]").click();
   await expect(page.locator("[data-notice]")).toContainText("保存に失敗");
   await expect(location).toHaveValue("新しい会場");
-  await expect(page.locator("[data-interview-draft-state]")).toContainText(
-    "未保存",
-  );
   failSave = false;
-  await page.locator('[data-interview-notify="save-draft"]').click();
+  await page.locator("[data-interview-notify]").click();
   await expect(page.locator("[data-notice]")).toContainText(
-    "面談情報は保存済みです。通知を送れませんでした。",
+    "面談日程は保存済みです。通知を送れませんでした。",
   );
   expect(savedLocation).toBe("新しい会場");
-  await expect(page.locator("[data-interview-draft-state]")).toContainText(
-    "保存済み",
-  );
-  await page.locator("[data-search]").fill("別の応募者");
-  await page.locator("[data-clear-filter]").click();
-  await expect(location).toHaveValue("新しい会場");
   await location.fill("さらに変更した会場");
-  await page.locator('[data-interview-save="save-draft"]').click();
+  await page.locator("[data-interview-save]").click();
   await expect(page.locator("[data-notice]")).toHaveText(
-    "面談情報を保存しました。",
-  );
-  await expect(page.locator("[data-interview-draft-state]")).toContainText(
-    "保存済み",
+    "面談日程を保存しました。",
   );
   await expect(location).toHaveValue("さらに変更した会場");
 });
 
-test("面談保存中は再描画や応募者切替後も入力をロックする", async ({ page }) => {
+test("面談日程を保存している間は入力欄をロックする", async ({ page }) => {
   let releaseSave!: () => void;
   const saveReady = new Promise<void>((resolve) => {
     releaseSave = resolve;
   });
-  const first = {
+  const applicant = {
     id: "pending-draft",
     family_name: "保存中",
     given_name: "応募者",
+    email: "applicant@example.test",
     status: "new",
-    created_at: "2026-09-05T09:00:00Z",
-    interview: { mode: "in_person", location: "元の会場" },
+  };
+  let interview: Record<string, unknown> = {
+    status: "scheduled",
+    mode: "in_person",
+    location: "元の会場",
+    scheduledAt: "2026-10-06T06:30:00Z",
   };
   await page.route("**/api/admin/**", async (route) => {
     const url = new URL(route.request().url());
@@ -537,52 +627,51 @@ test("面談保存中は再描画や応募者切替後も入力をロックす�
     ) {
       const values = route.request().postDataJSON();
       await saveReady;
-      first.interview = values;
+      interview = { ...values, status: "scheduled" };
       await route.fulfill({ json: { ok: true } });
       return;
     }
-    await route.fulfill({
-      json:
-        url.pathname === "/api/admin/applications"
-          ? {
-              applications: [
-                first,
-                {
-                  id: "other-draft",
-                  family_name: "別の",
-                  given_name: "応募者",
-                  status: "new",
-                  created_at: "2026-09-01T09:00:00Z",
-                },
-              ],
-            }
-          : {},
-    });
+    if (url.pathname.endsWith("/interview")) {
+      await route.fulfill({
+        json: {
+          application: applicant,
+          interview,
+          review: { decision: "pending" },
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/applications") {
+      await route.fulfill({
+        json: {
+          applications: [{ ...applicant, project_slug: "atlas" }],
+          subjectLabels: {},
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/member-intake") {
+      await route.fulfill({ json: { entries: [], responsibleCandidates: [] } });
+      return;
+    }
+    await route.fulfill({ json: {} });
   });
-  await page.goto("admin/applications/?project=atlas");
-  const location = page.locator('[data-interview-location="pending-draft"]');
+
+  await page.goto(
+    "admin/application-interview/?application=pending-draft&project=atlas",
+  );
+  const location = page.locator("[data-interview-location]");
   await location.fill("保存する会場");
   const putStarted = page.waitForRequest(
     (request) =>
       request.method() === "PUT" && request.url().includes("/interview?"),
   );
-  await page.locator('[data-interview-save="pending-draft"]').click();
+  await page.locator("[data-interview-save]").click();
   await putStarted;
   await expect(location).toBeDisabled();
-  await expect(
-    page.locator('[data-interview-format="pending-draft"]'),
-  ).toBeDisabled();
-  await page.locator("[data-application-select]").selectOption("other-draft");
-  await page.locator("[data-application-select]").selectOption("pending-draft");
-  await expect(location).toHaveValue("保存する会場");
-  await expect(location).toBeDisabled();
-  await expect(
-    page.locator('[data-interview-notify="pending-draft"]'),
-  ).toBeDisabled();
+  await expect(page.locator("[data-interview-date]")).toBeDisabled();
+  await expect(page.locator("[data-interview-notify]")).toBeDisabled();
   releaseSave();
   await expect(location).toBeEnabled();
   await expect(location).toHaveValue("保存する会場");
-  await expect(
-    page.locator('[data-interview-draft-state="pending-draft"]'),
-  ).toContainText("保存済み");
 });

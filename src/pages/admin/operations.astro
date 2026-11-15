@@ -23,8 +23,8 @@ const projectLabel = projectSlug === "secretariat"
       : projectSlug === "thinking-cafe"
         ? "考えるカフェ"
         : "アトラス";
-const pageLabel = calendarPage ? "カレンダー" : progressOnly ? "進捗報告" : "タスク管理";
-const initialPageTitle = memberMode ? "カレンダー" : `${projectLabel}：${pageLabel}`;
+const pageLabel = calendarPage ? "運営カレンダー" : progressOnly ? "進捗報告" : "運営タスク";
+const initialPageTitle = memberMode ? "自分の予定" : `${projectLabel}：${pageLabel}`;
 ---
 
 <AdminLayout title={initialPageTitle} description="運営作業を共有する場所">
@@ -1794,7 +1794,7 @@ const initialPageTitle = memberMode ? "カレンダー" : `${projectLabel}：${p
       }
       const assignmentMembers = [...assignmentMembersByEmail.values()];
       const members = new Map(assignmentMembers.map((member) => [member.email, member.display_name || '表示名未設定']));
-      projectTitle.textContent = memberPage ? 'カレンダー' : `${data.project?.name || 'プロジェクト'}：${calendarPage ? 'カレンダー' : progressOnly ? '進捗報告' : 'タスク管理'}`;
+      projectTitle.textContent = memberPage ? '自分の予定' : `${data.project?.name || 'プロジェクト'}：${calendarPage ? '運営カレンダー' : progressOnly ? '進捗報告' : '運営タスク'}`;
       get<HTMLElement>('[data-event-create]').hidden = memberPage || !scope.isManager;
       const canManageCurrentProject = Boolean(scope.isManager || scope.projectRole === 'manager');
       taskCreateTestLabel.hidden = !canManageCurrentProject;

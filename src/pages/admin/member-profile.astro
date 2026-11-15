@@ -4,9 +4,9 @@ import AdminLayout from "../../layouts/AdminLayout.astro";
 import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
 import MemberProfileEditor from "../../components/admin/MemberProfileEditor.astro";
 ---
-<AdminLayout title="マイページ" description="メンバー情報を確認します">
+<AdminLayout title="プロフィール" description="登録情報と公開プロフィールを確認します">
   <main class="member-profile" data-member-profile data-admin-load-surface aria-busy="true">
-    <header class="page-heading"><div><h1>マイページ</h1></div><button class="edit-link" type="button" data-open-profile-edit aria-haspopup="dialog">プロフィールを編集</button></header>
+    <header class="page-heading"><div><h1>プロフィール</h1></div><button class="edit-link" type="button" data-open-profile-edit aria-haspopup="dialog">プロフィールを編集</button></header>
     <AdminRetryNotice message="プロフィール情報を読み込めませんでした。" />
     <section class="profile-card" aria-labelledby="profile-heading">
       <div class="profile-top"><div class="avatar" data-avatar data-profile-avatar aria-hidden="true"><span data-profile-avatar-fallback>A</span></div><div><h2 id="profile-heading" data-name>読み込み中…</h2><small data-email></small></div></div>
