@@ -129,6 +129,7 @@ const decodeGifFrames = async (
     GIF_PREVIEW_SIZE,
     GIF_PREVIEW_SIZE,
   );
+  const { canvas: patchCanvas, context: patchContext } = makeCanvas(1, 1);
   const sampleEvery = Math.max(1, Math.ceil(frames.length / 60));
   const outputFrames: GifImageFrame[] = [];
   let previousFrame: ParsedFrame | null = null;
@@ -161,7 +162,11 @@ const decodeGifFrames = async (
       frame.dims.height,
     );
     patch.data.set(frame.patch);
-    sourceContext.putImageData(patch, frame.dims.left, frame.dims.top);
+    patchCanvas.width = frame.dims.width;
+    patchCanvas.height = frame.dims.height;
+    patchContext.putImageData(patch, 0, 0);
+    sourceContext.globalCompositeOperation = "source-over";
+    sourceContext.drawImage(patchCanvas, frame.dims.left, frame.dims.top);
 
     accumulatedDelay += frameDelay(frame);
     const isSampleFrame =
@@ -454,7 +459,13 @@ const openPicker = (root: HTMLElement) => {
 
       file = selectedFile;
       fileLabel.textContent = `${selectedFile.name} · ${formatSize(selectedFile.size)} · ${mimeType === "image/gif" ? "アニメーションを保持" : "画像を切り抜き"}`;
+      if (!dialog.open) dialog.showModal();
       const viewportSize = viewport.getBoundingClientRect().width;
+      if (!viewportSize) {
+        throw new Error(
+          "画像の調整画面を開けませんでした。再度お試しください。",
+        );
+      }
       fitScale =
         viewportSize / Math.min(image.naturalWidth, image.naturalHeight);
       offsetX = 0;
@@ -470,8 +481,8 @@ const openPicker = (root: HTMLElement) => {
         `${selectedFile.name}（${formatSize(selectedFile.size)}）を選択中です。表示範囲を調整してください。`,
         "selected",
       );
-      if (!dialog.open) dialog.showModal();
     } catch (error) {
+      if (dialog.open) dialog.close();
       clearPreview();
       setStatus(
         error instanceof Error ? error.message : "画像を読み込めませんでした。",

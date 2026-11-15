@@ -1,5 +1,46 @@
 import { expect, test, type Page } from "@playwright/test";
-import { parseGIF } from "gifuct-js";
+import { decompressFrames, parseGIF } from "gifuct-js";
+import { createRequire } from "node:module";
+
+const { applyPalette, GIFEncoder, quantize } = createRequire(import.meta.url)(
+  "gifenc",
+) as typeof import("gifenc");
+
+const makeTransparentGif = () => {
+  const encoder = GIFEncoder();
+  const frames = [
+    new Uint8ClampedArray(
+      Array.from({ length: 4 * 4 }, () => [255, 0, 0, 255]).flat(),
+    ),
+    new Uint8ClampedArray(
+      Array.from({ length: 4 * 4 }, (_, index) =>
+        index === 5 || index === 6 || index === 9 || index === 10
+          ? [0, 0, 255, 255]
+          : [0, 0, 0, 0],
+      ).flat(),
+    ),
+  ];
+
+  for (const rgba of frames) {
+    const palette = quantize(rgba, 16, {
+      format: "rgba4444",
+      oneBitAlpha: true,
+    });
+    const transparentIndex = palette.findIndex(
+      (color) => (color[3] ?? 255) < 128,
+    );
+    encoder.writeFrame(applyPalette(rgba, palette, "rgba4444"), 4, 4, {
+      delay: 100,
+      dispose: 1,
+      palette,
+      repeat: 0,
+      transparent: transparentIndex >= 0,
+      ...(transparentIndex >= 0 ? { transparentIndex } : {}),
+    });
+  }
+  encoder.finish();
+  return Buffer.from(encoder.bytes());
+};
 
 const baseAdminMocks = async (page: Page) => {
   await page.route("**/api/admin/auth-status", (route) =>
@@ -80,14 +121,18 @@ test("GIF画像は承認なしで保存し、基本情報だけ承認申請す�
   await editor.locator("[data-profile-image-input]").setInputFiles({
     name: "avatar.gif",
     mimeType: "image/gif",
-    buffer: Buffer.from(
-      "R0lGODlhAgABAPAAAAD///8AACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAgABAAAIBQADAAgIACH5BAAKAAAALAAAAAACAAEAgAAA////AAgFAAEECAgAOw==",
-      "base64",
-    ),
+    buffer: makeTransparentGif(),
   });
   await expect(
     editor.getByRole("heading", { name: "画像の表示範囲" }),
   ).toBeVisible();
+  await expect
+    .poll(() =>
+      editor
+        .locator("[data-crop-source]")
+        .evaluate((image) => image.getBoundingClientRect().width),
+    )
+    .toBeGreaterThan(0);
   await expect(editor.locator("[data-profile-image-status]")).toContainText(
     "avatar.gif",
   );
@@ -111,9 +156,15 @@ test("GIF画像は承認なしで保存し、基本情報だけ承認申請す�
       gifBytes.byteOffset + gifBytes.byteLength,
     ),
   );
-  expect(
-    parsedGif.frames.filter((frame) => "image" in frame).length,
-  ).toBeGreaterThan(1);
+  const outputFrames = decompressFrames(parsedGif, true);
+  expect(outputFrames.length).toBeGreaterThan(1);
+  const preservedBackground = Array.from(
+    outputFrames[1]?.patch.slice(0, 4) ?? [],
+  );
+  expect(preservedBackground[0]).toBeGreaterThan(240);
+  expect(preservedBackground[1]).toBeLessThan(10);
+  expect(preservedBackground[2]).toBeLessThan(10);
+  expect(preservedBackground[3]).toBeGreaterThan(240);
 
   await editor.locator("[data-bio]").fill("更新した公開プロフィール");
   await editor.getByRole("button", { name: "変更を承認申請" }).click();
