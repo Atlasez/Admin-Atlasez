@@ -1,0 +1,321 @@
+---
+import {
+  profileImageAccept,
+  profileImageFormatLabel,
+  profileImageMaxUploadBytes,
+} from "../../lib/profile-image";
+
+interface Props {
+  id: string;
+  label?: string;
+}
+
+const { id, label = "画像を選択" } = Astro.props;
+const dialogTitleId = `${id}-crop-title`;
+const fileSizeLimit = `${Math.round(profileImageMaxUploadBytes / 1_000_000)}MB`;
+---
+
+<div class="profile-image-picker" data-profile-image-picker>
+  <label class="profile-image-picker__label" for={id}>
+    <span>{label}</span>
+    <input
+      id={id}
+      type="file"
+      accept={profileImageAccept}
+      data-profile-image-input
+    />
+  </label>
+  <small>{profileImageFormatLabel}、{fileSizeLimit}以下。画像を選んでから表示範囲を調整できます。</small>
+  <output class="profile-image-picker__status" data-profile-image-status data-state="idle" aria-live="polite">
+    画像を選択してください。
+  </output>
+
+  <dialog
+    class="profile-image-crop-dialog"
+    data-profile-image-crop-dialog
+    aria-labelledby={dialogTitleId}
+  >
+    <section class="profile-image-crop-panel">
+      <header class="profile-image-crop-header">
+        <div>
+          <h2 id={dialogTitleId}>画像の表示範囲</h2>
+          <p data-profile-image-file-label></p>
+        </div>
+        <button
+          class="profile-image-crop-close"
+          type="button"
+          data-crop-cancel
+          aria-label="画像の調整を閉じる"
+        >×</button>
+      </header>
+
+      <p class="profile-image-crop-help">画像をドラッグして位置を調整し、拡大・縮小スライダーでサイズを整えます。丸い範囲がプロフィールに表示されます。</p>
+
+      <div class="profile-image-crop-viewport" data-crop-viewport>
+        <img data-crop-source alt="選択した画像のプレビュー" draggable="false" />
+        <span class="profile-image-crop-guide" aria-hidden="true"></span>
+      </div>
+
+      <label class="profile-image-crop-zoom">
+        表示サイズ
+        <input
+          type="range"
+          min="1"
+          max="3"
+          step="0.05"
+          value="1"
+          data-crop-zoom
+        />
+      </label>
+
+      <output class="profile-image-crop-message" data-crop-message role="status" aria-live="polite">
+        画像をドラッグして位置を調整できます。
+      </output>
+
+      <div class="profile-image-crop-actions">
+        <button class="profile-image-crop-secondary" type="button" data-crop-cancel>
+          キャンセル
+        </button>
+        <button class="profile-image-crop-primary" type="button" data-crop-apply disabled>
+          この範囲を使う
+        </button>
+      </div>
+    </section>
+  </dialog>
+</div>
+
+<script>
+  import { initializeProfileImagePickers } from "../../scripts/profile-image-picker";
+
+  document.addEventListener("astro:page-load", initializeProfileImagePickers);
+  initializeProfileImagePickers();
+</script>
+
+<style>
+  .profile-image-picker {
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .profile-image-picker__label {
+    align-items: start;
+    display: grid;
+    font-size: 0.82rem;
+    font-weight: 700;
+    gap: 0.35rem;
+  }
+
+  .profile-image-picker__label input {
+    background: var(--background-primary);
+    border: 1px solid var(--border-default);
+    box-sizing: border-box;
+    color: var(--text-primary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.76rem;
+    padding: 0.45rem;
+    width: 100%;
+  }
+
+  .profile-image-picker small {
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    line-height: 1.45;
+  }
+
+  .profile-image-picker__status {
+    background: var(--background-secondary);
+    border: 1px solid var(--border-default);
+    border-left: 4px solid var(--border-default);
+    border-radius: 0.3rem;
+    color: var(--text-secondary);
+    display: block;
+    font-size: 0.75rem;
+    line-height: 1.45;
+    min-height: 2.2rem;
+    padding: 0.45rem 0.6rem;
+  }
+
+  .profile-image-picker__status[data-state="selected"] {
+    border-color: var(--accent-primary);
+    color: var(--text-primary);
+    font-weight: 700;
+  }
+
+  .profile-image-picker__status[data-state="working"] {
+    border-left-color: var(--accent-primary);
+    color: var(--text-primary);
+  }
+
+  .profile-image-picker__status[data-state="saved"] {
+    border-color: var(--success, #258252);
+    color: var(--success, #258252);
+    font-weight: 700;
+  }
+
+  .profile-image-picker__status[data-state="error"] {
+    border-color: var(--danger, #b42318);
+    color: var(--danger, #b42318);
+    font-weight: 700;
+  }
+
+  .profile-image-crop-dialog {
+    background: var(--background-primary);
+    border: 1px solid var(--border-default);
+    border-radius: 0.8rem;
+    color: var(--text-primary);
+    margin: auto;
+    max-height: min(94dvh, 850px);
+    max-width: min(34rem, calc(100vw - 1rem));
+    overflow: auto;
+    padding: 0;
+    width: 100%;
+  }
+
+  .profile-image-crop-dialog::backdrop {
+    background: rgb(12 18 26 / 68%);
+    backdrop-filter: blur(2px);
+  }
+
+  .profile-image-crop-panel {
+    display: grid;
+    gap: 0.8rem;
+    padding: clamp(0.85rem, 3vw, 1.2rem);
+  }
+
+  .profile-image-crop-header {
+    align-items: start;
+    border-bottom: 1px solid var(--border-default);
+    display: flex;
+    gap: 0.75rem;
+    justify-content: space-between;
+    padding-bottom: 0.65rem;
+  }
+
+  .profile-image-crop-header h2 {
+    font-size: 1.1rem;
+    margin: 0;
+  }
+
+  .profile-image-crop-header p,
+  .profile-image-crop-help,
+  .profile-image-crop-message {
+    color: var(--text-secondary);
+    font-size: 0.76rem;
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  .profile-image-crop-header p {
+    margin-top: 0.25rem;
+    overflow-wrap: anywhere;
+  }
+
+  .profile-image-crop-close,
+  .profile-image-crop-secondary,
+  .profile-image-crop-primary {
+    background: var(--background-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: 0.35rem;
+    color: var(--text-primary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 700;
+    min-height: 2.35rem;
+    padding: 0.45rem 0.65rem;
+  }
+
+  .profile-image-crop-close {
+    border-radius: 50%;
+    flex: 0 0 2.25rem;
+    font-size: 1.3rem;
+    height: 2.25rem;
+    line-height: 1;
+    padding: 0;
+    width: 2.25rem;
+  }
+
+  .profile-image-crop-viewport {
+    aspect-ratio: 1;
+    background: #151a22;
+    border: 1px solid var(--border-default);
+    cursor: grab;
+    justify-self: center;
+    max-width: min(72vw, 22rem);
+    overflow: hidden;
+    position: relative;
+    touch-action: none;
+    user-select: none;
+    width: 100%;
+  }
+
+  .profile-image-crop-viewport[data-dragging="true"] {
+    cursor: grabbing;
+  }
+
+  .profile-image-crop-viewport img {
+    height: auto;
+    left: 50%;
+    max-height: none;
+    max-width: none;
+    pointer-events: none;
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    user-select: none;
+    width: auto;
+  }
+
+  .profile-image-crop-guide {
+    border: 2px solid #fff;
+    border-radius: 50%;
+    box-shadow: 0 0 0 999px rgb(0 0 0 / 32%);
+    inset: 0;
+    margin: auto;
+    pointer-events: none;
+    position: absolute;
+  }
+
+  .profile-image-crop-zoom {
+    color: var(--text-primary);
+    display: grid;
+    font-size: 0.76rem;
+    font-weight: 700;
+    gap: 0.25rem;
+  }
+
+  .profile-image-crop-zoom input {
+    accent-color: var(--accent-primary);
+    width: 100%;
+  }
+
+  .profile-image-crop-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: flex-end;
+  }
+
+  .profile-image-crop-primary {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    color: var(--on-accent);
+  }
+
+  .profile-image-crop-actions button:disabled {
+    cursor: wait;
+    opacity: 0.55;
+  }
+
+  @media (max-width: 480px) {
+    .profile-image-crop-viewport {
+      max-width: min(78vw, 18rem);
+    }
+
+    .profile-image-crop-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+</style>

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { parseGIF } from "gifuct-js";
 
 const baseAdminMocks = async (page: Page) => {
   await page.route("**/api/admin/auth-status", (route) =>
@@ -9,15 +10,23 @@ const baseAdminMocks = async (page: Page) => {
   );
 };
 
-test("マイページでGIFを含むプロフィールをポップアップから承認申請する", async ({
+test("GIF画像は承認なしで保存し、基本情報だけ承認申請する", async ({
   page,
 }) => {
   await baseAdminMocks(page);
-  let submitted: Record<string, unknown> | null = null;
+  const submitted: Record<string, unknown>[] = [];
   await page.route("**/api/admin/profile", async (route) => {
     if (route.request().method() === "PUT") {
-      submitted = route.request().postDataJSON() as Record<string, unknown>;
-      await route.fulfill({ json: { ok: true, approvalRequired: true } });
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      submitted.push(body);
+      await route.fulfill({
+        json: {
+          ok: true,
+          approvalRequired: Object.keys(body).some(
+            (key) => key !== "avatarUrl",
+          ),
+        },
+      });
       return;
     }
     await route.fulfill({
@@ -68,28 +77,55 @@ test("マイページでGIFを含むプロフィールをポップアップか�
   const editor = page.getByRole("dialog", { name: "プロフィールを編集" });
   await expect(editor).toBeVisible();
   await expect(editor.locator("[data-display-name]")).toHaveValue("山田 花子");
-  await editor.locator("[data-avatar-file]").setInputFiles({
+  await editor.locator("[data-profile-image-input]").setInputFiles({
     name: "avatar.gif",
     mimeType: "image/gif",
     buffer: Buffer.from(
-      "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
+      "R0lGODlhAgABAPAAAAD///8AACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAAgABAAAIBQADAAgIACH5BAAKAAAALAAAAAACAAEAgAAA////AAgFAAEECAgAOw==",
       "base64",
     ),
   });
+  await expect(
+    editor.getByRole("heading", { name: "画像の表示範囲" }),
+  ).toBeVisible();
+  await expect(editor.locator("[data-profile-image-status]")).toContainText(
+    "avatar.gif",
+  );
+  await editor.getByRole("button", { name: "この範囲を使う" }).click();
   await expect(editor.locator("[data-avatar-preview]")).toHaveCSS(
     "background-image",
     /data:image\/gif;base64/,
   );
+  await editor.getByRole("button", { name: "画像を保存（承認不要）" }).click();
+  await expect(editor.locator("[data-message]")).toContainText(
+    "画像の変更に承認は不要です",
+  );
+  expect(submitted).toHaveLength(1);
+  expect(Object.keys(submitted[0] ?? {})).toEqual(["avatarUrl"]);
+  const avatarUrl = String(submitted[0]?.avatarUrl ?? "");
+  expect(avatarUrl).toMatch(/^data:image\/gif;base64,/);
+  const gifBytes = Buffer.from(avatarUrl.split(",")[1] ?? "", "base64");
+  const parsedGif = parseGIF(
+    gifBytes.buffer.slice(
+      gifBytes.byteOffset,
+      gifBytes.byteOffset + gifBytes.byteLength,
+    ),
+  );
+  expect(
+    parsedGif.frames.filter((frame) => "image" in frame).length,
+  ).toBeGreaterThan(1);
+
   await editor.locator("[data-bio]").fill("更新した公開プロフィール");
   await editor.getByRole("button", { name: "変更を承認申請" }).click();
   await expect(editor.locator("[data-message]")).toContainText(
-    "運営事務局へ送りました",
+    "基本情報の変更を運営事務局へ申請しました",
   );
-  expect(submitted).toMatchObject({
+  expect(submitted).toHaveLength(2);
+  expect(submitted[1]).toMatchObject({
     displayName: "山田 花子",
     bio: "更新した公開プロフィール",
-    avatarUrl: expect.stringMatching(/^data:image\/gif;base64,/),
   });
+  expect(submitted[1]).not.toHaveProperty("avatarUrl");
 });
 
 test("マイページはDiscord連携済みの状態と再連携ボタンを表示する", async ({

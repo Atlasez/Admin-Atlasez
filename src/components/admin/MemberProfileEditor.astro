@@ -1,8 +1,5 @@
 ---
-import {
-  profileImageAccept,
-  profileImageFormatLabel,
-} from "../../lib/profile-image";
+import ProfileImagePicker from "./ProfileImagePicker.astro";
 import { getTimeZoneOptions } from "../../lib/timezones";
 
 interface Props {
@@ -50,7 +47,7 @@ const memberYears = [
     <header class="profile-edit-header">
       <div>
         <h2 id="profile-edit-heading">プロフィールを編集</h2>
-        <p>変更内容は運営事務局の承認後に反映されます。</p>
+        <p>プロフィール画像はすぐに反映されます。氏名などの基本情報は承認後に反映されます。</p>
       </div>
       <button
         class="profile-edit-close"
@@ -62,15 +59,7 @@ const memberYears = [
     <div class="edit-card">
       <div class="avatar-row">
         <div class="avatar-preview" data-avatar-preview aria-hidden="true">A</div>
-        <label>
-          プロフィール画像
-          <input
-            type="file"
-            accept={profileImageAccept}
-            data-avatar-file
-          />
-          <small>{profileImageFormatLabel}、2MB以下</small>
-        </label>
+        <ProfileImagePicker id="member-profile-avatar" label="プロフィール画像を選択" />
       </div>
       <div class="form-grid">
         <label>氏名<input data-display-name maxlength="120" required /></label>
@@ -306,10 +295,6 @@ const memberYears = [
 
 <script>
   import { readAdminApiJson } from "../../lib/admin-api";
-  import {
-    isProfileImageMimeType,
-    profileImageFormatLabel,
-  } from "../../lib/profile-image";
   import { formatUtcOffset, isValidTimeZone, timeZoneOffsetMinutes } from "../../lib/timezones";
 
   type Profile = {
@@ -337,6 +322,15 @@ const memberYears = [
     profileChangeRequest?: ProfileChangeRequest;
     error?: string;
   };
+  type ProfileFields = {
+    displayName: string;
+    university: string;
+    year: string;
+    affiliationType: string;
+    country: string;
+    timezone: string;
+    bio: string;
+  };
 
   const initialize = () => {
     const dialog = document.querySelector<HTMLDialogElement>("[data-profile-edit-dialog]");
@@ -350,13 +344,74 @@ const memberYears = [
     const save = get<HTMLButtonElement>("[data-save]");
     const timezone = get<HTMLInputElement>("[data-timezone]");
     const avatar = get<HTMLElement>("[data-avatar-preview]");
-    const avatarFile = get<HTMLInputElement>("[data-avatar-file]");
+    const avatarPicker = get<HTMLElement>("[data-profile-image-picker]");
     const returnTo = dialog.dataset.returnTo;
     let avatarUrl = "";
+    let initialAvatarUrl = "";
+    let selectedAvatarName = "";
+    let initialFields: ProfileFields | null = null;
     let profileLoaded = false;
 
     const set = (selector: string, value: string) => {
       get<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(selector).value = value;
+    };
+    const readFields = (): ProfileFields => ({
+      displayName: get<HTMLInputElement>("[data-display-name]").value.trim(),
+      university: get<HTMLInputElement>("[data-university]").value.trim(),
+      year: get<HTMLSelectElement>("[data-year]").value.trim(),
+      affiliationType: get<HTMLSelectElement>("[data-affiliation-type]").value.trim(),
+      country: get<HTMLInputElement>("[data-country]").value.trim(),
+      timezone: timezone.value.trim(),
+      bio: get<HTMLTextAreaElement>("[data-bio]").value.trim(),
+    });
+    const hasProfileChanges = () => {
+      if (!initialFields) return false;
+      const current = readFields();
+      return Object.keys(current).some((key) =>
+        current[key as keyof ProfileFields] !== initialFields?.[key as keyof ProfileFields]
+      );
+    };
+    const syncImagePreview = (value: string) => {
+      avatarUrl = value;
+      avatar.style.backgroundImage = value ? `url(${JSON.stringify(value)})` : "";
+      avatar.textContent = value ? "" : "A";
+    };
+    const updateAvatarDisplays = (value: string) => {
+      syncImagePreview(value);
+      const pageAvatar = document.querySelector<HTMLElement>("[data-member-profile] [data-avatar]");
+      if (pageAvatar) {
+        pageAvatar.style.backgroundImage = value ? `url(${JSON.stringify(value)})` : "";
+        pageAvatar.textContent = value ? "" : "A";
+      }
+      const navAvatar = document.querySelector<HTMLImageElement>("[data-admin-account-image]");
+      if (navAvatar) {
+        navAvatar.hidden = !value;
+        if (value) navAvatar.src = value;
+        else navAvatar.removeAttribute("src");
+      }
+      const fallback = document.querySelector<HTMLElement>("[data-admin-account-fallback]");
+      if (fallback) fallback.hidden = Boolean(value);
+      try {
+        const key = "atlasez-admin-profile-cache";
+        const cached = sessionStorage.getItem(key);
+        if (cached) {
+          const profile = JSON.parse(cached) as Record<string, unknown>;
+          profile.avatar_url = value;
+          sessionStorage.setItem(key, JSON.stringify(profile));
+        }
+      } catch {
+        // Storage may be disabled; the current page preview is already updated.
+      }
+      document.dispatchEvent(new Event("atlasez-profile-updated"));
+    };
+    const updateSaveLabel = () => {
+      const imageChanged = avatarUrl !== initialAvatarUrl;
+      const fieldsChanged = hasProfileChanges();
+      save.textContent = imageChanged
+        ? fieldsChanged
+          ? "画像を保存・基本情報を申請"
+          : "画像を保存（承認不要）"
+        : "変更を承認申請";
     };
     const setFormLocked = (locked: boolean) => {
       for (const control of root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input,select,textarea")) {
@@ -379,10 +434,17 @@ const memberYears = [
       set("[data-timezone]", profile.timezone || "Asia/Tokyo");
       set("[data-bio]", profile.bio ?? "");
       avatarUrl = profile.avatar_url ?? "";
-      avatar.style.backgroundImage = avatarUrl ? `url(${JSON.stringify(avatarUrl)})` : "";
-      avatar.textContent = avatarUrl ? "" : "A";
-      avatarFile.value = "";
+      initialAvatarUrl = avatarUrl;
+      selectedAvatarName = "";
+      syncImagePreview(avatarUrl);
+      const imageStatus = avatarPicker.querySelector<HTMLOutputElement>("[data-profile-image-status]");
+      if (imageStatus) {
+        imageStatus.value = "画像を選択してください。";
+        imageStatus.dataset.state = "idle";
+      }
+      initialFields = readFields();
       updateTimezone();
+      updateSaveLabel();
     };
     const loadProfile = async () => {
       profileLoaded = false;
@@ -403,6 +465,7 @@ const memberYears = [
           throw new Error(data.error ?? "プロフィール情報を読み込めませんでした。");
         }
         const request = data.profileChangeRequest;
+        initialFields = null;
         if (request?.status === "pending") {
           apply({
             display_name: request.proposed_display_name,
@@ -421,6 +484,7 @@ const memberYears = [
         }
         profileLoaded = true;
         setFormLocked(false);
+        updateSaveLabel();
       } catch (error) {
         message.value = error instanceof Error
           ? `${error.message} 読込に成功するまで保存できません。`
@@ -449,86 +513,132 @@ const memberYears = [
       if (returnTo) location.replace(returnTo);
     });
     retry.addEventListener("click", () => void loadProfile());
-    avatarFile.addEventListener("change", () => {
-      const file = avatarFile.files?.[0];
-      if (!file) return;
-      if (!isProfileImageMimeType(file.type)) {
-        message.value = `${profileImageFormatLabel}の画像を選択してください。`;
-        avatarFile.value = "";
-        return;
-      }
-      if (file.size > 2_000_000) {
-        message.value = "画像は2MB以下にしてください。";
-        avatarFile.value = "";
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        avatarUrl = String(reader.result ?? "");
-        avatar.style.backgroundImage = `url(${JSON.stringify(avatarUrl)})`;
-        avatar.textContent = "";
-      };
-      reader.addEventListener("error", () => {
-        message.value = "画像を読み込めませんでした。";
-      });
-      reader.readAsDataURL(file);
+    root.addEventListener("profile-image-cropped", (event) => {
+      const detail = (event as CustomEvent<{ avatarUrl?: string; fileName?: string }>).detail;
+      if (!detail?.avatarUrl) return;
+      selectedAvatarName = detail.fileName ?? "プロフィール画像";
+      syncImagePreview(detail.avatarUrl);
+      message.value = `${selectedAvatarName}を選択中です。画像は保存後すぐに反映されます。`;
+      updateSaveLabel();
     });
     timezone.addEventListener("input", updateTimezone);
     timezone.addEventListener("change", updateTimezone);
+    root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input,select,textarea")
+      .forEach((control) => {
+        control.addEventListener("input", updateSaveLabel);
+        control.addEventListener("change", updateSaveLabel);
+      });
     save.addEventListener("click", async () => {
       if (!profileLoaded) {
-        message.value = "プロフィールの読込に成功してから申請してください。";
+        message.value = "プロフィールの読み込みに成功してから保存してください。";
         return;
       }
-      const displayName = get<HTMLInputElement>("[data-display-name]").value.trim();
-      if (!displayName) {
+      const fields = readFields();
+      const fieldsChanged = hasProfileChanges();
+      const imageChanged = avatarUrl !== initialAvatarUrl;
+      const canSubmitProfile = fieldsChanged && Boolean(fields.displayName);
+      if (!fieldsChanged && !imageChanged) {
+        message.value = "保存する変更はありません。";
+        return;
+      }
+      if (fieldsChanged && !fields.displayName && !imageChanged) {
         message.value = "氏名を入力してください。";
         return;
       }
       setFormLocked(true);
       retry.hidden = true;
-      message.value = "運営事務局へ申請中…";
-      try {
-        const response = await fetch("/api/admin/profile", {
-          method: "PUT",
-          credentials: "same-origin",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            displayName,
-            university: get<HTMLInputElement>("[data-university]").value,
-            year: get<HTMLSelectElement>("[data-year]").value,
-            affiliationType: get<HTMLSelectElement>("[data-affiliation-type]").value,
-            country: get<HTMLInputElement>("[data-country]").value,
-            timezone: timezone.value,
-            bio: get<HTMLTextAreaElement>("[data-bio]").value,
-            avatarUrl,
-          }),
-        });
-        const data = await readAdminApiJson<{ error?: string }>(
-          response,
-          "申請を送信できませんでした。",
-        );
-        if (response.ok) {
-          message.value = "変更内容を運営事務局へ送りました。承認後に反映されます。";
-          profileLoaded = true;
-          setFormLocked(false);
-          return;
+      let imageSaved = false;
+      let profileSubmitted = false;
+      let profileResultUncertain = false;
+      const errors: string[] = [];
+      if (fieldsChanged && !fields.displayName) {
+        errors.push("氏名を入力していないため、基本情報は申請しませんでした。");
+      }
+
+      if (imageChanged) {
+        message.value = "プロフィール画像を保存中…（承認不要）";
+        try {
+          const response = await fetch("/api/admin/profile", {
+            method: "PUT",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ avatarUrl }),
+          });
+          const data = await readAdminApiJson<{ error?: string }>(
+            response,
+            "プロフィール画像を保存できませんでした。",
+          );
+          if (!response.ok) throw new Error(data.error ?? "プロフィール画像を保存できませんでした。");
+          imageSaved = true;
+          initialAvatarUrl = avatarUrl;
+          avatarPicker.dispatchEvent(new CustomEvent("profile-image-saved", {
+            bubbles: true,
+            detail: { fileName: selectedAvatarName },
+          }));
+          updateAvatarDisplays(avatarUrl);
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : "プロフィール画像を保存できませんでした。");
         }
-        if (response.status >= 500) {
-          profileLoaded = false;
-          setFormLocked(true);
-          retry.hidden = false;
-          message.value = `${data.error ?? "申請結果を確認できませんでした。"} 申請状態を再読み込みして確認してください。`;
-          return;
+      }
+
+      if (canSubmitProfile) {
+        message.value = imageSaved
+          ? "画像を反映しました。基本情報を運営事務局へ申請中…"
+          : "基本情報を運営事務局へ申請中…";
+        try {
+          const response = await fetch("/api/admin/profile", {
+            method: "PUT",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(fields),
+          });
+          const data = await readAdminApiJson<{ error?: string }>(
+            response,
+            "変更申請を送信できませんでした。",
+          );
+          if (!response.ok) {
+            if (response.status >= 500) profileResultUncertain = true;
+            throw new Error(data.error ?? "変更申請を送信できませんでした。");
+          }
+          profileSubmitted = true;
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : "変更申請を送信できませんでした。");
+          profileResultUncertain = profileResultUncertain || error instanceof TypeError;
         }
-        message.value = data.error ?? "申請できませんでした。入力内容を確認してください。";
-        setFormLocked(false);
-      } catch {
+      }
+
+      if (profileResultUncertain) {
         profileLoaded = false;
         setFormLocked(true);
         retry.hidden = false;
-        message.value = "通信に失敗したため、申請が受け付けられたか確認できません。状態を再読み込みしてから、必要な場合だけ再申請してください。";
+        message.value = `${errors.join(" ")} 申請状態を再読み込みして確認してください。`;
+        return;
       }
+
+      if (imageSaved && profileSubmitted) {
+        message.value = "画像はすぐに反映されました。基本情報の変更は承認後に反映されます。";
+      } else if (imageSaved) {
+        message.value = errors.length
+          ? `画像はすぐに反映されました。${errors.join(" ")}`
+          : "画像を更新しました。画像の変更に承認は不要です。";
+      } else if (profileSubmitted) {
+        message.value = errors.length
+          ? `基本情報を申請しました。${errors.join(" ")}`
+          : "基本情報の変更を運営事務局へ申請しました。承認後に反映されます。";
+      } else {
+        message.value = errors.join(" ") || "変更を保存できませんでした。";
+      }
+      if (profileSubmitted) {
+        const pendingNotice = document.querySelector<HTMLElement>("[data-member-profile] [data-approval-state]");
+        if (pendingNotice) {
+          pendingNotice.hidden = false;
+          pendingNotice.textContent = "基本情報の変更申請は承認待ちです。プロフィール画像はすぐに反映されます。";
+        }
+      }
+      profileLoaded = true;
+      setFormLocked(false);
+      if (profileSubmitted) initialFields = fields;
+      updateSaveLabel();
     });
 
     setFormLocked(true);

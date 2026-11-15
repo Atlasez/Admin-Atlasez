@@ -1,10 +1,7 @@
 ---
 import AdminLayout from "../../layouts/AdminLayout.astro";
 import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
-import {
-  profileImageAccept,
-  profileImageFormatLabel,
-} from "../../lib/profile-image";
+import ProfileImagePicker from "../../components/admin/ProfileImagePicker.astro";
 ---
 
 <AdminLayout title="運営メンバー管理" description="アトラス運営メンバーの名簿">
@@ -41,7 +38,7 @@ import {
             <label>タイムゾーン<input data-profile-field="timezone" maxlength="80" /></label>
           </div>
           <label>運営外自己紹介<textarea data-profile-field="bio" maxlength="4000"></textarea></label>
-          <div class="member-profile-avatar-row"><span class="member-profile-avatar-preview" data-member-avatar-preview aria-label="プロフィール画像">画像なし</span><div class="member-profile-avatar-actions"><label>プロフィール画像<input type="file" data-member-avatar-file accept={profileImageAccept} /><small>{profileImageFormatLabel}、2MB以下。選ばない場合は現在の画像を保持します。</small></label><button type="button" data-remove-member-avatar>画像を削除</button></div></div>
+          <div class="member-profile-avatar-row"><span class="member-profile-avatar-preview" data-member-avatar-preview aria-label="プロフィール画像">画像なし</span><div class="member-profile-avatar-actions"><ProfileImagePicker id="member-management-avatar" label="プロフィール画像を選択" /><small>画像を選ばない場合は現在の画像を保持します。</small><button type="button" data-remove-member-avatar>画像を削除</button></div></div>
           <output data-profile-form-message aria-live="polite"></output>
           <div class="member-profile-editor-actions"><button type="button" data-cancel-profile-edit>キャンセル</button><button type="submit" data-save-profile>保存</button></div>
         </form>
@@ -169,10 +166,6 @@ import {
 
 <script>
   import { createAdminLoadRetry } from "../../scripts/admin-load-retry";
-  import {
-    isProfileImageMimeType,
-    profileImageFormatLabel,
-  } from "../../lib/profile-image";
 
   type Member = { email?: string; display_name?: string; university?: string; year?: string; role?: string; avatar_url?: string; assignments?: string[]; subjectAssignments?: string[]; workflowSubjects?: string[] };
   type Participant = { email?: string; display_name?: string; university?: string; year?: string; interests?: string; avatar_url?: string; discord_user_id?: string; discord_role_ids?: string; subjects?: string };
@@ -188,6 +181,7 @@ import {
     const profileEditor = root.querySelector<HTMLFormElement>("[data-member-profile-editor]")!;
     const profileAvatarPreview = root.querySelector<HTMLElement>("[data-member-avatar-preview]")!;
     let currentMemberAvatarUrl = "";
+    let currentMemberAvatarChanged = false;
     const renderProfileAvatar = () => {
       profileAvatarPreview.replaceChildren();
       if (!currentMemberAvatarUrl) {
@@ -234,8 +228,14 @@ import {
         detailContent.hidden = false;
         profileEditor.hidden = true;
         profileEditor.dataset.updatedAt = profile?.updatedAt ?? "";
-        const profileAvatarInput = profileEditor.querySelector<HTMLInputElement>("[data-member-avatar-file]");
+        const profileAvatarInput = profileEditor.querySelector<HTMLInputElement>("[data-profile-image-input]");
         if (profileAvatarInput) profileAvatarInput.value = "";
+        const profileImageStatus = profileEditor.querySelector<HTMLOutputElement>("[data-profile-image-status]");
+        if (profileImageStatus) {
+          profileImageStatus.value = "画像を選択してください。";
+          profileImageStatus.dataset.state = "idle";
+        }
+        currentMemberAvatarChanged = false;
         const profileFormMessage = profileEditor.querySelector<HTMLOutputElement>("[data-profile-form-message]");
         if (profileFormMessage) profileFormMessage.value = "";
         const profileSaveButton = profileEditor.querySelector<HTMLButtonElement>("[data-save-profile]");
@@ -306,35 +306,26 @@ import {
     });
     profileEditor.querySelector<HTMLButtonElement>("[data-remove-member-avatar]")?.addEventListener("click", () => {
       currentMemberAvatarUrl = "";
-      const fileInput = profileEditor.querySelector<HTMLInputElement>("[data-member-avatar-file]");
+      currentMemberAvatarChanged = true;
+      const fileInput = profileEditor.querySelector<HTMLInputElement>("[data-profile-image-input]");
       if (fileInput) fileInput.value = "";
+      const pickerStatus = profileEditor.querySelector<HTMLOutputElement>("[data-profile-image-status]");
+      if (pickerStatus) {
+        pickerStatus.value = "プロフィール画像を削除する設定です。保存すると反映されます。";
+        pickerStatus.dataset.state = "selected";
+      }
+      const output = profileEditor.querySelector<HTMLOutputElement>("[data-profile-form-message]");
+      if (output) output.value = "画像を削除する設定です。保存すると反映されます。";
       renderProfileAvatar();
     });
-    profileEditor.querySelector<HTMLInputElement>("[data-member-avatar-file]")?.addEventListener("change", (event) => {
-      const input = event.currentTarget as HTMLInputElement;
-      const file = input.files?.[0];
+    profileEditor.addEventListener("profile-image-cropped", (event) => {
+      const detail = (event as CustomEvent<{ avatarUrl?: string; fileName?: string }>).detail;
+      if (!detail?.avatarUrl) return;
+      currentMemberAvatarUrl = detail.avatarUrl;
+      currentMemberAvatarChanged = true;
       const output = profileEditor.querySelector<HTMLOutputElement>("[data-profile-form-message]");
-      if (!file) return;
-      if (!isProfileImageMimeType(file.type)) {
-        if (output) output.value = `${profileImageFormatLabel}の画像を選択してください。`;
-        input.value = "";
-        return;
-      }
-      if (file.size > 2_000_000) {
-        if (output) output.value = "画像は2MB以下にしてください。";
-        input.value = "";
-        return;
-      }
-      const reader = new FileReader();
-      reader.addEventListener("load", () => {
-        currentMemberAvatarUrl = String(reader.result ?? "");
-        if (output) output.value = "画像を変更しました。";
-        renderProfileAvatar();
-      });
-      reader.addEventListener("error", () => {
-        if (output) output.value = "画像を読み込めませんでした。";
-      });
-      reader.readAsDataURL(file);
+      if (output) output.value = `${detail.fileName ?? "画像"}を調整しました。保存すると反映されます。`;
+      renderProfileAvatar();
     });
     profileEditor.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -365,6 +356,15 @@ import {
         });
         const result = await response.json() as { error?: string };
         if (!response.ok) throw new Error(result.error ?? "プロフィールを保存できませんでした。");
+        if (currentMemberAvatarChanged) {
+          profileEditor.querySelector<HTMLElement>("[data-profile-image-picker]")?.dispatchEvent(
+            new CustomEvent("profile-image-saved", {
+              bubbles: true,
+              detail: { fileName: "プロフィール画像" },
+            }),
+          );
+          document.dispatchEvent(new Event("atlasez-profile-updated"));
+        }
         message.value = "プロフィールを更新しました。";
         await load();
         await openMemberDetail(email);
