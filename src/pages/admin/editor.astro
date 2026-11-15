@@ -139,12 +139,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     <AdminRetryNotice scope="editor-documents" message="原稿一覧を読み込めませんでした。" />
 
     <div class="workspace-grid">
-      <aside class="document-sidebar" aria-label="作成済みの記事一覧" hidden>
-        <button type="button" class="sidebar-collapse-toggle" data-sidebar-collapse aria-expanded="true" aria-label="作成済みの記事一覧を閉じる" title="作成済みの記事一覧を閉じる">‹ 作成済みの記事一覧を閉じる</button>
-        <div class="document-list-heading"><h2>作成済みの記事</h2><span data-document-count aria-live="polite"></span></div>
-        <div class="document-list" data-document-list aria-live="polite"></div>
-      </aside>
-
       <section class="editor-panel" aria-label="原稿編集">
         <div class="empty-state" data-editor-empty>
           <div class="editor-start-actions">
@@ -181,7 +175,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
             </div>
             <div class="toolbar-actions">
               <a class="quiet-action toolbar-guide-link" href="/admin/guide/?project=atlas" target="_blank" rel="noreferrer">手順 ↗</a>
-              <label class="engine-control">Webプレビュー組版<select data-preview-engine><option value="katex">KaTeX（高速）</option><option value="mathjax">MathJax（LaTeX互換）</option></select></label>
+              <span class="engine-control">プレビュー：KaTeX</span>
               <div class="collaboration-status" data-collaboration-status data-state="connecting" role="status" aria-live="polite" hidden>
                 <span class="collaboration-indicator" aria-hidden="true"></span>
                 <span data-collaboration-state>接続中</span>
@@ -197,9 +191,9 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
                 <button type="button" class="primary-action" data-publish-document hidden>公開する</button>
                 <button type="button" class="quiet-action" data-schedule-document hidden>公開予約</button>
                 <button type="button" class="withdraw-action" data-unpublish-document hidden>公開を取り消す</button>
-                <button type="button" class="quiet-action" data-run-editorial-preflight>公開前チェック（テスト機能）</button>
               </div>
               <output class="save-status" data-save-message aria-live="polite">保存状態：記事を選択してください</output>
+              <details class="editor-test-tools"><summary>試験用の確認</summary><button type="button" class="quiet-action" data-run-editorial-preflight>入力内容を確認する</button></details>
               <div class="document-conflict" data-document-conflict role="alert" aria-live="assertive" hidden>
                 <strong>他のユーザーが先に更新しました。</strong>
                 <span data-document-conflict-message>変更を確認してから保存してください。</span>
@@ -248,17 +242,17 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
             <textarea data-personal-note maxlength="20000" placeholder="確認したいこと、次回やること、調査メモなどを自由に書けます。"></textarea>
             <div class="personal-notebook-actions"><button type="button" class="quiet-action" data-save-personal-note>メモを保存</button><output data-personal-note-message aria-live="polite"></output><small data-personal-note-updated>読み込み中…</small></div>
           </details>
-          <div class="pane-layout-controls" role="group" aria-label="表示する枠"><span>表示枠</span>{([['writing', '本文'], ['preview', 'プレビュー'], ['review', 'コメント'], ['media', '図・画像'], ['memo', '執筆メモ']] as const).map(([key, label]) => <span class="pane-layout-control" data-pane-control={key}><button type="button" data-pane-tab={key} aria-pressed={key === 'writing' || key === 'preview' ? 'true' : 'false'}>{label}</button><button type="button" class="pane-popout-toggle" data-pane-popout={key} aria-pressed="false" aria-label={`${label}を別窓で表示`} title={`${label}を別窓で表示`}>↗</button></span>)}</div>
+          <div class="pane-layout-controls" role="group" aria-label="表示する枠">{([['writing', '本文'], ['preview', 'プレビュー'], ['review', 'コメント'], ['media', '図・画像'], ['memo', '執筆メモ']] as const).map(([key, label]) => <span class="pane-layout-control" data-pane-control={key}><button type="button" data-pane-tab={key} aria-pressed={key === 'writing' || key === 'preview' ? 'true' : 'false'}>{label}</button><button type="button" class="pane-popout-toggle" data-pane-popout={key} aria-pressed="false" aria-label={`${label}を別窓で表示`} title={`${label}を別窓で表示`}>↗</button></span>)}</div>
           <details class="heading-outline"><summary>見出し一覧</summary><nav data-heading-outline>本文の見出しがここに表示されます。</nav></details>
           <div class="editor-split" aria-label="原稿とプレビュー">
             <section class="writing-area">
-              <div class="pane-heading writing-pane-heading"><div class="pane-title"><h3>本文（Markdown）</h3><p class="math-authoring-help">詳細は「使える機能」へ</p></div><span data-word-count>0文字</span><div class="pane-controls"><button type="button" class="diagnostics-trigger" data-open-diagnostics aria-haspopup="dialog" hidden><span>確認事項</span><b data-diagnostics-trigger-count>0</b></button><button type="button" data-open-authoring-help aria-haspopup="dialog">使える機能</button><button type="button" data-pane-popout="writing">別窓</button></div></div>
+              <div class="pane-heading writing-pane-heading"><div class="pane-title"><h3>本文（Markdown）</h3><p class="math-authoring-help">詳細は「使える機能」へ</p></div><span data-word-count>0文字</span><div class="pane-controls"><button type="button" class="diagnostics-trigger" data-open-diagnostics aria-haspopup="dialog" hidden><span>確認事項</span><b data-diagnostics-trigger-count>0</b></button><button type="button" data-open-authoring-help aria-haspopup="dialog">使える機能</button></div></div>
               <details class="writing-tools" data-tool-disclosure="math"><summary aria-label="挿入・数式設定を開く"><span aria-hidden="true">＋</span></summary><div class="pane-controls writing-tools-controls" aria-label="本文への挿入"><label class="math-preset-control"><span>共通数式</span><button type="button" class="math-preset-picker" data-open-math-preset-library aria-haspopup="dialog"><span data-math-preset-selection>なし</span><span aria-hidden="true">⌄</span></button><select data-math-preset aria-label="共通数式プリセット" hidden><option value="">なし</option>{Object.entries(MATH_PRESETS).map(([value, preset]) => <option value={value}>{preset.label}</option>)}</select></label><button type="button" class="quiet-action" data-add-math-preset>プリセット管理</button><button type="button" class="quiet-action" data-open-reference-library>参考文献</button><button type="button" class="quiet-action" data-insert-math="inline">インライン数式</button><button type="button" class="quiet-action" data-insert-math="display">表示数式</button><button type="button" class="quiet-action" data-insert-math="proposition">命題</button><span class="latex-snippet-divider" aria-hidden="true"></span><button type="button" class="quiet-action" data-insert-latex-snippet="frac">分数</button><button type="button" class="quiet-action" data-insert-latex-snippet="sqrt">根号</button><button type="button" class="quiet-action" data-insert-latex-snippet="supsub">上下付き</button><button type="button" class="quiet-action" data-insert-latex-snippet="matrix">行列</button><button type="button" class="quiet-action" data-insert-latex-snippet="cases">場合分け</button><button type="button" class="quiet-action" data-insert-latex-snippet="aligned">整列</button></div></details>
               <dialog class="math-preset-dialog" data-math-preset-dialog aria-labelledby="math-preset-dialog-title"><div class="math-preset-dialog-inner"><div class="math-preset-dialog-header"><div><h2 id="math-preset-dialog-title">LaTeXプリセット</h2><p>選択したプリセットは記事の数式設定に適用されます。自分用プリセットはここで追加・編集・削除できます。</p></div><button type="button" class="help-close" data-close-math-preset aria-label="プリセットを閉じる">×</button></div><div class="math-preset-library" data-math-preset-library><div class="math-preset-library-heading"><h3>利用できるプリセット</h3><button type="button" class="primary-action" data-start-math-preset>＋ 新規追加</button></div><div class="math-preset-library-list" data-math-preset-library-list></div></div><section class="math-preset-editor" data-math-preset-editor hidden><div class="math-preset-editor-heading"><h3 data-math-preset-editor-title>プリセットを追加</h3><button type="button" class="quiet-action" data-cancel-math-preset-edit>一覧に戻る</button></div><label class="math-preset-group-field">グループ名（任意）<input data-custom-preset-group maxlength="80" placeholder="例：代数・写像" /></label><div data-math-preset-form><label>プリセット名<input data-custom-preset-label maxlength="80" required disabled placeholder="例：自分の解析記号" /></label><label>マクロ<textarea data-custom-preset-macros required disabled placeholder="\\foo = \\mathbb{R}\n\\dd = \\,\\mathrm{d}#1"></textarea></label><output data-custom-preset-message aria-live="polite"></output><div class="math-preset-dialog-actions"><button type="button" class="primary-action" data-custom-preset-save>保存</button></div></div></section></div></dialog>
               <dialog class="reference-library-dialog" data-reference-library-dialog aria-labelledby="reference-library-title"><div class="reference-library-inner"><div class="reference-library-header"><div><h2 id="reference-library-title">自分用参考文献リスト</h2><p><code>[[cite:識別子]]</code> を本文へ挿入すると、記事内では番号リンクとして表示されます。記事で使った文献は原稿にもコピー保存されます。</p></div><button type="button" class="help-close" data-close-reference-library aria-label="参考文献を閉じる">×</button></div><div class="reference-entry-form" data-reference-entry-form><input type="hidden" data-reference-edit-id /><label>識別子<input data-reference-id maxlength="80" pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,79}" required disabled placeholder="例：atiyah-macdonald" /></label><label>書名・論文名<input data-reference-title maxlength="240" required disabled placeholder="例：Introduction to Commutative Algebra" /></label><label>著者・編者<input data-reference-authors maxlength="240" placeholder="例：M. F. Atiyah and I. G. Macdonald" /></label><label>出版年<input data-reference-year maxlength="32" placeholder="例：1969" /></label><label>出版社・掲載誌<input data-reference-publisher maxlength="240" placeholder="例：Addison-Wesley" /></label><label>URL<input data-reference-url type="url" maxlength="2000" placeholder="https://..." /></label><label>メモ<input data-reference-note maxlength="500" placeholder="必要なら版・ページなど" /></label><div class="reference-entry-actions"><button type="button" class="primary-action" data-save-reference>リストに保存</button><button type="button" class="quiet-action" data-cancel-reference-edit hidden>編集をキャンセル</button><output data-reference-entry-message aria-live="polite"></output></div></div><section class="reference-library-section" aria-labelledby="reference-list-heading"><div class="reference-library-section-heading"><h3 id="reference-list-heading">登録済みの文献</h3><span data-reference-count></span></div><div data-reference-library-list></div></section></div></dialog>
               <details class="editor-lock-bar" data-editor-lock-bar data-tool-disclosure="lock"><summary><span data-lock-status>確定部分はありません</span><small>選択範囲を確定</small></summary><div class="editor-lock-actions"><button type="button" class="quiet-action" data-lock-selection disabled>選択範囲をロック</button><button type="button" class="quiet-action" data-unlock-selection disabled>選択範囲のロック解除</button></div></details>
               <dialog class="editor-diagnostics-dialog" data-editor-diagnostics aria-labelledby="editor-diagnostics-title"><div class="editor-diagnostics-inner"><div class="editor-diagnostics-header"><div><h2 id="editor-diagnostics-title">確認事項</h2><p>保存前に確認してください。本文・プレビューとは別に表示しています。</p></div><button type="button" class="help-close" data-close-editor-diagnostics aria-label="確認事項を閉じる">×</button></div><div class="editor-diagnostics-summary"><strong data-diagnostics-summary></strong><span>記事の表示や参照に関する確認です。</span></div><ul data-diagnostics-list></ul></div></dialog>
-              <dialog class="editor-diagnostics-dialog editorial-preflight-dialog" data-editorial-preflight aria-labelledby="editorial-preflight-title"><div class="editor-diagnostics-inner"><div class="editor-diagnostics-header"><div><h2 id="editorial-preflight-title">公開前チェック（テスト機能）</h2><p>ブラウザ内の入力項目・本文診断・表示中プレビューを確認します。このチェック自体は保存・公開・通信を行いません。記事の入力内容は自動保存されます。</p></div><button type="button" class="help-close" data-close-editorial-preflight aria-label="公開前チェックを閉じる">×</button></div><div class="editor-diagnostics-summary"><strong data-editorial-preflight-summary></strong><span>結果は公開可否を保証するものではありません。</span></div><ul data-editorial-preflight-list></ul></div></dialog>
+              <dialog class="editor-diagnostics-dialog editorial-preflight-dialog" data-editorial-preflight aria-labelledby="editorial-preflight-title"><div class="editor-diagnostics-inner"><div class="editor-diagnostics-header"><div><h2 id="editorial-preflight-title">入力内容の確認（試験）</h2><p>入力項目・本文診断・表示中プレビューを確認します。この確認自体は保存・公開・通信を行いません。記事の入力内容は自動保存されます。</p></div><button type="button" class="help-close" data-close-editorial-preflight aria-label="確認を閉じる">×</button></div><div class="editor-diagnostics-summary"><strong data-editorial-preflight-summary></strong><span>結果は公開可否を保証するものではありません。</span></div><ul data-editorial-preflight-list></ul></div></dialog>
               <style>.editorial-preflight-dialog{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));border-left-color:var(--accent)}.editorial-preflight-dialog .editor-diagnostics-summary strong{color:var(--accent)}.editorial-preflight-dialog li.is-success{background:color-mix(in srgb,#16804a 8%,var(--surface-alt));border-color:color-mix(in srgb,#16804a 30%,var(--border));border-left-color:#16804a}.editorial-preflight-dialog li.is-warning{border-left-color:var(--warning,#a66a00)}[data-pref-bg="dark"] .editorial-preflight-dialog li.is-success{background:#123a2a;border-color:#357a59;color:#e3ffef}</style>
               <dialog class="authoring-help-dialog" data-authoring-help-dialog aria-labelledby="authoring-help-title"><div class="authoring-help-inner"><div class="authoring-help-head"><div><h2 id="authoring-help-title">本文で使える機能</h2><p>カテゴリを選ぶと、右側の表示が切り替わります。</p></div><button type="button" class="help-close" data-close-authoring-help aria-label="ヘルプを閉じる">×</button></div><div class="authoring-help-layout"><nav class="authoring-help-nav" aria-label="ヘルプカテゴリ" role="tablist"><button type="button" class="help-topic-button" data-help-topic="markdown" role="tab" aria-selected="false" aria-controls="help-topic-markdown">Markdown</button><button type="button" class="help-topic-button is-active" data-help-topic="latex" role="tab" aria-selected="true" aria-controls="help-topic-latex">LaTeX・数式</button><button type="button" class="help-topic-button" data-help-topic="preset" role="tab" aria-selected="false" aria-controls="help-topic-preset">プリセット・マクロ</button><button type="button" class="help-topic-button" data-help-topic="proposition" role="tab" aria-selected="false" aria-controls="help-topic-proposition">命題・証明</button><button type="button" class="help-topic-button" data-help-topic="reference" role="tab" aria-selected="false" aria-controls="help-topic-reference">参照・番号</button><button type="button" class="help-topic-button" data-help-topic="media" role="tab" aria-selected="false" aria-controls="help-topic-media">画像・TikZ</button><button type="button" class="help-topic-button" data-help-topic="review" role="tab" aria-selected="false" aria-controls="help-topic-review">レビュー</button><button type="button" class="help-topic-button" data-help-topic="screen" role="tab" aria-selected="false" aria-controls="help-topic-screen">画面操作</button><button type="button" class="help-topic-button" data-help-topic="workflow" role="tab" aria-selected="false" aria-controls="help-topic-workflow">保存・公開</button></nav><div class="authoring-help-topics"><section class="help-topic-panel" id="help-topic-markdown" data-help-panel="markdown" role="tabpanel" hidden><h3>Markdownの基本</h3><p><code># 見出し</code>、空行で段落、<code>**太字**</code>、<code>*斜体*</code>、<code>&#96;コード&#96;</code>、<code>- 箇条書き</code>、<code>1. 番号付き</code> が使えます。</p><p>リンクは <code>[表示名](https://...)</code> と書けます。見出しは「見出し一覧」から移動できます。</p></section><section class="help-topic-panel" id="help-topic-latex" data-help-panel="latex" role="tabpanel"><h3>LaTeX数式・入力補完</h3><p><code>$...$</code> は本文中、<code>$$...$$</code> は表示数式です。<code>\</code> を入力するか、本文内で <kbd>Ctrl</kbd> + <kbd>Space</kbd> を押すと候補が出ます。</p><div class="help-command-groups">{LATEX_COMMAND_GROUPS.map((group) => <div class="help-command-group"><h4>{group.label}</h4><ul>{group.commands.map(([command, description]) => <li><code>{command}</code><span>{description}</span></li>)}</ul></div>)}</div><p class="help-tip">候補は入力中に絞り込まれます。候補を選択して <kbd>Enter</kbd>、移動して <kbd>↑</kbd> <kbd>↓</kbd> で確定できます。</p></section><section class="help-topic-panel" id="help-topic-preset" data-help-panel="preset" role="tabpanel" hidden><h3>LaTeXマクロ・共通プリセット</h3><p>「共通数式」から記事ごとにプリセットを選ぶと、よく使う記号を共通設定として使えます。</p><ul class="preset-help-list">{Object.entries(MATH_PRESETS).map(([value, preset]) => <li><code>{value}</code><span>{preset.label}</span><span class="preset-command-list">{Object.keys(preset.macros).join(" ")}</span></li>)}</ul><p>記事固有の定義は数式ブロック内で <code>\newcommand&#123;\foo&#125;[1]&#123;...&#125;</code>、<code>\DeclareMathOperator&#123;\rank&#125;&#123;rank&#125;</code> が使えます。定義は記事内の数式で再利用できます。</p></section><section class="help-topic-panel" id="help-topic-proposition" data-help-panel="proposition" role="tabpanel" hidden><h3>命題・定義・証明</h3><p><code>:::prop タイトル &#123;#識別子&#125;</code> のように書きます。<code>defi</code>（定義）、<code>prop</code>（命題）、<code>thm</code>（定理）、<code>lemma</code>（補題）、<code>cor</code>（系）、<code>example</code>（例）、<code>proof</code>（証明）などに対応しています。</p><button type="button" class="help-insert-button" data-help-insert="proposition">命題のひな形を挿入</button></section><section class="help-topic-panel" id="help-topic-reference" data-help-panel="reference" role="tabpanel" hidden><h3>参照・自動番号・参考文献</h3><p>命題などの参照は <code>[[ref:識別子]]</code>、参考文献の引用は <code>[[cite:識別子]]</code> です。番号は記事で使われた参考文献の登録順に付き、本文の <code>[1]</code> から記事末尾の参考文献へ移動できます。</p><p>「参考文献」ボタンから自分用リストを登録し、「本文へ引用」を押すと識別子の挿入と記事へのコピー保存を同時に行います。URL、著者、出版年、出版社・掲載誌、ページなどのメモも登録できます。</p></section><section class="help-topic-panel" id="help-topic-media" data-help-panel="media" role="tabpanel" hidden><h3>画像・図・TikZ</h3><p>「図・画像」から画像をアップロードして本文へ挿入できます。画像ごとに幅を選び、「既存参照に適用」で挿入済み画像も変更できます。</p><p>TikZは専用ボタンから <code>&#96;&#96;&#96;tikz</code> ブロックとして挿入できます。</p></section><section class="help-topic-panel" id="help-topic-review" data-help-panel="review" role="tabpanel" hidden><h3>コメントとレビュー</h3><p>本文またはプレビューの文章を選択するとコメントを付けられます。タグ、返信、引用添付、<code>@表示名</code> のメンションが使えます。</p><p>コメントを確認したら「確認済み」、修正が必要なら「未反映」を使います。</p></section><section class="help-topic-panel" id="help-topic-screen" data-help-panel="screen" role="tabpanel" hidden><h3>画面操作・共同編集</h3><p>「本文」「プレビュー」「コメント」「図・画像」は表示枠ボタンで切り替えられます。「別窓」で各枠を別ウィンドウにできます。</p><p>共同編集、自分用メモ、改訂比較、見出し一覧も利用できます。</p></section><section class="help-topic-panel" id="help-topic-workflow" data-help-panel="workflow" role="tabpanel" hidden><h3>保存・レビュー依頼・公開</h3><p>入力内容は自動保存されます。「フィードバックを依頼する」→確認・修正→承認→「公開する」の順に進めます。</p></section></div></div><p class="authoring-help-foot"><code>/help</code> は本文の末尾だけでなく、本文内のどこに入力してもこのヘルプを開きます。入力された <code>/help</code> は本文から自動的に取り除かれます。</p></div></dialog>
               <p class="directive-completion-hint">本文の行頭で <code>:::</code> を入力すると、定義・命題・定理などの枠を候補から補完できます。<kbd>↑</kbd><kbd>↓</kbd>で移動し、<kbd>Enter</kbd>またはクリックで選択します。</p>
@@ -271,17 +265,17 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
             </section>
 
             <section class="preview-area" aria-labelledby="preview-heading">
-              <div class="pane-heading"><h3 id="preview-heading">プレビュー</h3><span class="live-badge">自動更新</span><div class="pane-controls"><button type="button" data-preview-expand aria-pressed="false">全文表示</button><button type="button" data-pane-popout="preview">別窓</button></div></div>
+              <div class="pane-heading"><h3 id="preview-heading">プレビュー</h3><span class="live-badge">自動更新</span><div class="pane-controls"><button type="button" data-preview-expand aria-pressed="false">全文表示</button></div></div>
               <article class="article-preview" data-preview></article>
               <button type="button" class="pane-resize-handle" data-pane-resize="preview" aria-label="プレビュー枠の高さを調整" aria-valuemin="240" aria-valuemax="1400" aria-valuenow="528" title="ドラッグしてプレビュー枠の高さを調整。ダブルクリックで元の高さに戻します"><span aria-hidden="true"></span></button>
             </section>
             <section class="memo-area" aria-labelledby="memo-heading">
-              <div class="pane-heading"><h3 id="memo-heading">執筆メモ</h3><span>記事ごとに保存・非公開</span><div class="pane-controls"><button type="button" data-pane-popout="memo">別窓</button></div></div>
+              <div class="pane-heading"><h3 id="memo-heading">執筆メモ</h3><span>記事ごとに保存・非公開</span></div>
               <div class="memo-content"><p>構成の意図、説明を採用した理由、将来公開したい補足などを記録できます。このメモは現在の記事編集メンバー向けで、公開記事には表示されません。</p><textarea data-writing-memo maxlength="30000" placeholder="なぜこの構成にしたのか、どの説明を採用したのか、今後追加したい内容などを書き留めます。"></textarea></div>
               <button type="button" class="pane-resize-handle" data-pane-resize="memo" aria-label="執筆メモ枠の高さを調整" aria-valuemin="240" aria-valuemax="1400" aria-valuenow="528" title="ドラッグして執筆メモ枠の高さを調整。ダブルクリックで元の高さに戻します"><span aria-hidden="true"></span></button>
             </section>
           <section class="media-area" aria-labelledby="media-studio-heading">
-            <div class="pane-heading"><h3 id="media-studio-heading">図・画像</h3><span data-media-status aria-live="polite">画像を選択すると原稿を自動保存</span><div class="pane-controls"><button type="button" data-pane-popout="media">別窓</button></div></div>
+            <div class="pane-heading"><h3 id="media-studio-heading">図・画像</h3><span data-media-status aria-live="polite">画像を選択すると原稿を自動保存</span></div>
             <div class="media-studio">
               <div class="media-studio-actions">
                 <label class="media-alt-label">画像の説明（alt）<input type="text" data-media-alt maxlength="180" placeholder="例：正多角形の対称軸" /></label>
@@ -296,7 +290,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
             <button type="button" class="pane-resize-handle" data-pane-resize="media" aria-label="図・画像枠の高さを調整" aria-valuemin="240" aria-valuemax="1400" aria-valuenow="528" title="ドラッグして図・画像枠の高さを調整。ダブルクリックで元の高さに戻します"><span aria-hidden="true"></span></button>
           </section>
           <section class="review-panel" aria-labelledby="review-heading">
-            <div class="pane-heading"><h3 id="review-heading">フィードバック</h3><div class="pane-controls"><button type="button" data-pane-popout="review">別窓</button></div></div>
+            <div class="pane-heading"><h3 id="review-heading">フィードバック</h3></div>
             <div class="review-pane-content">
             <details class="review-help"><summary>コメントの使い方</summary><p>本文またはプレビューで文章を選択してコメントすると、その文章に紐づきます。コメント投稿者が修正を反映したら「反映済み」にしてください。他の人のコメントは、投稿者と対応者の双方が「反映済み」にすると解決済みになります。</p></details>
             <div class="comment-list-toolbar"><h4 class="comment-list-heading">コメント</h4><div class="comment-list-filters"><label>コメントを検索<input type="search" data-comment-search placeholder="本文・投稿者・タグを検索" autocomplete="off" /></label><label>タグで絞り込む<select data-comment-tag-filter><option value="">すべて</option>{commentTags.map((tag) => <option value={tag}>{tag}</option>)}</select></label><label>確認状態<select data-comment-status-filter><option value="">すべて</option><option value="pending">未確認</option><option value="acknowledged">確認済み</option><option value="resolved">反映済み</option></select></label></div></div>
@@ -426,13 +420,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .workspace-header nav a:hover, .workspace-header nav button:hover { background: var(--surface-alt); }
   .workspace-header nav form { margin: 0; }
   .workflow-guide { color: var(--muted); display: grid; font-size: .8rem; gap: .75rem; padding: 1rem 0 1.15rem; }.workflow-guide p { margin: 0; }.workflow-guide p strong { color: var(--text); }.workflow-guide p small { color: var(--muted); display: block; margin-top: .2rem; }.workflow-guide ol { display: grid; gap: .65rem; grid-template-columns: repeat(6, minmax(0, 1fr)); list-style: none; margin: 0; max-width: none; padding: 0; width: 100%; }.workflow-guide li { align-items: center; color: var(--muted); display: grid; font-weight: 700; gap: .42rem; grid-template-rows: 1.55rem auto; justify-items: center; min-width: 0; position: relative; text-align: center; }.workflow-guide li:not(:last-child)::after { background: var(--border); content: ""; height: 2px; left: calc(50% + .9rem); position: absolute; right: calc(-50% + .9rem); top: .72rem; z-index: 0; }.workflow-guide b { align-items: center; background: color-mix(in srgb, var(--accent), transparent 88%); border-radius: 999px; color: var(--accent); display: inline-flex; font-size: .72rem; height: 1.3rem; justify-content: center; position: relative; width: 1.3rem; z-index: 1; }.workflow-guide li span { line-height: 1.35; max-width: 100%; overflow-wrap: anywhere; }.workflow-guide li.is-complete { color: var(--accent); }.workflow-guide li.is-complete b, .workflow-guide li.is-current b { background: var(--accent); color: white; }.workflow-guide li.is-complete:not(:last-child)::after { background: var(--accent); }.workflow-guide li.is-current { color: var(--text); }.workflow-guide li.is-current span { text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: .25rem; }.workflow-guide.is-on-hold [data-workflow-step] { opacity: .45; }
-  .workspace-grid { border-bottom: 1px solid var(--border); border-top: 2px solid var(--accent); display: grid; grid-template-columns: minmax(0, 1fr); min-height: 46rem; overflow: visible; }.document-sidebar { display:none!important; }.document-sidebar[hidden] { display:none!important; }.sidebar-collapse-toggle { align-self:start; background:transparent; border:1px solid var(--border); color:var(--muted); cursor:pointer; font:inherit; font-size:.72rem; font-weight:800; padding:.35rem .45rem; text-align:left; }.sidebar-collapse-toggle:hover { border-color:var(--accent); color:var(--accent); }
-  .editor-workspace.sidebar-collapsed .workspace-grid { grid-template-columns: 3.2rem minmax(0, 1fr); }.editor-workspace.sidebar-collapsed .document-sidebar { padding:.45rem; }.editor-workspace.sidebar-collapsed .document-sidebar > :not(.sidebar-collapse-toggle) { display:none; }.editor-workspace.sidebar-collapsed .sidebar-collapse-toggle { align-items:center; display:flex; font-size:1.05rem; height:2.35rem; justify-content:center; overflow:visible; padding:0; white-space:nowrap; width:2.35rem; }
-  .sidebar-heading { align-items: start; display: flex; gap: .75rem; justify-content: space-between; }
-  .sidebar-heading strong { display: block; font-size: .9rem; max-width: 13rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .document-list-heading { align-items: baseline; border-bottom: 1px solid var(--border); display: flex; gap: .5rem; justify-content: space-between; padding: .1rem 0 .45rem; }
-  .document-list-heading h2 { color: var(--text); font-size: .9rem; margin: 0; }
-  .document-list-heading span { color: var(--muted); font-size: .7rem; font-weight: 700; }
+  .workspace-grid { border-bottom: 1px solid var(--border); border-top: 2px solid var(--accent); display: grid; grid-template-columns: minmax(0, 1fr); min-height: 46rem; overflow: visible; }
+
   button { font: inherit; }
   .primary-action, .quiet-action { border-radius: .45rem; cursor: pointer; font-size: .82rem; font-weight: 800; min-height: 2.35rem; padding: .42rem .68rem; }
   .primary-action { background: var(--accent); border: 1px solid var(--accent); color: white; }
@@ -444,11 +433,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .quiet-action:hover { background: color-mix(in srgb, var(--accent), transparent 92%); border-color: var(--accent); color: var(--accent); }
   select, input, textarea { background: var(--surface); border: 1px solid var(--border); border-radius: .45rem; color: var(--text); font: inherit; }
   select, input { box-sizing: border-box; min-height: 2.35rem; padding: .35rem .55rem; width: 100%; }
-  .document-list { display: grid; gap: .45rem; margin-top: .35rem; max-height: 15rem; overflow: auto; padding-right: .1rem; }
-  .document-card { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid transparent; border-radius: 0; color: var(--text); cursor: pointer; display: flex; align-items: center; gap: .5rem; justify-content: space-between; padding: .6rem .7rem; text-align: left; width: 100%; }
-  .document-card:hover, .document-card[aria-current="true"] { border-color: var(--accent); border-left-color: var(--accent); box-shadow: none; }
-  .document-card small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.document-card-publication { color: var(--muted); flex: 0 0 auto; font-size: .62rem; font-weight: 800; white-space: nowrap; }.document-card-publication-source { color: var(--success,#4fbf79); }.document-card-publication-proposal { color: var(--accent); }
-  .state { border-radius: 999px; font-size: .7rem; font-weight: 800; padding: .14rem .4rem; width: fit-content; }
+
   .state-draft { background: #edf1f5; color: #52606d; }.state-in-review { background: #fff0c6; color: #805500; }.state-on-hold { background: #f4e5e7; color: #8a3b49; }.state-approved { background: #def4e6; color: #267143; }
   .approval-dialog { width: min(92vw, 31rem); border: 1px solid #d9e3eb; border-radius: 1rem; padding: 1.5rem; color: #183047; box-shadow: 0 1.5rem 5rem #162c4030; }.approval-dialog::backdrop { background: #10203388; }.approval-dialog h2 { margin: .2rem 0 .65rem; }.approval-dialog p { line-height: 1.7; }.approval-actions { display: flex; justify-content: flex-end; gap: .65rem; margin-top: 1.25rem; flex-wrap: wrap; }
   [data-publication-review-message]:not(:empty) { display: block; color: var(--danger, #b42318); margin-top: .75rem; }
@@ -523,8 +508,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .feedback-request-history { border-top:1px solid var(--border); margin-top:1rem; padding-top:.9rem; }.feedback-request-history h4 { font-size:.86rem; margin:0 0 .25rem; }.feedback-request-history>p { color:var(--muted); font-size:.74rem; line-height:1.5; margin:.2rem 0 .65rem; }.feedback-request-history-list { display:grid; gap:.55rem; }.feedback-request-history-item { background:var(--surface-alt); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:.45rem; display:grid; gap:.35rem; padding:.6rem .7rem; }.feedback-request-history-item>div { align-items:center; display:flex; flex-wrap:wrap; gap:.45rem; justify-content:space-between; }.feedback-request-history-item strong { font-size:.78rem; }.feedback-request-history-item small,.feedback-request-history-item p { color:var(--muted); font-size:.72rem; line-height:1.5; margin:0; overflow-wrap:anywhere; }.feedback-request-status { border:1px solid var(--border); border-radius:999px; font-size:.68rem; font-weight:800; padding:.12rem .38rem; }.feedback-request-status.is-open { background:#fff2cc; border-color:#d9a429; color:#714f00; }.feedback-request-status.is-doing { background:#e8f3fb; border-color:#72add3; color:#185c86; }.feedback-request-status.is-done { background:#e5f4ea; border-color:#74a888; color:#21623b; }.feedback-request-task-actions { align-items:center; display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.15rem; }.feedback-request-task-actions select { background:var(--surface); border:1px solid var(--border); border-radius:.35rem; color:var(--text); font:inherit; font-size:.72rem; min-height:1.95rem; padding:.25rem .4rem; }.feedback-request-task-actions button { font-size:.72rem; min-height:1.95rem; padding:.25rem .55rem; width:auto; }.feedback-request-task-actions button:disabled { cursor:wait; opacity:.65; }.feedback-request-history-empty { color:var(--muted); font-size:.78rem; margin:0; }
   .sr-only { clip:rect(0 0 0 0); clip-path:inset(50%); height:1px; overflow:hidden; position:absolute; white-space:nowrap; width:1px; }
   .progress-detail-label { color:var(--muted); display:grid; font-size:.78rem; font-weight:800; gap:.35rem; margin-top:.8rem; }.progress-detail-label textarea { box-sizing:border-box; font:inherit; line-height:1.6; min-height:8rem; padding:.65rem; resize:vertical; width:100%; }
-  @media (max-width: 1080px) { .editor-split { grid-template-columns: repeat(2, minmax(0, 1fr)); }.article-preview { height: auto; min-height: 28rem; }.workspace-grid, .editor-workspace.sidebar-collapsed .workspace-grid { grid-template-columns: 1fr; }.document-sidebar { border-bottom: 1px solid var(--border); border-right: 0; }.editor-workspace.sidebar-collapsed .document-sidebar { align-items:start; }.editor-workspace.sidebar-collapsed .sidebar-collapse-toggle { font-size:1.05rem; }.document-list { grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); max-height: 16rem; }.workspace-header { display: grid; }.workspace-header nav { justify-content: start; }.document-toolbar { display: grid; }.toolbar-actions { justify-content: start; }.metadata-grid { grid-template-columns: 1fr; }.metadata label:nth-child(1), .metadata label:nth-child(2) { grid-column: auto; } }
-  @media (max-width: 700px) { .editor-workspace { padding: 0 .8rem 3rem; }.workspace-header nav form, .workspace-header nav button { box-sizing: border-box; width: 100%; }.workflow-guide { font-size: .7rem; }.workflow-guide ol { gap: .2rem; }.workflow-guide li { gap: .2rem; }.workflow-guide li:not(:last-child)::after { left: calc(50% + .72rem); right: calc(-50% + .72rem); top: .62rem; }.workflow-guide b { font-size: .66rem; height: 1.1rem; width: 1.1rem; }.workflow-guide li span { line-height: 1.25; }.sidebar-heading { display: grid; }.primary-action, .quiet-action { width: 100%; }.toolbar-actions, .document-actions { display: grid; }.toolbar-actions output { max-width: none; }.pane-heading { display: grid; }.metadata { padding: .65rem; }.editor-tabs{display:flex;border-bottom:1px solid var(--border);gap:.3rem;margin:.5rem 0}.editor-tabs button{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--muted);cursor:pointer;font:inherit;font-size:.8rem;font-weight:800;padding:.5rem .75rem}.editor-tabs button[aria-selected="true"]{border-bottom-color:var(--accent);color:var(--accent)}.editor-split{grid-template-columns:1fr!important}.media-studio-actions{grid-template-columns:1fr}.heading-outline{display:block;background:var(--surface-alt);border:1px solid var(--border);font-size:.78rem;margin:.5rem 0;padding:.4rem .6rem}.document-statuses{font-size:.68rem}.personal-notebook-actions{align-items:stretch;display:grid}.personal-notebook-actions small{margin-left:0}.personal-notebook-actions .quiet-action{width:100%} }
+  @media (max-width: 1080px) { .editor-split { grid-template-columns: repeat(2, minmax(0, 1fr)); }.article-preview { height: auto; min-height: 28rem; }.workspace-grid { grid-template-columns: 1fr; }.workspace-header { display: grid; }.workspace-header nav { justify-content: start; }.document-toolbar { display: grid; }.toolbar-actions { justify-content: start; }.metadata-grid { grid-template-columns: 1fr; }.metadata label:nth-child(1), .metadata label:nth-child(2) { grid-column: auto; } }
+  @media (max-width: 700px) { .editor-workspace { padding: 0 .8rem 3rem; }.workspace-header nav form, .workspace-header nav button { box-sizing: border-box; width: 100%; }.workflow-guide { font-size: .7rem; }.workflow-guide ol { gap: .2rem; }.workflow-guide li { gap: .2rem; }.workflow-guide li:not(:last-child)::after { left: calc(50% + .72rem); right: calc(-50% + .72rem); top: .62rem; }.workflow-guide b { font-size: .66rem; height: 1.1rem; width: 1.1rem; }.workflow-guide li span { line-height: 1.25; }.primary-action, .quiet-action { width: 100%; }.toolbar-actions, .document-actions { display: grid; }.toolbar-actions output { max-width: none; }.pane-heading { display: grid; }.metadata { padding: .65rem; }.editor-tabs{display:flex;border-bottom:1px solid var(--border);gap:.3rem;margin:.5rem 0}.editor-tabs button{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--muted);cursor:pointer;font:inherit;font-size:.8rem;font-weight:800;padding:.5rem .75rem}.editor-tabs button[aria-selected="true"]{border-bottom-color:var(--accent);color:var(--accent)}.editor-split{grid-template-columns:1fr!important}.media-studio-actions{grid-template-columns:1fr}.heading-outline{display:block;background:var(--surface-alt);border:1px solid var(--border);font-size:.78rem;margin:.5rem 0;padding:.4rem .6rem}.document-statuses{font-size:.68rem}.personal-notebook-actions{align-items:stretch;display:grid}.personal-notebook-actions small{margin-left:0}.personal-notebook-actions .quiet-action{width:100%} }
 </style>
 
 <style>
@@ -1121,18 +1106,14 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .editor-split[data-visible-panes="0"] { align-items:center; min-height:8rem; }
   .editor-split[data-visible-panes="0"]::after { color:var(--muted); content:"表示する枠を上のボタンから選択してください"; font-size:.8rem; font-weight:800; }
   .pane-only { max-width:none; padding:0 clamp(1rem, 3vw, 2.5rem) 3rem; }
-  .pane-only .document-sidebar,.pane-only .editor-quick-actions,.pane-only .pane-layout-controls { display:none!important; }
-  /* 旧保存状態が残っていても、非表示になった左バー分の空列を作らない。 */
-  .editor-workspace.sidebar-collapsed .workspace-grid { grid-template-columns:minmax(0,1fr)!important; }
   .pane-only .workspace-grid { border:0; display:block; min-height:0; }
   .pane-only .editor-panel { padding:0; }
   .pane-only .editor-split { display:block; }
   .pane-only .editor-split > section:not([hidden]) { min-height:32rem; }
-  .pane-only .pane-controls [data-pane-popout] { display:none; }
   .editor-split[data-visible-panes="2"] { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
   .editor-split[data-visible-panes="1"] { grid-template-columns:1fr !important; }
   .comment-thread[data-comment-context] { cursor:context-menu; }
-  @media(max-width:1080px) { .editor-split { grid-template-columns:repeat(2,minmax(0,1fr)); }.editor-workspace.sidebar-collapsed .workspace-grid { grid-template-columns:3.2rem minmax(0,1fr) !important; }.editor-workspace.sidebar-collapsed .document-sidebar { border-bottom:0; border-right:1px solid var(--border-default); } }
+  @media(max-width:1080px) { .editor-split { grid-template-columns:repeat(2,minmax(0,1fr)); } }
   .editor-workspace .writing-pane-heading { display:grid; grid-template-columns:minmax(0,1fr) auto auto; }
   @media(max-width:700px) { .editor-split, .editor-split[data-visible-panes="2"] { grid-template-columns:1fr !important; } .pane-controls { flex-wrap:wrap; } .editor-workspace .writing-pane-heading { grid-template-columns:minmax(0,1fr) auto; } .editor-workspace .writing-pane-heading > span { grid-column:1; grid-row:2; } .editor-workspace .writing-pane-heading > .pane-controls { grid-column:2; grid-row:1 / span 2; } .writing-tools-controls { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); } .writing-tools-controls .math-preset-control { grid-column:1 / -1; } .writing-tools-controls button { width:100%; } }
 </style>
@@ -1413,8 +1394,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       return activeDocumentId;
     };
     const empty = root.querySelector<HTMLElement>("[data-editor-empty]")!;
-    const list = root.querySelector<HTMLElement>("[data-document-list]")!;
-    const documentCount = root.querySelector<HTMLElement>("[data-document-count]")!;
     const subject = form.elements.namedItem("subject") as HTMLSelectElement;
     const category = form.elements.namedItem("category") as HTMLSelectElement;
     const title = form.elements.namedItem("title") as HTMLInputElement;
@@ -1573,12 +1552,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       }));
       if (!editorialPreflightDialog.open) editorialPreflightDialog.showModal();
     });
-    const previewEngine = root.querySelector<HTMLSelectElement>("[data-preview-engine]")!;
-    // The public Atlas article renderer is KaTeX; keep the editorial preview
-    // on the same engine so macros and layout do not drift before publication.
-    previewEngine.value = "katex";
-    previewEngine.disabled = true;
-    previewEngine.title = "公開記事と同じKaTeX rendererを使用します。";
     const updateProposalButton = root.querySelector<HTMLButtonElement>("[data-create-update-proposal]")!;
     const updateProposalNote = root.querySelector<HTMLElement>("[data-update-proposal-note]")!;
     const versionSwitcher = root.querySelector<HTMLElement>("[data-document-version-switcher]")!;
@@ -1616,8 +1589,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const revisions = root.querySelector<HTMLElement>("[data-revision-list]")!;
     const feedbackRequestHistory = root.querySelector<HTMLElement>("[data-feedback-request-history]")!;
     const newDocumentButton = root.querySelector<HTMLButtonElement>("[data-new-document]")!;
-    const documentSidebar = root.querySelector<HTMLElement>(".document-sidebar")!;
-    const sidebarCollapseButton = root.querySelector<HTMLButtonElement>("[data-sidebar-collapse]")!;
     const personalNote = root.querySelector<HTMLTextAreaElement>("[data-personal-note]")!;
     const personalNoteMessage = root.querySelector<HTMLOutputElement>("[data-personal-note-message]")!;
     const personalNoteUpdated = root.querySelector<HTMLElement>("[data-personal-note-updated]")!;
@@ -1765,15 +1736,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         const row = paneRows[rowIndex] ?? [];
         button.disabled = rowIndex < 0 || (edge === "left" && columnIndex === 0) || (edge === "right" && columnIndex === row.length - 1) || (edge === "top" && rowIndex === 0 && paneRows.length >= 3) || (edge === "bottom" && rowIndex === paneRows.length - 1 && paneRows.length >= 3);
       });
-      // 枠内と表示枠バーの両方を、同じ別窓状態から更新する。
-      paneKeys.forEach((key) => {
-        const button = paneElements[key].querySelector<HTMLButtonElement>("[data-pane-popout]");
-        if (!button) return;
-        const poppedOut = isPanePoppedOut(key);
-        button.disabled = poppedOut;
-        button.textContent = poppedOut ? "別窓表示中" : "別窓";
-        button.setAttribute("aria-pressed", String(poppedOut));
-      });
     };
     const placePanes = () => paneRows.flat().forEach((key) => { if (paneElements[key].parentElement === editorSplit) editorSplit.append(paneElements[key]); });
     const savePaneState = () => localStorage.setItem("atlasez-editor-pane-layout", JSON.stringify({ visible: requestedPaneKeys, rows: paneRows }));
@@ -1879,7 +1841,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       toolbar.className = "popup-pane-toolbar";
       toolbar.innerHTML = `<div><strong>${esc(paneLabels[key])}</strong><small>元の編集画面とリアルタイム同期しています</small></div><button type="button" data-reattach-pane>元の画面に戻す</button>`;
       const popupPanel = panel.cloneNode(true) as HTMLElement;
-      popupPanel.querySelector<HTMLButtonElement>("[data-pane-popout]")?.remove();
+
       shell.append(toolbar, popupPanel);
       // 別窓へ移した枠は本体から外し、残った枠だけでレイアウトを詰め直す。
       // この変更は一時的なものなので、別窓を閉じたときに元の配置へ戻す。
@@ -2162,7 +2124,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     let defaultConceptId = "";
     let bodyRefreshTimer: number | undefined;
     let bodyHasMediaSyntax = false;
-    let mathJaxLoading: Promise<void> | undefined;
     let hasUnsavedChanges = false;
     let persistedWritingMemo = "";
     let initialScrollRestoreUntil = 0;
@@ -2308,14 +2269,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       event.preventDefault();
       event.returnValue = "";
     });
-    const setSidebarCollapsed = (collapsed: boolean, persist = false) => {
-      root.classList.toggle("sidebar-collapsed", collapsed);
-      sidebarCollapseButton.setAttribute("aria-expanded", String(!collapsed));
-      sidebarCollapseButton.textContent = collapsed ? "›" : "‹ 原稿一覧を閉じる";
-      sidebarCollapseButton.setAttribute("aria-label", collapsed ? "原稿一覧を開く" : "原稿一覧を閉じる");
-      sidebarCollapseButton.title = collapsed ? "原稿一覧を開く" : "原稿一覧を閉じる";
-      if (persist) localStorage.setItem("atlasez-editor-sidebar-collapsed", String(collapsed));
-    };
     const workflowSteps = ["draft", "in-review", "publication-subject", "publication-leader", "approved", "published"] as const;
     const hasUnpublishedPublicationChanges = (item: Pick<Document, "published_at" | "updated_at">) => {
       if (!item.published_at) return false;
@@ -2617,7 +2570,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       monitorPublicationRun(next);
       updateWorkflow(next.status, Boolean(next.published_at), next.publication_review_stage ?? null, hasUnpublishedPublicationChanges(next));
       updatePublicationActions(next);
-      renderDocuments();
+
       if (stageChanged) void loadPublicationReview(documentId, next).catch(() => undefined);
       return true;
     };
@@ -3234,11 +3187,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       assetPreviewLoads.delete(assetId);
     };
     const releaseAllAssetPreviews = () => [...assetPreviewUrls.keys()].forEach(releaseAssetPreview);
-    const loadMathJax = () => mathJaxLoading ??= new Promise((resolve, reject) => {
-      (window as typeof window & { MathJax?: { typesetPromise: (items?: Element[]) => Promise<void> } }).MathJax = { typesetPromise: async () => {} };
-      const script = document.createElement("script"); script.src = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"; script.async = true;
-      script.onload = () => resolve(); script.onerror = () => reject(new Error("MathJaxを読み込めませんでした。ネットワーク接続を確認してください。")); document.head.append(script);
-    });
     const renderPreviewCitations = (target: HTMLElement, references: ArticleReference[]) => {
       const numbers = new Map(references.map((reference, index) => [reference.id.toLowerCase(), index + 1]));
       const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT, { acceptNode: (node) => node.parentElement && !node.parentElement.closest("a,code,pre,script,style") && /\[\[cite:[a-z0-9][a-z0-9_-]*\]\]/i.test(node.textContent ?? "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT });
@@ -3262,7 +3210,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       try {
         const html = await renderArticleMarkdown(value, {
           customPresets: customPresetMap(),
-          katex: previewEngine.value === "katex",
+          katex: true,
         });
         if (!isCurrent()) return;
         target.innerHTML = html;
@@ -3277,13 +3225,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       await hydrateAssetImages(target);
       await hydrateTikzDiagrams(target, { isCurrent, signal });
       if (!isCurrent()) return;
-      try {
-        if (previewEngine.value === "mathjax") {
-          await loadMathJax();
-          const mathJax = (window as typeof window & { MathJax?: { typesetPromise: (items?: Element[]) => Promise<void> } }).MathJax;
-          await mathJax?.typesetPromise([target]);
-        }
-      } catch (error) { target.insertAdjacentHTML("afterbegin", `<p class="katex-error">${esc(error instanceof Error ? error.message : "数式を組版できませんでした。")}</p>`); }
     };
     let previewRenderId = 0;
     let previewAbortController: AbortController | null = null;
@@ -4590,7 +4531,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       (form.elements.namedItem("documentId") as HTMLInputElement).dataset.sourceArticleId = "";
       heading.textContent = "新規原稿";
     };
-    const renderDocuments = () => { const unique = [...new Map(documents.map((item) => [item.id, item])).values()]; documentCount.textContent = unique.length ? `${unique.length}件` : ""; list.innerHTML = unique.length ? unique.map((item) => { const learningSitePublished = !item.published_at && item.document_kind !== "update-proposal" && learningSiteHasPublishedSource(item.source_article_id); const proposalLabel = item.document_kind === "update-proposal" ? '<span class="document-card-publication document-card-publication-proposal">更新案</span>' : ""; const publicationLabel = item.published_at ? '<span class="document-card-publication">公開済み・運営管理中</span>' : learningSitePublished ? '<span class="document-card-publication document-card-publication-source">学習サイト公開済み</span>' : '<span class="document-card-publication">未公開</span>'; const publicationDescription = item.document_kind === "update-proposal" ? "公開記事の更新案" : item.published_at ? "公開済み・運営管理中" : learningSitePublished ? "学習サイト公開済み" : "未公開"; return `<button class="document-card" type="button" data-document-id="${item.id}" aria-label="${esc(item.subject)} / ${esc(item.category)}・${statusLabel[item.status]}・${publicationDescription}の記事を開く"><small>${esc(item.subject)} / ${esc(item.category)}</small><span class="state state-${item.status}">${statusLabel[item.status]}</span>${proposalLabel}${publicationLabel}</button>`; }).join("") : '<p class="comment-empty">まだ保存された記事はありません。</p>'; };
     const loadEditorialTaxonomy = async () => {
       try {
         const response = await fetch("/api/admin/editor/taxonomy?project=atlas", { credentials: "same-origin", cache: "no-store" });
@@ -4621,9 +4561,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       assignedSubjects = data.scope?.subjects ?? [];
       root.dataset.manager = String(isManager);
       newDocumentButton.disabled = !(isManager || assignedSubjects.length);
-      // 記事一覧は別画面に置き、編集画面では左バーを表示しない。
-      documentSidebar.setAttribute("hidden", "");
-      documentSidebar.setAttribute("aria-hidden", "true");
       (status.querySelector('option[value="approved"]') as HTMLOptionElement).disabled = !isManager;
       if (currentDocument) updatePublicationActions(currentDocument);
 
@@ -4634,7 +4571,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         populateEditorSubjects(); fillCategories(category.value, true);
       });
       void publicCatalogReady.catch(() => undefined);
-      populateEditorSubjects(); fillCategories(category.value, true); renderDocuments();
+      populateEditorSubjects(); fillCategories(category.value, true);
       void loadPublicationIntegration();
       editorLoadRetry?.success();
     };
@@ -4697,7 +4634,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         monitorPublicationRun(data.document);
         updateWorkflow(data.document.status, Boolean(data.document.published_at), data.document.publication_review_stage ?? null);
         await loadPublicationReview(id, data.document);
-        renderDocuments();
+
       })();
       workflowRefreshInFlight = refresh;
       try {
@@ -4848,7 +4785,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       setUnsavedChanges(true);
     });
     conceptId.addEventListener("invalid", () => { conceptIdAdvanced.open = true; conceptIdPreview.textContent = "概念を選択するか、概念IDを入力してください"; });
-    sidebarCollapseButton.addEventListener("click", () => setSidebarCollapsed(!root.classList.contains("sidebar-collapsed"), true));
     status.addEventListener("change", () => {
       state.textContent = statusLabel[status.value as keyof typeof statusLabel];
       updateWorkflow(status.value as keyof typeof statusLabel);
@@ -4993,7 +4929,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     });
     document.addEventListener("pointerdown", (event) => { const target = event.target as HTMLElement; if (!target.closest("[data-body], [data-preview], [data-use-selection], [data-enable-selection-append], [data-quote-reply]")) setCommentSelection(null); });
     root.querySelector<HTMLButtonElement>("[data-use-selection]")!.addEventListener("click", () => { if (!selectedCommentRange) return; const alreadyAdded = selectedCommentRanges.some((range) => range.source === selectedCommentRange!.source && range.start === selectedCommentRange!.start && range.end === selectedCommentRange!.end && range.text === selectedCommentRange!.text); if (!alreadyAdded && selectedCommentRanges.length < 8) selectedCommentRanges.push(selectedCommentRange); appendSelectionMode = false; renderSelectedRanges(); setCommentSelection(null); const replyBody = activeReplyId ? comments.querySelector<HTMLTextAreaElement>(`[data-reply-body="${activeReplyId}"]`) : null; const target = replyBody ?? commentBody; target.focus(); target.scrollIntoView({ behavior: "smooth", block: "center" }); });
-    selectedRanges.addEventListener("click", (event) => { const target = event.target as HTMLElement; const addButton = target.closest<HTMLButtonElement>("[data-enable-selection-append]"); if (addButton) { appendSelectionMode = true; selectedCommentRange = null; selectionAction.hidden = true; commentSelection.textContent = "追加モード：次に選択した文章を添付できます。"; commentSelection.classList.add("has-selection"); return; } const button = target.closest<HTMLButtonElement>("[data-remove-selection]"); if (!button) return; const index = Number(button.dataset.removeSelection); if (Number.isInteger(index)) { selectedCommentRanges.splice(index, 1); if (!selectedCommentRanges.length) appendSelectionMode = false; renderSelectedRanges(); } }); headingOutline.addEventListener("click", (event) => { const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-heading-offset]"); if (!button) return; const offset = Number(button.dataset.headingOffset); body.focus(); body.setSelectionRange(offset, offset); body.scrollTop = Math.max(0, offset / Math.max(1, body.value.length) * body.scrollHeight - body.clientHeight / 2); }); previewEngine.addEventListener("change", () => void renderPreview());
+    selectedRanges.addEventListener("click", (event) => { const target = event.target as HTMLElement; const addButton = target.closest<HTMLButtonElement>("[data-enable-selection-append]"); if (addButton) { appendSelectionMode = true; selectedCommentRange = null; selectionAction.hidden = true; commentSelection.textContent = "追加モード：次に選択した文章を添付できます。"; commentSelection.classList.add("has-selection"); return; } const button = target.closest<HTMLButtonElement>("[data-remove-selection]"); if (!button) return; const index = Number(button.dataset.removeSelection); if (Number.isInteger(index)) { selectedCommentRanges.splice(index, 1); if (!selectedCommentRanges.length) appendSelectionMode = false; renderSelectedRanges(); } }); headingOutline.addEventListener("click", (event) => { const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-heading-offset]"); if (!button) return; const offset = Number(button.dataset.headingOffset); body.focus(); body.setSelectionRange(offset, offset); body.scrollTop = Math.max(0, offset / Math.max(1, body.value.length) * body.scrollHeight - body.clientHeight / 2); });
     root.querySelector<HTMLButtonElement>("[data-open-media]")!.addEventListener("click", () => mediaInput.click());
     mediaInput.addEventListener("change", () => { const file = mediaInput.files?.[0]; if (file) void uploadMediaFile(file); });
     mediaList.addEventListener("change", (event) => {
@@ -5277,7 +5213,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       emptyDocument();
       saveMessage.value = "新規原稿を開始しました。入力すると自動保存されます。";
     });
-    list.addEventListener("click", (event) => { const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-document-id]"); if (button) { const id=button.dataset.documentId??""; void openDocument(id).then(()=>loadRevisions(id)).catch((error: unknown) => { saveMessage.value = error instanceof Error ? error.message : "原稿を読み込めませんでした。"; }); } });
     form.addEventListener("submit", (event) => { event.preventDefault(); });
     root.querySelector<HTMLButtonElement>("[data-send-comment]")!.addEventListener("click", () => { const id = (form.elements.namedItem("documentId") as HTMLInputElement).value; if (!id) { saveMessage.value = "先に原稿を保存してからコメントしてください。"; return; } void (async () => { const response = await fetch(`/api/admin/editor/documents/${id}/comments`, { method: "POST", headers: { "content-type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ body: commentBody.value, selections: selectedCommentRanges, tags: selectedCommentTags }) }); const data = await read<{ error?: string }>(response); if (!response.ok) throw new Error(data.error ?? "コメントを送れませんでした。"); commentBody.value = ""; selectedCommentTags = []; root.querySelectorAll<HTMLButtonElement>(".review-pane-content > .comment-tags [data-comment-tag]").forEach((button) => button.setAttribute("aria-pressed", "false")); activeReplyId = null; selectedCommentRanges = []; appendSelectionMode = false; renderSelectedRanges(); setCommentSelection(null); await reloadComments(id); })().catch((error: unknown) => { saveMessage.value = error instanceof Error ? error.message : "コメントを送れませんでした。"; }); });
     comments.addEventListener("click", (event) => { const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-comment-action]"); if (!button) return; hideActionHistoryTooltip(); const documentId = (form.elements.namedItem("documentId") as HTMLInputElement).value; const commentId = button.dataset.commentId; const action = button.dataset.commentAction; if (!documentId || !commentId || !action) return; button.disabled = true; void (async () => { const response = await fetch(`/api/admin/editor/documents/${documentId}/comments/${commentId}`, { method:"PATCH", headers:{"content-type":"application/json"}, credentials:"same-origin", body:JSON.stringify({ action }) }); const data = await read<{error?:string}>(response); if(!response.ok) throw new Error(data.error ?? "コメントの状態を更新できませんでした。"); await reloadComments(documentId); })().catch((error:unknown)=>{ saveMessage.value=error instanceof Error ? error.message : "コメントの状態を更新できませんでした。"; button.disabled=false; }); });
@@ -5389,8 +5324,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       approvalDialog.showModal();
     });
     unpublishButton.addEventListener("click", () => unpublishDialog.showModal());
-    // 旧バージョンの折りたたみ状態を復元しない。編集画面に左バーは存在しない。
-    root.classList.remove("sidebar-collapsed");
     document.addEventListener("astro:before-swap", () => { disconnectCollaboration(); releaseAllAssetPreviews(); }, { once: true });
     const query = new URLSearchParams(window.location.search); const reviewDocumentId = query.get("document"); const isNewDocument = query.get("new") === "1"; const updateModeRequested = query.get("mode") === "update";
     if ((reviewDocumentId || isNewDocument) && !window.location.hash) {
@@ -5435,7 +5368,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       requestAnimationFrame(() => { root.removeAttribute("data-editor-starting"); resetEditorEntryScroll(); restoreInitialEditorScroll(); requestAnimationFrame(restoreInitialEditorScroll); });
     };
     editorLoadRetry = createAdminLoadRetry(root, () => loadEditorEntry(), "原稿一覧を読み込めませんでした。", { scope: "editor-documents" });
-    void loadEditorEntry().catch((error: unknown) => { root.removeAttribute("data-editor-starting"); resetEditorEntryScroll(); restoreInitialEditorScroll(); editorLoadRetry?.fail(error); list.innerHTML = `<p class="comment-empty">${esc(error instanceof Error ? error.message : "原稿一覧を読み込めませんでした。")}</p>`; });
+    void loadEditorEntry().catch((error: unknown) => { root.removeAttribute("data-editor-starting"); resetEditorEntryScroll(); restoreInitialEditorScroll(); editorLoadRetry?.fail(error); });
   };
 
   document.addEventListener("astro:page-load", initializeEditorWorkspace);
