@@ -1,6 +1,10 @@
 ---
 import AdminLayout from "../../layouts/AdminLayout.astro";
 import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
+import {
+  profileImageAccept,
+  profileImageFormatLabel,
+} from "../../lib/profile-image";
 
 const requestedProject = Astro.url.searchParams.get("project") ?? "atlas";
 if (requestedProject === "portal") return Astro.redirect("/admin/member-profile/", 302);
@@ -19,8 +23,8 @@ const isAtlas = project === "atlas";
     <section class="profile-card" aria-labelledby="profile-heading">
       <div class="profile-card__top">
         <div class="avatar-editor">
-          <a class="avatar-preview" data-avatar-preview href="/admin/member-profile/edit/" aria-label="アイコン・プロフィールを変更">A</a>
-          <label class="avatar-upload-link">アイコンを選択<input type="file" accept="image/png,image/jpeg,image/webp" data-avatar-file /></label>
+          <a class="avatar-preview" data-avatar-preview href="/admin/member-profile/?edit=1" aria-label="アイコン・プロフィールを変更">A</a>
+          <label class="avatar-upload-link">アイコンを選択<input type="file" accept={profileImageAccept} data-avatar-file /><small>{profileImageFormatLabel}、2MB以下</small></label>
           <button type="button" class="quiet-action avatar-save" data-avatar-save disabled>アイコンを保存</button>
           <output class="avatar-message" data-avatar-message aria-live="polite"></output>
         </div>
@@ -79,6 +83,10 @@ const isAtlas = project === "atlas";
 <script>
   import { createAdminLoadRetry } from "../../scripts/admin-load-retry";
   import { renderSafeLinks } from "../../lib/safe-links";
+  import {
+    isProfileImageMimeType,
+    profileImageFormatLabel,
+  } from "../../lib/profile-image";
   type PersonalDocument={id:string;subject:string;category:string;title:string;status:"draft"|"in-review"|"on-hold"|"approved";updated_at:string;published_at:string|null};
   type ProjectProfileResponse={project?:{id:string;name:string};assignments?:string[];canEditArticles?:boolean;canReview?:boolean;memberProfile?:{display_name?:string;avatar_url?:string;university?:string;year?:string};projectProfile?:{internal_bio?:string};profileChangeRequest?:{status?:string;proposed_internal_bio?:string;review_note?:string};error?:string};
   const initializeProjectWorkspace=()=>{const root=document.querySelector<HTMLElement>("[data-personal-workspace]");if(!root||root.dataset.initialized==="true")return;root.dataset.initialized="true";
@@ -90,7 +98,7 @@ const isAtlas = project === "atlas";
     const retry=createAdminLoadRetry(root,()=>loadProfile(),"プロジェクト情報を読み込めませんでした。");
     loadProfile=async()=>{retry.begin();try{const response=await fetch(`/api/admin/project-profile?project=${encodeURIComponent(projectId)}`,{credentials:"same-origin",cache:"no-store"});const data=await read<ProjectProfileResponse>(response);if(!response.ok)throw new Error(data.error??"プロジェクト情報を読み込めませんでした。");applyProfile(data);retry.success()}catch(error){retry.fail(error);throw error}};
     internalBioField.addEventListener("input",event=>updateBioPreview((event.target as HTMLTextAreaElement).value));
-    avatarFile.addEventListener("change",()=>{const file=avatarFile.files?.[0];if(!file)return;if(!/^image\/(png|jpeg|webp)$/i.test(file.type)){avatarMessage.value="PNG・JPEG・WebPのみ選択できます。";avatarFile.value="";return}if(file.size>2_000_000){avatarMessage.value="画像は2MB以下にしてください。";avatarFile.value="";return}const reader=new FileReader();reader.onload=()=>{pendingAvatarUrl=String(reader.result??"");preview.style.backgroundImage=`url(${JSON.stringify(pendingAvatarUrl)})`;preview.textContent="";avatarSave.disabled=!pendingAvatarUrl;avatarMessage.value="選択した画像を保存できます。"};reader.readAsDataURL(file)});
+    avatarFile.addEventListener("change",()=>{const file=avatarFile.files?.[0];if(!file)return;if(!isProfileImageMimeType(file.type)){avatarMessage.value=`${profileImageFormatLabel}の画像を選択してください。`;avatarFile.value="";return}if(file.size>2_000_000){avatarMessage.value="画像は2MB以下にしてください。";avatarFile.value="";return}const reader=new FileReader();reader.onload=()=>{pendingAvatarUrl=String(reader.result??"");preview.style.backgroundImage=`url(${JSON.stringify(pendingAvatarUrl)})`;preview.textContent="";avatarSave.disabled=!pendingAvatarUrl;avatarMessage.value="選択した画像を保存できます。"};reader.readAsDataURL(file)});
     avatarSave.addEventListener("click",async()=>{if(!pendingAvatarUrl)return;avatarSave.disabled=true;avatarMessage.value="保存中…";try{const response=await fetch("/api/admin/profile",{method:"PUT",credentials:"same-origin",headers:{"content-type":"application/json"},body:JSON.stringify({avatarUrl:pendingAvatarUrl})});const data=await read<{error?:string}>(response);if(!response.ok)throw new Error(data.error??"アイコンを保存できませんでした。");avatarMessage.value="アイコンを更新しました。";pendingAvatarUrl="";avatarFile.value=""}catch(error){avatarMessage.value=error instanceof Error?error.message:"アイコンを保存できませんでした。";avatarSave.disabled=false}});
     form.addEventListener("submit",async event=>{event.preventDefault();const button=form.querySelector<HTMLButtonElement>("button[type=submit]")!;button.disabled=true;message.value="申請中…";try{const internalBio=(form.elements.namedItem("internalBio") as HTMLTextAreaElement).value;const response=await fetch("/api/admin/project-profile",{method:"PUT",credentials:"same-origin",headers:{"content-type":"application/json"},body:JSON.stringify({projectId,internalBio})});const data=await read<{approvalRequired?:boolean;noChange?:boolean;error?:string}>(response);if(!response.ok)throw new Error(data.error??"変更申請を送れませんでした。");message.value=data.noChange?"承認済みの内容から変更はありません。":isAtlas?"運営事務局へ承認申請を送りました。":"プロジェクトの運営へ承認タスクを送りました。"}catch(error){message.value=error instanceof Error?error.message:"変更申請を送れませんでした。"}finally{button.disabled=false}});
     const toggle=root.querySelector<HTMLButtonElement>("[data-theme-toggle]");const preferencesKey="atlasez-prefs";const readPreferences=()=>{try{return JSON.parse(localStorage.getItem(preferencesKey)??"{}") as Record<string,string>}catch{return {}}};const updateToggle=()=>{const mode=document.documentElement.dataset.prefMode==="black"?"black":document.documentElement.dataset.prefBg==="dark"?"dark":"default";if(toggle){toggle.textContent=mode==="default"?"☾ ダークモード":mode==="dark"?"◐ ブラックモード":"☀ ライトモード";toggle.setAttribute("aria-pressed",String(mode!=="default"))}};toggle?.addEventListener("click",()=>{const prefs=readPreferences();const mode=document.documentElement.dataset.prefMode==="black"?"black":document.documentElement.dataset.prefBg==="dark"?"dark":"default";const next=mode==="default"?"dark":mode==="dark"?"black":"default";if(next==="default"){document.documentElement.dataset.prefBg="";document.documentElement.removeAttribute("data-pref-mode");delete prefs.bg}else if(next==="black"){document.documentElement.dataset.prefBg="dark";document.documentElement.dataset.prefMode="black";prefs.bg="black"}else{document.documentElement.dataset.prefBg="dark";document.documentElement.removeAttribute("data-pref-mode");prefs.bg="dark"}localStorage.setItem(preferencesKey,JSON.stringify(prefs));updateToggle();window.dispatchEvent(new CustomEvent("atlasez-theme-change"))});updateToggle();

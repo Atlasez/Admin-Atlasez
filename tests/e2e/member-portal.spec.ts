@@ -9,7 +9,7 @@ const baseAdminMocks = async (page: Page) => {
   );
 };
 
-test("マイページは基本情報を表示し、編集画面から公開プロフィールを承認申請する", async ({
+test("マイページでGIFを含むプロフィールをポップアップから承認申請する", async ({
   page,
 }) => {
   await baseAdminMocks(page);
@@ -47,32 +47,48 @@ test("マイページは基本情報を表示し、編集画面から公開プ�
     "Atlasez大学",
   );
   await expect(page.locator("[data-fact=year]")).toHaveText("B2");
-  await expect(page.locator("[data-bio]")).toContainText(
-    "運営外向けプロフィール",
-  );
-  await expect(page.locator("[data-bio] a")).toHaveAttribute(
-    "href",
-    "https://example.com/profile",
-  );
   await expect(
-    page.getByRole("link", { name: "プロフィールを編集" }),
-  ).toHaveAttribute("href", "/admin/member-profile/edit/");
+    page.locator("[data-member-profile] .bio-card > [data-bio]"),
+  ).toContainText("運営外向けプロフィール");
+  await expect(
+    page.locator("[data-member-profile] .bio-card > [data-bio] a"),
+  ).toHaveAttribute("href", "https://example.com/profile");
+  await expect(page.locator("[data-avatar]")).toHaveCSS("width", "120px");
+  await expect(
+    page.getByRole("button", { name: "プロフィールを編集" }),
+  ).toBeVisible();
   await expect(page.locator("[data-discord-status]")).toHaveText("未連携");
   await expect(page.locator("[data-discord-link]")).toHaveText("Discordと連携");
   await expect(page.locator("[data-discord-link]")).toHaveAttribute(
     "href",
     "/auth/discord/start?returnTo=%2Fadmin%2Fmember-profile%2F",
   );
-  await page.goto("admin/member-profile/edit/");
-  await expect(page.locator("[data-display-name]")).toHaveValue("山田 花子");
-  await page.locator("[data-bio]").fill("更新した公開プロフィール");
-  await page.getByRole("button", { name: "変更を承認申請" }).click();
-  await expect(page.locator("[data-message]")).toContainText(
+  await page.getByRole("button", { name: "プロフィールを編集" }).click();
+  await expect(page).toHaveURL(/admin\/member-profile\/$/);
+  const editor = page.getByRole("dialog", { name: "プロフィールを編集" });
+  await expect(editor).toBeVisible();
+  await expect(editor.locator("[data-display-name]")).toHaveValue("山田 花子");
+  await editor.locator("[data-avatar-file]").setInputFiles({
+    name: "avatar.gif",
+    mimeType: "image/gif",
+    buffer: Buffer.from(
+      "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
+      "base64",
+    ),
+  });
+  await expect(editor.locator("[data-avatar-preview]")).toHaveCSS(
+    "background-image",
+    /data:image\/gif;base64/,
+  );
+  await editor.locator("[data-bio]").fill("更新した公開プロフィール");
+  await editor.getByRole("button", { name: "変更を承認申請" }).click();
+  await expect(editor.locator("[data-message]")).toContainText(
     "運営事務局へ送りました",
   );
   expect(submitted).toMatchObject({
     displayName: "山田 花子",
     bio: "更新した公開プロフィール",
+    avatarUrl: expect.stringMatching(/^data:image\/gif;base64,/),
   });
 });
 
@@ -113,12 +129,12 @@ test("APIがHTMLエラーを返してもJSON解析例外を画面へ表示しな
   );
 
   await page.goto("admin/member-profile/");
-  await expect(page.locator("[data-message]")).toContainText(
+  await expect(page.locator("[data-member-profile] .message")).toContainText(
     "プロフィール情報を読み込めませんでした。（HTTP 500）",
   );
-  await expect(page.locator("[data-message]")).not.toContainText(
-    "Unexpected token",
-  );
+  await expect(
+    page.locator("[data-member-profile] .message"),
+  ).not.toContainText("Unexpected token");
 });
 
 test("マイページの読み込み失敗から共通の再試行で復帰できる", async ({

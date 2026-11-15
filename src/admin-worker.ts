@@ -56,6 +56,7 @@ import { tikzPackageHelp } from "./lib/tikz-policy.mjs";
 import { parse as parseYaml } from "yaml";
 import { githubToken } from "./editorial-publication-github";
 import { EDITORIAL_STATIC_CATEGORIES } from "./lib/editorial-static-taxonomy";
+import { isProfileImageDataUrl } from "./lib/profile-image";
 // ローカルWrangler開発時だけ同一Workerのexportをフォールバックとして使う。
 // Preview/本番は外部の専用Worker bindingを必ず経由する。
 export { EditorialCollaborationRoom } from "./editorial-collaboration-worker";
@@ -4841,9 +4842,9 @@ async function updateAtlasMemberProfile(
     return json({ error: "タイムゾーンを確認してください。" }, 400);
   if (profile.avatarUrl &&
     ((!/^https:\/\//i.test(profile.avatarUrl) &&
-      !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(profile.avatarUrl)) ||
+      !isProfileImageDataUrl(profile.avatarUrl)) ||
       /["'<>]/.test(profile.avatarUrl)))
-    return json({ error: "プロフィール画像はPNG・JPEG・WebP、またはhttps://画像URLを指定してください。" }, 400);
+    return json({ error: "プロフィール画像はPNG・JPEG・WebP・GIF、またはhttps://画像URLを指定してください。" }, 400);
 
   const archivedError = await archivedMemberError(env, email);
   if (archivedError) return archivedError;
@@ -11176,15 +11177,13 @@ async function saveMyProfile(request: Request, env: Env): Promise<Response> {
   if (
     avatarUrl &&
     ((!/^https:\/\//i.test(avatarUrl) &&
-      !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(
-        avatarUrl,
-      )) ||
+      !isProfileImageDataUrl(avatarUrl)) ||
       /["'<>]/.test(avatarUrl))
   )
     return json(
       {
         error:
-          "プロフィール画像はPNG・JPEG・WebPの画像ファイル、またはhttps://画像URLを指定してください。",
+          "プロフィール画像はPNG・JPEG・WebP・GIFの画像ファイル、またはhttps://画像URLを指定してください。",
       },
       400,
     );
