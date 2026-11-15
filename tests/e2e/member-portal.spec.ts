@@ -42,9 +42,9 @@ const makeTransparentGif = () => {
   return Buffer.from(encoder.bytes());
 };
 
-const baseAdminMocks = async (page: Page) => {
+const baseAdminMocks = async (page: Page, email = "manager@example.com") => {
   await page.route("**/api/admin/auth-status", (route) =>
-    route.fulfill({ json: { email: "manager@example.com", isManager: true } }),
+    route.fulfill({ json: { email, isManager: true } }),
   );
   await page.route("**/api/admin/notifications", (route) =>
     route.fulfill({ json: { notifications: [] } }),
@@ -54,7 +54,10 @@ const baseAdminMocks = async (page: Page) => {
 test("GIF画像は承認なしで保存し、基本情報だけ承認申請する", async ({
   page,
 }) => {
-  await baseAdminMocks(page);
+  await baseAdminMocks(page, "hanako@school.example");
+  await page.addInitScript(() => {
+    sessionStorage.removeItem("atlasez-admin-profile-cache");
+  });
   const submitted: Record<string, unknown>[] = [];
   await page.route("**/api/admin/profile", async (route) => {
     if (route.request().method() === "PUT") {
@@ -144,6 +147,12 @@ test("GIF画像は承認なしで保存し、基本情報だけ承認申請す�
   await editor.getByRole("button", { name: "画像を保存（承認不要）" }).click();
   await expect(editor.locator("[data-message]")).toContainText(
     "画像の変更に承認は不要です",
+  );
+  const navigationAvatar = page.locator("[data-admin-account-image]");
+  await expect(navigationAvatar).toBeVisible();
+  await expect(navigationAvatar).toHaveAttribute(
+    "src",
+    /^data:image\/gif;base64,/,
   );
   expect(submitted).toHaveLength(1);
   expect(Object.keys(submitted[0] ?? {})).toEqual(["avatarUrl"]);

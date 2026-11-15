@@ -318,6 +318,7 @@ const memberYears = [
     proposed_bio?: string;
   };
   type ResponseData = {
+    email?: string;
     profile?: Profile;
     profileChangeRequest?: ProfileChangeRequest;
     error?: string;
@@ -349,6 +350,7 @@ const memberYears = [
     let avatarUrl = "";
     let initialAvatarUrl = "";
     let selectedAvatarName = "";
+    let profileEmail = "";
     let initialFields: ProfileFields | null = null;
     let profileLoaded = false;
 
@@ -394,8 +396,9 @@ const memberYears = [
       try {
         const key = "atlasez-admin-profile-cache";
         const cached = sessionStorage.getItem(key);
-        if (cached) {
-          const profile = JSON.parse(cached) as Record<string, unknown>;
+        const profile = cached ? JSON.parse(cached) as Record<string, unknown> : {};
+        if (profileEmail) {
+          profile.email = profileEmail;
           profile.avatar_url = value;
           sessionStorage.setItem(key, JSON.stringify(profile));
         }
@@ -464,6 +467,7 @@ const memberYears = [
         if (!response.ok) {
           throw new Error(data.error ?? "プロフィール情報を読み込めませんでした。");
         }
+        profileEmail = data.email?.trim() ?? "";
         const request = data.profileChangeRequest;
         initialFields = null;
         if (request?.status === "pending") {
