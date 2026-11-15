@@ -155,6 +155,9 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
     let interviewBusy = false;
     let intakeBusy = false;
     let reviewBusy = false;
+    let interviewDirty = false;
+    let intakeDirty = false;
+    let reviewDirty = false;
     let load: () => Promise<void> = async () => {};
     const retry = createAdminLoadRetry(root, () => load(), "応募者対応を読み込めませんでした。");
 
@@ -303,6 +306,57 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       renderWorkflow();
     };
 
+    const captureUnsavedFields = () => ({
+      interview: interviewDirty ? {
+        date: get<HTMLInputElement>("[data-interview-date]").value,
+        mode: get<HTMLSelectElement>("[data-interview-format]").value,
+        zoom: get<HTMLInputElement>("[data-interview-zoom]").value,
+        location: get<HTMLInputElement>("[data-interview-location]").value,
+      } : null,
+      review: reviewDirty ? {
+        note: get<HTMLTextAreaElement>("[data-notes]").value,
+        decision: decision.value,
+        confirmed: confirm.checked,
+        subjects: [...root.querySelectorAll<HTMLInputElement>("[data-subject-options] input:checked")].map((input) => input.value),
+      } : null,
+      intake: intakeDirty ? {
+        responsible: get<HTMLSelectElement>("[data-intake-responsible]").value,
+        consultation: get<HTMLSelectElement>("[data-intake-consultation]").value,
+        contactStatus: get<HTMLSelectElement>("[data-intake-contact-status]").value,
+        followUp: get<HTMLInputElement>("[data-intake-follow-up]").value,
+        contactNote: get<HTMLTextAreaElement>("[data-intake-contact-note]").value,
+        firstTask: get<HTMLInputElement>("[data-intake-first-task]").value,
+        followUpCompleted: get<HTMLInputElement>("[data-intake-follow-completed]").checked,
+      } : null,
+    });
+
+    const restoreUnsavedFields = (saved: ReturnType<typeof captureUnsavedFields>) => {
+      if (saved.interview) {
+        get<HTMLInputElement>("[data-interview-date]").value = saved.interview.date;
+        get<HTMLSelectElement>("[data-interview-format]").value = saved.interview.mode;
+        get<HTMLInputElement>("[data-interview-zoom]").value = saved.interview.zoom;
+        get<HTMLInputElement>("[data-interview-location]").value = saved.interview.location;
+        get<HTMLElement>("[data-interview-fields]").dataset.mode = saved.interview.mode;
+      }
+      if (saved.review) {
+        get<HTMLTextAreaElement>("[data-notes]").value = saved.review.note;
+        decision.value = saved.review.decision;
+        showDecisionConfirm();
+        confirm.checked = saved.review.confirmed;
+        const subjects = new Set(saved.review.subjects);
+        root.querySelectorAll<HTMLInputElement>("[data-subject-options] input").forEach((input) => { input.checked = subjects.has(input.value); });
+      }
+      if (saved.intake) {
+        get<HTMLSelectElement>("[data-intake-responsible]").value = saved.intake.responsible;
+        get<HTMLSelectElement>("[data-intake-consultation]").value = saved.intake.consultation;
+        get<HTMLSelectElement>("[data-intake-contact-status]").value = saved.intake.contactStatus;
+        get<HTMLInputElement>("[data-intake-follow-up]").value = saved.intake.followUp;
+        get<HTMLTextAreaElement>("[data-intake-contact-note]").value = saved.intake.contactNote;
+        get<HTMLInputElement>("[data-intake-first-task]").value = saved.intake.firstTask;
+        get<HTMLInputElement>("[data-intake-follow-completed]").checked = saved.intake.followUpCompleted;
+      }
+    };
+
     load = async () => {
       if (!applicationId || !project) {
         setNotice("応募者またはプロジェクトが指定されていません。", true);
@@ -310,6 +364,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
         intakeForm.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement>("input,select,textarea,button").forEach((input) => { input.disabled = true; });
         return;
       }
+      const unsavedFields = captureUnsavedFields();
       retry.begin();
       try {
         const interviewUrl = `/api/admin/applications/${encodeURIComponent(applicationId)}/interview?project=${encodeURIComponent(project)}`;
@@ -323,6 +378,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
         applyInterview(interviewData);
         renderApplication(applicationData);
         renderIntake(intakeData);
+        restoreUnsavedFields(unsavedFields);
         retry.success();
       } catch (error) {
         retry.fail(error);
@@ -335,6 +391,15 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       confirmWrap.hidden = decision.value !== "accepted";
       if (decision.value !== "accepted") confirm.checked = false;
     };
+    const markReviewFormDirty = (event: Event) => {
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest("[data-interview-fields]")) interviewDirty = true;
+      else reviewDirty = true;
+    };
+    reviewForm.addEventListener("input", markReviewFormDirty);
+    reviewForm.addEventListener("change", markReviewFormDirty);
+    intakeForm.addEventListener("input", () => { intakeDirty = true; });
+    intakeForm.addEventListener("change", () => { intakeDirty = true; });
     decision.addEventListener("change", showDecisionConfirm);
     get<HTMLSelectElement>("[data-interview-format]").addEventListener("change", (event) => {
       get<HTMLElement>("[data-interview-fields]").dataset.mode = (event.currentTarget as HTMLSelectElement).value;
@@ -364,6 +429,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       try {
         await requestJson(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview?project=${encodeURIComponent(project)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(values) }, "面談日程を保存できませんでした。");
         saved = true;
+        interviewDirty = false;
         if (notifyApplicant) await requestJson(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview/notify?project=${encodeURIComponent(project)}`, { method: "POST" }, "面談通知を準備できませんでした。");
         setNotice(notifyApplicant ? "面談日程を保存し、応募者へ通知しました。" : "面談日程を保存しました。");
         await load();
@@ -412,6 +478,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       try {
         await requestJson(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview-review?project=${encodeURIComponent(project)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ note, assignedSubjects: subjects, decision: decision.value }) }, "審査記録を保存できませんでした。");
         reviewSaved = true;
+        reviewDirty = false;
         if (!interviewCompleted && (decision.value === "accepted" || decision.value === "rejected")) {
           if (interview?.status === "scheduled") {
             await requestJson(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview/complete?project=${encodeURIComponent(project)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ note, assignedSubjects: subjects, decision: decision.value }) }, "面談の完了処理に失敗しました。");
@@ -461,6 +528,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       setIntakeMessage("対応記録を保存しています…");
       try {
         await requestJson(`/api/admin/member-intake?project=${encodeURIComponent(project)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }, "対応記録を保存できませんでした。");
+        intakeDirty = false;
         firstTaskInput.value = "";
         setIntakeMessage("対応記録を保存しました。");
         const data = await requestJson<IntakeResponse>(`/api/admin/member-intake?project=${encodeURIComponent(project)}&applicationId=${encodeURIComponent(applicationId)}`, undefined, "対応記録を再読み込みできませんでした。");

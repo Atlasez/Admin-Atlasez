@@ -85,6 +85,66 @@ for (const width of [1440, 800, 390]) {
   });
 }
 
+test("最初の50件にない応募者もURLから復元する", async ({ page }) => {
+  const requestedId = "older-applicant";
+  let requestedApplicant = false;
+  const firstPage = Array.from({ length: 50 }, (_, index) => ({
+    id: `recent-${index}`,
+    family_name: "新しい",
+    given_name: `応募者${index}`,
+    email: `recent-${index}@example.test`,
+    status: "new",
+    created_at: "2026-09-05T09:00:00Z",
+  }));
+  const olderApplicant = {
+    id: requestedId,
+    family_name: "過去",
+    given_name: "応募者",
+    email: "older@example.test",
+    status: "accepted",
+    created_at: "2025-09-05T09:00:00Z",
+  };
+  await page.route("**/api/admin/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname !== "/api/admin/applications") {
+      await route.fulfill({ json: {} });
+      return;
+    }
+    if (url.searchParams.get("applicationId") === requestedId) {
+      requestedApplicant = true;
+      await route.fulfill({ json: { applications: [olderApplicant] } });
+      return;
+    }
+    if (url.searchParams.has("cursor")) {
+      await route.fulfill({
+        json: {
+          applications: [],
+          pagination: { hasMore: false, nextCursor: null },
+        },
+      });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        applications: firstPage,
+        summary: { total: 51, new: 50, reviewing: 0, accepted: 1, rejected: 0 },
+        pagination: { hasMore: true, nextCursor: "next-page" },
+      },
+    });
+  });
+
+  await page.goto(
+    `./admin/applications/?project=atlas&application=${requestedId}`,
+  );
+
+  await expect(page.locator("[data-application-select]")).toHaveValue(
+    requestedId,
+  );
+  await expect(page.locator(".application-list h2")).toHaveText("過去 応募者");
+  expect(requestedApplicant).toBe(true);
+  await expect(page).toHaveURL(new RegExp(`application=${requestedId}`));
+});
+
 test("B-1: 応募フロー・状況集計・検索と状態フィルターを表示する", async ({
   page,
 }) => {
@@ -599,6 +659,140 @@ test("応募者対応では日程保存の失敗を保ち、保存後の通知�
     "面談日程を保存しました。",
   );
   await expect(location).toHaveValue("さらに変更した会場");
+});
+
+test("日程や審査を保存しても他の欄の未保存入力を残す", async ({ page }) => {
+  const application = {
+    id: "preserve-draft",
+    name: "確認 応募者",
+    family_name: "確認",
+    given_name: "応募者",
+    email: "applicant@example.test",
+    project_slug: "atlas",
+    status: "new",
+    desired_subjects: "mathematics",
+  };
+  let interview: Record<string, unknown> = {
+    status: "scheduled",
+    mode: "in_person",
+    location: "保存済み会場",
+    scheduledAt: "2026-10-06T06:30:00Z",
+  };
+  let review = {
+    note: "保存済みメモ",
+    assignedSubjects: ["mathematics"],
+    decision: "pending",
+  };
+  let interviewGets = 0;
+  let reviewPuts = 0;
+  const intake = {
+    email: application.email,
+    application_id: application.id,
+    contact_status: "not_contacted",
+    revision: 1,
+  };
+
+  await page.route("**/api/admin/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      url.pathname.endsWith("/interview") &&
+      route.request().method() === "PUT"
+    ) {
+      interview = { ...route.request().postDataJSON(), status: "scheduled" };
+      await route.fulfill({ json: { ok: true } });
+      return;
+    }
+    if (
+      url.pathname.endsWith("/interview-review") &&
+      route.request().method() === "PUT"
+    ) {
+      reviewPuts += 1;
+      review = route.request().postDataJSON();
+      await route.fulfill({ json: { ok: true } });
+      return;
+    }
+    if (url.pathname.endsWith("/interview")) {
+      interviewGets += 1;
+      await route.fulfill({
+        json: {
+          application,
+          interview,
+          review,
+          subjectLabels: { mathematics: "数学", physics: "物理" },
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/applications") {
+      await route.fulfill({
+        json: {
+          applications: [application],
+          subjectLabels: { mathematics: "数学", physics: "物理" },
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/member-intake") {
+      await route.fulfill({
+        json: {
+          entries: [intake],
+          responsibleCandidates: [
+            { email: "operator@example.test", displayName: "運営担当" },
+          ],
+        },
+      });
+      return;
+    }
+    await route.fulfill({ json: {} });
+  });
+
+  await page.goto(
+    "admin/application-interview/?application=preserve-draft&project=atlas",
+  );
+  await expect(page.locator("[data-notes]")).toHaveValue("保存済みメモ");
+  await page.locator("[data-notes]").fill("日程保存後も残す審査メモ");
+  await page.locator("[data-subject-options] input[value=physics]").check();
+  await page
+    .locator("[data-intake-responsible]")
+    .selectOption("operator@example.test");
+  await page.locator("[data-intake-contact-status]").selectOption("contacted");
+  await page
+    .locator("[data-intake-contact-note]")
+    .fill("日程保存後も残す連絡メモ");
+  await page.locator("[data-interview-location]").fill("日程保存する会場");
+  await page.locator("[data-interview-save]").click();
+  await expect.poll(() => interviewGets).toBe(2);
+  await expect(page.locator("[data-notes]")).toHaveValue(
+    "日程保存後も残す審査メモ",
+  );
+  await expect(
+    page.locator("[data-subject-options] input[value=physics]"),
+  ).toBeChecked();
+  await expect(page.locator("[data-intake-responsible]")).toHaveValue(
+    "operator@example.test",
+  );
+  await expect(page.locator("[data-intake-contact-status]")).toHaveValue(
+    "contacted",
+  );
+  await expect(page.locator("[data-intake-contact-note]")).toHaveValue(
+    "日程保存後も残す連絡メモ",
+  );
+
+  await page.locator("[data-notes]").fill("審査保存するメモ");
+  await page.locator("[data-interview-location]").fill("審査保存後も残す会場");
+  await page
+    .locator("[data-intake-contact-note]")
+    .fill("審査保存後も残す連絡メモ");
+  await page.locator("[data-save]").click();
+  await expect.poll(() => reviewPuts).toBe(1);
+  await expect.poll(() => interviewGets).toBe(3);
+  await expect(page.locator("[data-notes]")).toHaveValue("審査保存するメモ");
+  await expect(page.locator("[data-interview-location]")).toHaveValue(
+    "審査保存後も残す会場",
+  );
+  await expect(page.locator("[data-intake-contact-note]")).toHaveValue(
+    "審査保存後も残す連絡メモ",
+  );
 });
 
 test("面談日程を保存している間は入力欄をロックする", async ({ page }) => {
