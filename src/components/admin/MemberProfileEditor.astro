@@ -58,7 +58,10 @@ const memberYears = [
     </header>
     <div class="edit-card">
       <div class="avatar-row">
-        <div class="avatar-preview" data-avatar-preview aria-hidden="true">A</div>
+        <div class="avatar-preview" data-avatar-preview data-profile-avatar aria-hidden="true">
+          <img data-profile-avatar-image alt="" hidden />
+          <span data-profile-avatar-fallback>A</span>
+        </div>
         <ProfileImagePicker id="member-profile-avatar" label="プロフィール画像を選択" />
       </div>
       <div class="form-grid">
@@ -187,9 +190,6 @@ const memberYears = [
   .avatar-preview {
     align-items: center;
     background: var(--accent-primary);
-    background-position: center;
-    background-repeat: no-repeat;
-    background-size: cover;
     border: 1px solid var(--border-default);
     border-radius: 50%;
     color: var(--on-accent);
@@ -201,6 +201,17 @@ const memberYears = [
     justify-content: center;
     overflow: hidden;
     width: 9rem;
+  }
+
+  .avatar-preview img {
+    display: block;
+    height: 100%;
+    object-fit: cover;
+    width: 100%;
+  }
+
+  .avatar-preview img[hidden] {
+    display: none;
   }
 
   .form-grid {
@@ -303,6 +314,7 @@ const memberYears = [
 <script>
   import { readAdminApiJson } from "../../lib/admin-api";
   import { formatUtcOffset, isValidTimeZone, timeZoneOffsetMinutes } from "../../lib/timezones";
+  import { setProfileAvatar } from "../../scripts/profile-avatar";
 
   type Profile = {
     display_name?: string;
@@ -382,16 +394,12 @@ const memberYears = [
     };
     const syncImagePreview = (value: string) => {
       avatarUrl = value;
-      avatar.style.backgroundImage = value ? `url(${JSON.stringify(value)})` : "";
-      avatar.textContent = value ? "" : "A";
+      setProfileAvatar(avatar, value);
     };
     const updateAvatarDisplays = (value: string) => {
       syncImagePreview(value);
-      const pageAvatar = document.querySelector<HTMLElement>("[data-member-profile] [data-avatar]");
-      if (pageAvatar) {
-        pageAvatar.style.backgroundImage = value ? `url(${JSON.stringify(value)})` : "";
-        pageAvatar.textContent = value ? "" : "A";
-      }
+      document.querySelectorAll<HTMLElement>("[data-profile-avatar]")
+        .forEach((container) => setProfileAvatar(container, value));
       const navAvatar = document.querySelector<HTMLImageElement>("[data-admin-account-image]");
       if (navAvatar) {
         navAvatar.hidden = !value;
