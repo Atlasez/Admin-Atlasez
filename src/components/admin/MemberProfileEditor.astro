@@ -59,7 +59,6 @@ const memberYears = [
     <div class="edit-card">
       <div class="avatar-row">
         <div class="avatar-preview" data-avatar-preview data-profile-avatar aria-hidden="true">
-          <img data-profile-avatar-image alt="" hidden />
           <span data-profile-avatar-fallback>A</span>
         </div>
         <ProfileImagePicker id="member-profile-avatar" label="プロフィール画像を選択" />
@@ -201,17 +200,6 @@ const memberYears = [
     justify-content: center;
     overflow: hidden;
     width: 9rem;
-  }
-
-  .avatar-preview img {
-    display: block;
-    height: 100%;
-    object-fit: cover;
-    width: 100%;
-  }
-
-  .avatar-preview img[hidden] {
-    display: none;
   }
 
   .form-grid {

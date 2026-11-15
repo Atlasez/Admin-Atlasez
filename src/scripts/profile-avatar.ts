@@ -3,30 +3,36 @@ export const setProfileAvatar = (
   value: string,
   fallbackText = "A",
 ) => {
-  const image = container.querySelector<HTMLImageElement>(
-    "[data-profile-avatar-image]",
-  );
   const fallback = container.querySelector<HTMLElement>(
     "[data-profile-avatar-fallback]",
   );
-  if (!image || !fallback) return;
+  if (!fallback) return;
 
   fallback.textContent = fallbackText;
   const source = value.trim();
   if (!source) {
-    image.hidden = true;
-    image.removeAttribute("src");
+    delete container.dataset.profileAvatarSource;
+    container.style.backgroundImage = "";
     fallback.hidden = false;
     return;
   }
 
+  container.dataset.profileAvatarSource = source;
+  const image = new Image();
   image.onerror = () => {
-    if (image.getAttribute("src") !== source) return;
-    image.hidden = true;
-    image.removeAttribute("src");
+    if (container.dataset.profileAvatarSource !== source) return;
     fallback.hidden = false;
   };
   fallback.hidden = true;
-  image.hidden = false;
-  if (image.getAttribute("src") !== source) image.src = source;
+  image.src = source;
+  const cssSource = source
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\n", "\\a ")
+    .replaceAll("\r", "\\d ")
+    .replaceAll("\f", "\\c ");
+  container.style.backgroundImage = `url("${cssSource}")`;
+  container.style.backgroundSize = "cover";
+  container.style.backgroundPosition = "50% 50%";
+  container.style.backgroundRepeat = "no-repeat";
 };
