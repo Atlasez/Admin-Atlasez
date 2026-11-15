@@ -105,15 +105,22 @@ test("プロジェクト側マイページで運営内自己紹介と担当を�
       request.url().endsWith("/api/admin/profile") &&
       request.method() === "PUT",
   );
-  await page.locator("[data-avatar-file]").setInputFiles({
+  await page.locator("[data-profile-image-input]").setInputFiles({
     name: "profile.png",
     mimeType: "image/png",
-    buffer: Buffer.from("profile-image"),
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    ),
   });
+  await expect(
+    page.getByRole("heading", { name: "画像の表示範囲" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "この範囲を使う" }).click();
   await expect(page.locator("[data-avatar-save]")).toBeEnabled();
   await page.locator("[data-avatar-save]").click();
   expect((await avatarRequest).postDataJSON()).toMatchObject({
-    avatarUrl: expect.stringMatching(/^data:image\/png;base64,/),
+    avatarUrl: expect.stringMatching(/^data:image\/webp;base64,/),
   });
   await expect(page.locator("[data-avatar-message]")).toHaveText(
     "アイコンを更新しました。",

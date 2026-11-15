@@ -1,23 +1,76 @@
 import { expect, test, type Page } from "@playwright/test";
+import { decompressFrames, parseGIF } from "gifuct-js";
+import { createRequire } from "node:module";
 
-const baseAdminMocks = async (page: Page) => {
+const { applyPalette, GIFEncoder, quantize } = createRequire(import.meta.url)(
+  "gifenc",
+) as typeof import("gifenc");
+
+const makeTransparentGif = () => {
+  const encoder = GIFEncoder();
+  const frames = [
+    new Uint8ClampedArray(
+      Array.from({ length: 4 * 4 }, () => [255, 0, 0, 255]).flat(),
+    ),
+    new Uint8ClampedArray(
+      Array.from({ length: 4 * 4 }, (_, index) =>
+        index === 5 || index === 6 || index === 9 || index === 10
+          ? [0, 0, 255, 255]
+          : [0, 0, 0, 0],
+      ).flat(),
+    ),
+  ];
+
+  for (const rgba of frames) {
+    const palette = quantize(rgba, 16, {
+      format: "rgba4444",
+      oneBitAlpha: true,
+    });
+    const transparentIndex = palette.findIndex(
+      (color) => (color[3] ?? 255) < 128,
+    );
+    encoder.writeFrame(applyPalette(rgba, palette, "rgba4444"), 4, 4, {
+      delay: 100,
+      dispose: 1,
+      palette,
+      repeat: 0,
+      transparent: transparentIndex >= 0,
+      ...(transparentIndex >= 0 ? { transparentIndex } : {}),
+    });
+  }
+  encoder.finish();
+  return Buffer.from(encoder.bytes());
+};
+
+const baseAdminMocks = async (page: Page, email = "manager@example.com") => {
   await page.route("**/api/admin/auth-status", (route) =>
-    route.fulfill({ json: { email: "manager@example.com", isManager: true } }),
+    route.fulfill({ json: { email, isManager: true } }),
   );
   await page.route("**/api/admin/notifications", (route) =>
     route.fulfill({ json: { notifications: [] } }),
   );
 };
 
-test("マイページでGIFを含むプロフィールをポップアップから承認申請する", async ({
+test("GIF画像は承認なしで保存し、基本情報だけ承認申請する", async ({
   page,
 }) => {
-  await baseAdminMocks(page);
-  let submitted: Record<string, unknown> | null = null;
+  await baseAdminMocks(page, "hanako@school.example");
+  await page.addInitScript(() => {
+    sessionStorage.removeItem("atlasez-admin-profile-cache");
+  });
+  const submitted: Record<string, unknown>[] = [];
   await page.route("**/api/admin/profile", async (route) => {
     if (route.request().method() === "PUT") {
-      submitted = route.request().postDataJSON() as Record<string, unknown>;
-      await route.fulfill({ json: { ok: true, approvalRequired: true } });
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      submitted.push(body);
+      await route.fulfill({
+        json: {
+          ok: true,
+          approvalRequired: Object.keys(body).some(
+            (key) => key !== "avatarUrl",
+          ),
+        },
+      });
       return;
     }
     await route.fulfill({
@@ -68,28 +121,71 @@ test("マイページでGIFを含むプロフィールをポップアップか�
   const editor = page.getByRole("dialog", { name: "プロフィールを編集" });
   await expect(editor).toBeVisible();
   await expect(editor.locator("[data-display-name]")).toHaveValue("山田 花子");
-  await editor.locator("[data-avatar-file]").setInputFiles({
+  await editor.locator("[data-profile-image-input]").setInputFiles({
     name: "avatar.gif",
     mimeType: "image/gif",
-    buffer: Buffer.from(
-      "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
-      "base64",
-    ),
+    buffer: makeTransparentGif(),
   });
+  await expect(
+    editor.getByRole("heading", { name: "画像の表示範囲" }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      editor
+        .locator("[data-crop-source]")
+        .evaluate((image) => image.getBoundingClientRect().width),
+    )
+    .toBeGreaterThan(0);
+  await expect(editor.locator("[data-profile-image-status]")).toContainText(
+    "avatar.gif",
+  );
+  await editor.getByRole("button", { name: "この範囲を使う" }).click();
   await expect(editor.locator("[data-avatar-preview]")).toHaveCSS(
     "background-image",
     /data:image\/gif;base64/,
   );
+  await editor.getByRole("button", { name: "画像を保存（承認不要）" }).click();
+  await expect(editor.locator("[data-message]")).toContainText(
+    "画像の変更に承認は不要です",
+  );
+  const navigationAvatar = page.locator("[data-admin-account-image]");
+  await expect(navigationAvatar).toBeVisible();
+  await expect(navigationAvatar).toHaveAttribute(
+    "src",
+    /^data:image\/gif;base64,/,
+  );
+  expect(submitted).toHaveLength(1);
+  expect(Object.keys(submitted[0] ?? {})).toEqual(["avatarUrl"]);
+  const avatarUrl = String(submitted[0]?.avatarUrl ?? "");
+  expect(avatarUrl).toMatch(/^data:image\/gif;base64,/);
+  const gifBytes = Buffer.from(avatarUrl.split(",")[1] ?? "", "base64");
+  const parsedGif = parseGIF(
+    gifBytes.buffer.slice(
+      gifBytes.byteOffset,
+      gifBytes.byteOffset + gifBytes.byteLength,
+    ),
+  );
+  const outputFrames = decompressFrames(parsedGif, true);
+  expect(outputFrames.length).toBeGreaterThan(1);
+  const preservedBackground = Array.from(
+    outputFrames[1]?.patch.slice(0, 4) ?? [],
+  );
+  expect(preservedBackground[0]).toBeGreaterThan(240);
+  expect(preservedBackground[1]).toBeLessThan(10);
+  expect(preservedBackground[2]).toBeLessThan(10);
+  expect(preservedBackground[3]).toBeGreaterThan(240);
+
   await editor.locator("[data-bio]").fill("更新した公開プロフィール");
   await editor.getByRole("button", { name: "変更を承認申請" }).click();
   await expect(editor.locator("[data-message]")).toContainText(
-    "運営事務局へ送りました",
+    "基本情報の変更を運営事務局へ申請しました",
   );
-  expect(submitted).toMatchObject({
+  expect(submitted).toHaveLength(2);
+  expect(submitted[1]).toMatchObject({
     displayName: "山田 花子",
     bio: "更新した公開プロフィール",
-    avatarUrl: expect.stringMatching(/^data:image\/gif;base64,/),
   });
+  expect(submitted[1]).not.toHaveProperty("avatarUrl");
 });
 
 test("マイページはDiscord連携済みの状態と再連携ボタンを表示する", async ({

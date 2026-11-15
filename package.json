@@ -48,6 +48,8 @@
     "astro": "^7.2.8",
     "cytoscape": "^3.30.0",
     "date-holidays": "^3.35.0",
+    "gifenc": "1.0.3",
+    "gifuct-js": "2.1.2",
     "hast-util-from-html": "^2.0.3",
     "katex": "0.18.10",
     "node-tikzjax": "^1.0.5",

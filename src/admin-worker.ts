@@ -56,7 +56,10 @@ import { tikzPackageHelp } from "./lib/tikz-policy.mjs";
 import { parse as parseYaml } from "yaml";
 import { githubToken } from "./editorial-publication-github";
 import { EDITORIAL_STATIC_CATEGORIES } from "./lib/editorial-static-taxonomy";
-import { isProfileImageDataUrl } from "./lib/profile-image";
+import {
+  isProfileImageDataUrl,
+  profileImageMaxStoredUrlLength,
+} from "./lib/profile-image";
 // ローカルWrangler開発時だけ同一Workerのexportをフォールバックとして使う。
 // Preview/本番は外部の専用Worker bindingを必ず経由する。
 export { EditorialCollaborationRoom } from "./editorial-collaboration-worker";
@@ -4822,8 +4825,17 @@ async function updateAtlasMemberProfile(
   if (fields.some(([key, maximum]) =>
     typeof payload[key] !== "string" || (payload[key] as string).length > maximum))
     return json({ error: "プロフィールの入力内容を確認してください。" }, 400);
-  if (typeof payload.avatarUrl !== "string" || payload.avatarUrl.length > 3_000_000)
+  if (typeof payload.avatarUrl !== "string")
     return json({ error: "プロフィール画像を確認してください。" }, 400);
+  const submittedAvatarUrl = payload.avatarUrl.trim();
+  if (submittedAvatarUrl.length > profileImageMaxStoredUrlLength)
+    return json(
+      {
+        error:
+          "画像の保存容量を超えています。切り抜きや縮小を調整してから保存してください。",
+      },
+      413,
+    );
 
   const profile = {
     displayName: normalizedText(payload.displayName, 120),
@@ -4834,7 +4846,7 @@ async function updateAtlasMemberProfile(
     country: normalizedText(payload.country, 120),
     timezone: normalizedText(payload.timezone, 80) || "Asia/Tokyo",
     bio: text(payload.bio, 4_000),
-    avatarUrl: text(payload.avatarUrl, 3_000_000),
+    avatarUrl: submittedAvatarUrl,
   };
   if (!profile.displayName)
     return json({ error: "表示名を入力してください。" }, 400);
@@ -11133,6 +11145,21 @@ async function saveMyProfile(request: Request, env: Env): Promise<Response> {
   } catch {
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
+  if (payload.avatarUrl !== undefined && typeof payload.avatarUrl !== "string")
+    return json({ error: "プロフィール画像を確認してください。" }, 400);
+  const suppliedAvatarUrl =
+    typeof payload.avatarUrl === "string" ? payload.avatarUrl.trim() : undefined;
+  if (
+    suppliedAvatarUrl !== undefined &&
+    suppliedAvatarUrl.length > profileImageMaxStoredUrlLength
+  )
+    return json(
+      {
+        error:
+          "画像の保存容量を超えています。切り抜きや縮小を調整してから保存してください。",
+      },
+      413,
+    );
   const currentProfile = await env.REPORTS.prepare(
     `SELECT display_name,bio,avatar_url,university,year,affiliation_type,country,timezone
      FROM editorial_member_profiles WHERE lower(email)=lower(?)`,
@@ -11151,7 +11178,7 @@ async function saveMyProfile(request: Request, env: Env): Promise<Response> {
   const avatarUrl =
     payload.avatarUrl === undefined
       ? (currentProfile?.avatar_url ?? "")
-      : text(payload.avatarUrl, 3_000_000);
+      : (suppliedAvatarUrl ?? "");
   const displayName =
     payload.displayName === undefined ? null : text(payload.displayName, 120);
   const university =
