@@ -642,7 +642,14 @@ const memberYears = [
         const pendingNotice = document.querySelector<HTMLElement>("[data-member-profile] [data-approval-state]");
         if (pendingNotice) {
           pendingNotice.hidden = false;
-          pendingNotice.textContent = "基本情報の変更申請は承認待ちです。プロフィール画像はすぐに反映されます。";
+          const pendingMessage = pendingNotice.querySelector<HTMLElement>("[data-approval-state-message]");
+          const dismissButton = pendingNotice.querySelector<HTMLButtonElement>("[data-dismiss-approval-state]");
+          if (pendingMessage) {
+            pendingMessage.textContent = "基本情報の変更申請は承認待ちです。プロフィール画像はすぐに反映されます。";
+          } else {
+            pendingNotice.textContent = "基本情報の変更申請は承認待ちです。プロフィール画像はすぐに反映されます。";
+          }
+          if (dismissButton) dismissButton.hidden = true;
         }
       }
       profileLoaded = true;
