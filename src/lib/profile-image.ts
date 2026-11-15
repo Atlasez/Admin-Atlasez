@@ -5,7 +5,8 @@ export const profileImageFormatLabel = "PNG・JPEG・WebP・GIF";
 // D1 limits a single text value or row to 2,000,000 bytes. Keep room for the
 // other profile fields stored in the same row when persisting a data URL.
 export const profileImageMaxStoredUrlLength = 1_850_000;
-export const profileImageMaxUploadBytes = 2_000_000;
+// Source files may be larger because they are cropped and compressed before storage.
+export const profileImageMaxUploadBytes = 10_000_000;
 
 const profileImageMimeTypes = new Set([
   "image/png",

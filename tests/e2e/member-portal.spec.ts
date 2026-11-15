@@ -39,7 +39,8 @@ const makeTransparentGif = () => {
     });
   }
   encoder.finish();
-  return Buffer.from(encoder.bytes());
+  // Exercise the new upload allowance with a source file larger than the old 2MB cap.
+  return Buffer.concat([Buffer.from(encoder.bytes()), Buffer.alloc(2_100_000)]);
 };
 
 const baseAdminMocks = async (page: Page, email = "manager@example.com") => {
@@ -121,10 +122,15 @@ test("GIF画像は承認なしで保存し、基本情報だけ承認申請す�
   const editor = page.getByRole("dialog", { name: "プロフィールを編集" });
   await expect(editor).toBeVisible();
   await expect(editor.locator("[data-display-name]")).toHaveValue("山田 花子");
+  await expect(editor.locator("[data-profile-image-picker]")).toContainText(
+    "10MB以下",
+  );
+  const sourceGif = makeTransparentGif();
+  expect(sourceGif.length).toBeGreaterThan(2_000_000);
   await editor.locator("[data-profile-image-input]").setInputFiles({
     name: "avatar.gif",
     mimeType: "image/gif",
-    buffer: makeTransparentGif(),
+    buffer: sourceGif,
   });
   await expect(
     editor.getByRole("heading", { name: "画像の表示範囲" }),
@@ -137,7 +143,7 @@ test("GIF画像は承認なしで保存し、基本情報だけ承認申請す�
     )
     .toBeGreaterThan(0);
   await expect(editor.locator("[data-profile-image-status]")).toContainText(
-    "avatar.gif",
+    "avatar.gif（2.1MB）",
   );
   await editor.getByRole("button", { name: "この範囲を使う" }).click();
   await expect(editor.locator("[data-avatar-preview]")).toHaveCSS(

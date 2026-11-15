@@ -407,7 +407,10 @@ const openPicker = (root: HTMLElement) => {
     applyButton.disabled = true;
 
     if (selectedFile.size > profileImageMaxUploadBytes) {
-      setStatus("画像は2MB以下にしてください。", "error");
+      setStatus(
+        `画像は${formatSize(profileImageMaxUploadBytes)}以下にしてください。`,
+        "error",
+      );
       return;
     }
 
