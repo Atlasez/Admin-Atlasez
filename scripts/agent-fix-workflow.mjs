@@ -197,6 +197,8 @@ async function createDraftPr(args) {
     [
       "pr",
       "create",
+      "--repo",
+      "Atlasez/Admin-Atlesez",
       "--draft",
       "--base",
       "main",
