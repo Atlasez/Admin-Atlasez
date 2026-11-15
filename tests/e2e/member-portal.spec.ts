@@ -107,7 +107,7 @@ test("GIF画像は承認なしで保存し、基本情報だけ承認申請す�
   await expect(
     page.locator("[data-member-profile] .bio-card > [data-bio] a"),
   ).toHaveAttribute("href", "https://example.com/profile");
-  await expect(page.locator("[data-avatar]")).toHaveCSS("width", "120px");
+  await expect(page.locator("[data-avatar]")).toHaveCSS("width", "136px");
   await expect(
     page.getByRole("button", { name: "プロフィールを編集" }),
   ).toBeVisible();
