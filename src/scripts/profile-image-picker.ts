@@ -18,8 +18,10 @@ type GifImageFrame = {
 };
 
 const MAX_STATIC_IMAGE_PIXELS = 30_000_000;
-const MAX_GIF_FRAMES = 240;
-const MAX_GIF_TOTAL_PIXELS = 16_000_000;
+const MAX_GIF_FRAMES = 600;
+// 1280×1280, 12 frames (the supplied GIF) uses about 19.7M source pixels.
+// Cropped output is downscaled to at most 320×320 before it is stored.
+const MAX_GIF_TOTAL_PIXELS = 24_000_000;
 const GIF_PREVIEW_SIZE = 320;
 
 const formatSize = (bytes: number) => {
@@ -233,6 +235,8 @@ const encodeGifFrames = async (
     { size: 320, frameCount: 60, colors: 96 },
     { size: 256, frameCount: 48, colors: 64 },
     { size: 224, frameCount: 36, colors: 48 },
+    { size: 192, frameCount: 24, colors: 32 },
+    { size: 160, frameCount: 18, colors: 24 },
   ];
 
   for (const [presetIndex, preset] of presets.entries()) {
