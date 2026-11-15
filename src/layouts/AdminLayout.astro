@@ -59,15 +59,8 @@ const { title, description, darkReaderLock = false } = Astro.props;
           import("../scripts/admin-editor-subject-preview"),
           import("../scripts/admin-editor-math-macros"),
           import("../scripts/admin-editor-collaboration-labels"),
+          import("../scripts/admin-codemirror"),
         ]);
-
-        if (!document.querySelector('script[data-admin-codemirror]')) {
-          const script = document.createElement("script");
-          script.type = "module";
-          script.src = "/admin-codemirror.js";
-          script.dataset.adminCodemirror = "true";
-          document.head.append(script);
-        }
       };
 
       document.addEventListener("astro:page-load", loadEditorFeatures);

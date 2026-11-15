@@ -5324,7 +5324,14 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       approvalDialog.showModal();
     });
     unpublishButton.addEventListener("click", () => unpublishDialog.showModal());
-    document.addEventListener("astro:before-swap", () => { disconnectCollaboration(); releaseAllAssetPreviews(); }, { once: true });
+    document.addEventListener("astro:before-swap", () => {
+      // 遷移後に古い自動保存が完了すると、破棄済みエディタの応答が
+      // 現在のURLを書き換える。通信と読み込み世代を無効化してから離脱する。
+      cancelAutosave();
+      documentLoadGeneration += 1;
+      disconnectCollaboration();
+      releaseAllAssetPreviews();
+    }, { once: true });
     const query = new URLSearchParams(window.location.search); const reviewDocumentId = query.get("document"); const isNewDocument = query.get("new") === "1"; const updateModeRequested = query.get("mode") === "update";
     if ((reviewDocumentId || isNewDocument) && !window.location.hash) {
       initialScrollRestoreUntil = performance.now() + 15_000;

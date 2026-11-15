@@ -29,6 +29,7 @@ import {
   isSeminarReviewPath,
   SEMINAR_REVIEW_PATH,
 } from "./lib/admin-routes";
+import { getAdminApiAccessPolicy } from "./lib/admin-api-access-policy";
 import { applicationAcceptanceEmail } from "./lib/application-acceptance-email";
 import {
   canAccess,
@@ -1441,6 +1442,22 @@ async function getMemberOperationScope(
   request: Request,
   env: Env,
 ): Promise<AdminScope | Response> {
+  const cached = memberOperationScopeCache.get(request);
+  if (cached) return cached;
+  const pending = resolveMemberOperationScope(request, env);
+  memberOperationScopeCache.set(request, pending);
+  return pending;
+}
+
+const memberOperationScopeCache = new WeakMap<
+  Request,
+  Promise<AdminScope | Response>
+>();
+
+async function resolveMemberOperationScope(
+  request: Request,
+  env: Env,
+): Promise<AdminScope | Response> {
   const current = await getCurrentUserStage(request, env);
   if (isResponse(current)) return current;
   if (current.stage === "ADMIN") return getAdminScope(request, env);
@@ -1458,6 +1475,22 @@ async function getMemberOperationScope(
 }
 
 async function getMemberProfileScope(
+  request: Request,
+  env: Env,
+): Promise<AdminScope | Response> {
+  const cached = memberProfileScopeCache.get(request);
+  if (cached) return cached;
+  const pending = resolveMemberProfileScope(request, env);
+  memberProfileScopeCache.set(request, pending);
+  return pending;
+}
+
+const memberProfileScopeCache = new WeakMap<
+  Request,
+  Promise<AdminScope | Response>
+>();
+
+async function resolveMemberProfileScope(
   request: Request,
   env: Env,
 ): Promise<AdminScope | Response> {
@@ -1749,11 +1782,50 @@ async function getPrototypeDeveloperScope(
   request: Request,
   env: Env,
 ): Promise<AdminScope | Response> {
+  const cached = prototypeDeveloperScopeCache.get(request);
+  if (cached) return cached;
+  const pending = resolvePrototypeDeveloperScope(request, env);
+  prototypeDeveloperScopeCache.set(request, pending);
+  return pending;
+}
+
+const prototypeDeveloperScopeCache = new WeakMap<
+  Request,
+  Promise<AdminScope | Response>
+>();
+
+async function resolvePrototypeDeveloperScope(
+  request: Request,
+  env: Env,
+): Promise<AdminScope | Response> {
   const identity = await getAuthenticatedEmail(request, env);
   if (isResponse(identity)) return identity;
   if (identity.toLowerCase() !== primaryAdminEmail(env))
     return json({ error: "この試作ページは開発者のみ利用できます。" }, 403);
   return getGlobalAdminScope(request, env);
+}
+
+async function enforceAdminApiAccessPolicy(
+  request: Request,
+  env: Env,
+  policy: ReturnType<typeof getAdminApiAccessPolicy>,
+): Promise<Response | null> {
+  let scope: AdminScope | Response | null = null;
+  switch (policy) {
+    case "admin":
+      scope = await getAdminScope(request, env);
+      break;
+    case "member":
+      scope = await getMemberOperationScope(request, env);
+      break;
+    case "profile":
+      scope = await getMemberProfileScope(request, env);
+      break;
+    case "none":
+    case "dedicated":
+      return null;
+  }
+  return scope && isResponse(scope) ? scope : null;
 }
 
 const isSameOrigin = (request: Request) => {
@@ -21527,66 +21599,6 @@ const memberPagePaths = new Set([
   "/admin/member-calendar",
   "/admin/member-calendar/",
 ]);
-// These exact methods use getMemberOperationScope in their handlers instead of
-// the generic admin-only API gate; no other /api/admin endpoint is exempt.
-const memberScopedApiMethods = new Map<string, ReadonlySet<string>>([
-  ["/api/admin/project-profile", new Set(["GET", "PUT"])],
-  ["/api/admin/project-introductions", new Set(["GET"])],
-  ["/api/admin/project-profile-change-requests", new Set(["GET"])],
-  ["/api/admin/profile-change-requests", new Set(["GET"])],
-  ["/api/admin/applications", new Set(["GET"])],
-  ["/api/admin/member-intake", new Set(["GET", "PUT"])],
-  ["/api/admin/my-intake", new Set(["GET"])],
-  ["/api/admin/portal", new Set(["GET"])],
-  ["/api/admin/task-templates", new Set(["GET","POST"])],
-  ["/api/admin/member-tasks", new Set(["GET"])],
-  ["/api/admin/my-access", new Set(["GET"])],
-  ["/api/admin/member-calendar", new Set(["GET"])],
-  ["/api/admin/notifications/preferences", new Set(["GET","PUT"])],
-  ["/api/admin/notifications/snooze", new Set(["POST"])],
-  ["/api/admin/notifications", new Set(["GET"])],
-  ["/api/admin/notifications/read", new Set(["POST"])],
-  ["/api/admin/operations/tasks", new Set(["POST"])],
-  ["/api/admin/operations/availability-blocks", new Set(["POST"])],
-  ["/api/admin/operations/availability-rules", new Set(["POST"])],
-]);
-const memberScopedApiDynamicMethods: Array<{
-  path: RegExp;
-  methods: ReadonlySet<string>;
-}> = [
-  { path: /^\/api\/admin\/project-profile-change-requests\/[0-9a-f-]{36}$/i, methods: new Set(["PATCH"]) },
-  { path: /^\/api\/admin\/profile-change-requests\/[0-9a-f-]{36}$/i, methods: new Set(["PATCH"]) },
-  { path: /^\/api\/admin\/applications\/[0-9a-f-]{36}$/i, methods: new Set(["PATCH"]) },
-  { path: /^\/api\/admin\/applications\/[0-9a-f-]{36}\/(?:interview|interview-review)$/i, methods: new Set(["GET", "PUT"]) },
-  { path: /^\/api\/admin\/applications\/[0-9a-f-]{36}\/(?:interview\/notify|interview\/complete|discord-retry)$/i, methods: new Set(["POST"]) },
-  { path: /^\/api\/admin\/task-workspaces\/[0-9a-f-]{36}$/i, methods: new Set(["GET", "PUT"]) },
-  { path: /^\/api\/admin\/task-templates\/[0-9a-f-]{36}$/i, methods: new Set(["PATCH"]) },
-  { path: /^\/api\/admin\/task-templates\/[0-9a-f-]{36}\/create$/i, methods: new Set(["POST"]) },
-  {
-    path: /^\/api\/admin\/operations\/tasks\/[0-9a-f-]{36}$/i,
-    methods: new Set(["PATCH"]),
-  },
-  {
-    path: /^\/api\/admin\/operations\/events\/[0-9a-f-]{36}\/availability$/i,
-    methods: new Set(["PUT"]),
-  },
-  {
-    path: /^\/api\/admin\/operations\/availability-blocks\/[0-9a-f-]{36}$/i,
-    methods: new Set(["DELETE"]),
-  },
-  {
-    path: /^\/api\/admin\/operations\/availability-rules\/[0-9a-f-]{36}$/i,
-    methods: new Set(["DELETE"]),
-  },
-];
-const isMemberScopedApiMethod = (pathname: string, method: string) =>
-  Boolean(
-    memberScopedApiMethods.get(pathname)?.has(method) ||
-      memberScopedApiDynamicMethods.some(
-        (route) => route.path.test(pathname) && route.methods.has(method),
-      ),
-  );
-
 const projectHomeForPath = (pathname: string): string | null => ({
   "/admin/atlas": "atlas",
   "/admin/secretariat": "secretariat",
@@ -23690,6 +23702,14 @@ async function handleAdminRequest(
   ctx?: WorkerExecutionContext,
 ): Promise<Response> {
   const url = new URL(request.url);
+  const adminApiAccess = getAdminApiAccessPolicy(url.pathname, request.method);
+  const adminApiAccessFailure = await enforceAdminApiAccessPolicy(
+    request,
+    env,
+    adminApiAccess,
+  );
+  if (adminApiAccessFailure) return adminApiAccessFailure;
+
   if (url.pathname === "/api/seminars" || url.pathname.startsWith("/api/seminars/"))
     return handleSeminarApi(request, env.REPORTS, {
       account: () => getAuthenticatedAtlasezAccount(request, env),
@@ -23852,20 +23872,6 @@ async function handleAdminRequest(
   if (url.pathname === "/api/admin/member-procedures")
     return memberProcedureRequests(request, env);
 
-  // すべての管理APIは、個別ハンドラの処理へ入る前に共通の管理スコープを
-  // 解決する。各ハンドラはプロジェクト・分野・操作種別に応じた追加境界を
-  // 引き続き検証するが、ここで認証・基本的な管理権限のチェック漏れを防ぐ。
-  // auth-status/profile と、メンバー用の取得・本人通知APIは専用スコープを
-  // 各ハンドラで検証するため、この管理者ゲートの対象外とする。
-  if (
-    url.pathname.startsWith("/api/admin/") &&
-    url.pathname !== "/api/admin/profile" &&
-    url.pathname !== "/api/admin/developer/diagnostics" &&
-    !isMemberScopedApiMethod(url.pathname, request.method)
-  ) {
-    const baselineScope = await getAdminScope(request, env);
-    if (isResponse(baselineScope)) return baselineScope;
-  }
   if (url.pathname === "/api/admin/notifications/preferences" || url.pathname === "/api/admin/notifications/snooze") {
     const scope=await getMemberOperationScope(request,env);
     if(isResponse(scope))return scope;
@@ -24562,8 +24568,7 @@ async function handleAdminRequest(
     url.pathname === "/build-info.json" ||
     url.pathname === "/admin-manifest.webmanifest" ||
     url.pathname === "/admin-sw.js" ||
-    url.pathname === "/favicon.svg" ||
-    url.pathname === "/admin-codemirror.js"
+    url.pathname === "/favicon.svg"
   ) {
     return env.ASSETS.fetch(request);
   }
