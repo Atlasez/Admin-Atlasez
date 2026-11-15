@@ -3,6 +3,7 @@ import {
   ADMIN_PAGE_PATHS,
   globalAdminPrototypePaths,
   isAdminPagePath,
+  resolveAdminNavRoute,
 } from "../../src/lib/admin-routes";
 
 describe("admin page routes", () => {
@@ -38,19 +39,22 @@ describe("admin page routes", () => {
     expect(ADMIN_PAGE_PATHS).toContain("/admin/notifications");
   });
 
-  it("does not expose the removed outline page but keeps prototype pages", () => {
+  it("does not expose removed editor prototypes but keeps active prototypes", () => {
     expect(isAdminPagePath("/admin/editor/outline")).toBe(false);
     expect(isAdminPagePath("/admin/editor/outline/")).toBe(false);
-    expect(isAdminPagePath("/admin/ui-prototype/editor-toolbar/")).toBe(true);
+    expect(isAdminPagePath("/admin/ui-prototype/editor-toolbar/")).toBe(false);
     expect(isAdminPagePath("/admin/ui-prototype/editor-header-codex/")).toBe(
-      true,
+      false,
     );
+    expect(isAdminPagePath("/admin/ui-prototype/welcome-login/")).toBe(true);
     expect(ADMIN_PAGE_PATHS).not.toContain("/admin/editor/outline");
   });
 
-  it("exposes the nested learning content prototype without adding it to top-level navigation", () => {
-    expect(isAdminPagePath("/admin/ui-prototype/learning-content")).toBe(true);
-    expect(isAdminPagePath("/admin/ui-prototype/learning-content/")).toBe(true);
+  it("does not expose the removed learning content prototype", () => {
+    expect(isAdminPagePath("/admin/ui-prototype/learning-content")).toBe(false);
+    expect(isAdminPagePath("/admin/ui-prototype/learning-content/")).toBe(
+      false,
+    );
     expect(ADMIN_PAGE_PATHS).not.toContain(
       "/admin/ui-prototype/learning-content",
     );
@@ -63,5 +67,31 @@ describe("admin page routes", () => {
       "/admin/ui-prototype/welcome-operations-error/",
     );
     expect(ADMIN_PAGE_PATHS).not.toContain("/admin/ui-prototype/welcome-login");
+  });
+
+  it("uses the same project and page state for server and client navigation", () => {
+    expect(
+      resolveAdminNavRoute("/admin/calendar/", "seminar-platform"),
+    ).toEqual({
+      site: "semi-platform",
+      slug: "seminar-platform",
+      current: "calendar",
+      home: "/admin/semi-platform/",
+      label: "ゼミプラットフォーム",
+    });
+    expect(resolveAdminNavRoute("/admin/profile-requests/", "atlas")).toEqual({
+      site: "secretariat",
+      slug: "secretariat",
+      current: "profile-requests",
+      home: "/admin/secretariat/",
+      label: "Atlasez運営事務局",
+    });
+    expect(resolveAdminNavRoute("/admin/member-profile/edit/")).toEqual({
+      site: "portal",
+      slug: "atlas",
+      current: "member-profile-edit",
+      home: "/admin/portal/",
+      label: "Atlasezメンバー用サイト",
+    });
   });
 });

@@ -3584,7 +3584,7 @@ describe("applicant stage server-side access", () => {
     expect(practice.status).toBe(403);
   });
 
-  it("limits nested UI prototypes to full global admins", async () => {
+  it("returns 404 for removed editor prototypes", async () => {
     const paths = [
       "/admin/ui-prototype/editor-header/",
       "/admin/ui-prototype/editor-header-admin",
@@ -3593,6 +3593,19 @@ describe("applicant stage server-side access", () => {
       "/admin/ui-prototype/editor-header-focus/",
       "/admin/ui-prototype/editor-header-jreast",
       "/admin/ui-prototype/editor-toolbar/",
+      "/admin/ui-prototype/learning-content/",
+    ];
+    for (const path of paths) {
+      const response = await worker.fetch(
+        loggedInRequest(path),
+        stageEnv("accepted", true, false, false, true) as never,
+      );
+      expect(response.status, path).toBe(404);
+    }
+  });
+
+  it("limits active nested UI prototypes to full global admins", async () => {
+    const paths = [
       "/admin/ui-prototype/welcome-login/",
       "/admin/ui-prototype/welcome-not-found/",
       "/admin/ui-prototype/welcome-screens/",

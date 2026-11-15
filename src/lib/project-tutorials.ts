@@ -86,9 +86,9 @@ export const projectOperationalAreas: Record<string, ProjectOperationalArea[]> =
         access: "member",
       },
       {
-        title: "事務局の日程・交流",
-        purpose: "開催予定と交流に必要な案内を確認します。",
-        path: "/admin/co-working/?project=secretariat",
+        title: "事務局カレンダー",
+        purpose: "開催予定と参加状況を確認します。",
+        path: "/admin/calendar/?project=secretariat",
         access: "member",
       },
       {
@@ -118,9 +118,9 @@ export const projectOperationalAreas: Record<string, ProjectOperationalArea[]> =
         access: "member",
       },
       {
-        title: "ゼミ日程・交流",
-        purpose: "開催予定と交流に必要な案内を確認します。",
-        path: "/admin/co-working/?project=seminar-platform",
+        title: "ゼミカレンダー",
+        purpose: "開催予定と参加状況を確認します。",
+        path: "/admin/calendar/?project=seminar-platform",
         access: "member",
       },
       {
