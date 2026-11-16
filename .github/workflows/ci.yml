@@ -25,6 +25,7 @@ jobs:
       - name: 依存関係のインストール
         run: npm ci
       - name: Cloudflare本番ターゲット検証
+        id: deploy-config
         run: npm run verify:deploy-config
       - name: Wrangler CLI の依存解決確認
         run: npm run verify:deploy-cli
@@ -33,22 +34,32 @@ jobs:
       - name: 数式のKaTeX描画検査
         run: npm run audit:math
       - name: TypeScriptチェック
+        id: check
         run: npx astro check
       - name: Lint
+        id: lint
         run: npm run lint
       - name: Formatチェック
+        id: format
         run: npm run format:check
       - name: 単体テスト
+        id: unit
         run: npm test
+      - name: 公開状態モデル検査
+        id: publication-model
+        run: npm run verify:publication-model
       - name: ビルド（下書きは除外される）
+        id: build
         run: npm run build:ci
       - name: 検索インデックス生成
         run: npx pagefind --site dist
       - name: ビルド成果物のcommit SHA検証
         run: npm run verify:build-info
       - name: 内部リンク検証
+        id: links
         run: node scripts/check-links.mjs dist "$BASE_PATH"
       - name: E2E・アクセシビリティ検査 (Playwright + axe)
+        id: e2e
         timeout-minutes: 12
         env:
           E2E_BASE_URL: http://localhost:4321
@@ -60,10 +71,69 @@ jobs:
             -v "$GITHUB_WORKSPACE:/work" -w /work \
             "mcr.microsoft.com/playwright:v${playwright_version}-noble" \
             npx playwright test
-      - name: Lighthouse CI（品質検査）
+      - name: Lighthouse CLI
         run: |
-          npm install -g @lhci/cli
-          npx astro preview --port 4321 &
-          sleep 3
-          lhci collect --url="http://localhost:4321/" --url="http://localhost:4321/atlas/ja/" --numberOfRuns=1 || true
-          lhci assert --preset=lighthouse:no-pwa --assertions.categories:accessibility=error || true
+          npm install --global @lhci/cli@0.16.1
+          lhci --version
+      - name: Lighthouse用プレビューを起動
+        id: lighthouse-preview
+        run: |
+          npm run preview -- --host 127.0.0.1 --port 4321 > "$RUNNER_TEMP/atlasez-lighthouse-preview.log" 2>&1 &
+          preview_pid=$!
+          echo "$preview_pid" > "$RUNNER_TEMP/atlasez-lighthouse-preview.pid"
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4321/ > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/atlasez-lighthouse-preview.log"
+          exit 1
+      - name: Lighthouse測定
+        id: lighthouse-collect
+        run: |
+          lhci collect \
+            --url="http://127.0.0.1:4321/" \
+            --url="http://127.0.0.1:4321/atlas/ja/" \
+            --numberOfRuns=1
+      - name: Lighthouse品質基準
+        id: lighthouse-assert
+        run: lhci assert --config=lighthouserc.json
+      - name: Lighthouse用プレビューを終了
+        if: always()
+        run: |
+          pid_file="$RUNNER_TEMP/atlasez-lighthouse-preview.pid"
+          if [[ -f "$pid_file" ]]; then
+            preview_pid="$(cat "$pid_file")"
+            if kill -0 "$preview_pid" 2>/dev/null; then
+              kill "$preview_pid"
+            fi
+          fi
+      - name: 検証サマリーを生成
+        if: always()
+        env:
+          E2E_OUTCOME: ${{ steps.e2e.outcome }}
+          LHCI_COLLECT_OUTCOME: ${{ steps.lighthouse-collect.outcome }}
+          LHCI_ASSERT_OUTCOME: ${{ steps.lighthouse-assert.outcome }}
+          DEPLOY_CONFIG_OUTCOME: ${{ steps.deploy-config.outcome }}
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
+          FORMAT_OUTCOME: ${{ steps.format.outcome }}
+          UNIT_OUTCOME: ${{ steps.unit.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          PUBLICATION_MODEL_OUTCOME: ${{ steps.publication-model.outcome }}
+          LINKS_OUTCOME: ${{ steps.links.outcome }}
+          ATLASEZ_BUILD_TARGET: ci
+        run: npm run verification:summary
+      - name: 検証証拠をArtifactに保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            verification-artifacts/
+            test-results/
+            .lighthouseci/
+            ${{ runner.temp }}/atlasez-lighthouse-preview.log
+          if-no-files-found: warn
+          retention-days: 14

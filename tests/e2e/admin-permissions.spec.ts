@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../helpers/verification-test";
 
 test("参加者カードは概要表示に絞り、個人設定モーダルを主導線にする", async ({
   page,
