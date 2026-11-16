@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../helpers/verification-test";
 
 const emptyPayload = {
   generatedAt: "2026-11-09T00:00:00.000Z",

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../helpers/verification-test";
 import * as Y from "yjs";
 
 const editorDocumentListRoute = /\/api\/admin\/editor\/documents(?:\?.*)?$/;
@@ -2256,6 +2256,63 @@ test("E-8: 入力内容は自動保存され、手動保存UIを表示しない"
     "入力内容を自動保存しました",
   );
   await expect.poll(() => revisionLoads).toBe(1);
+});
+
+test("新規原稿の自動保存内容は再読み込み後も復元できる", async ({ page }) => {
+  await mockAdminApi(page);
+  let savedDocument: Record<string, unknown> | null = null;
+  await page.route("**/api/admin/editor/documents", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    savedDocument = {
+      ...documentItem,
+      ...(route.request().postDataJSON() as Record<string, unknown>),
+      id: "doc-durable",
+      status: "draft",
+    };
+    await route.fulfill({
+      status: 201,
+      json: { ok: true, id: "doc-durable" },
+    });
+  });
+  await page.route(
+    "**/api/admin/editor/documents/doc-durable",
+    async (route) => {
+      if (route.request().method() === "PATCH") {
+        savedDocument = {
+          ...savedDocument,
+          ...(route.request().postDataJSON() as Record<string, unknown>),
+          updated_at: "2026-11-16T00:00:00.000Z",
+        };
+        await route.fulfill({
+          json: { ok: true, updatedAt: "2026-11-16T00:00:00.000Z" },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: { document: savedDocument, comments: [] },
+      });
+    },
+  );
+  await page.route(
+    "**/api/admin/editor/documents/doc-durable/revisions",
+    (route) => route.fulfill({ json: { revisions: [] } }),
+  );
+
+  await page.goto("./admin/editor/?new=1");
+  await page.locator('[name="title"]').fill("再読み込み確認用の記事");
+  const body = "保存後にもう一度読み込みます。";
+  await page.locator("[data-body]").fill(body);
+  await expect(page).toHaveURL(/\?document=doc-durable$/);
+  await expect.poll(() => savedDocument?.body).toBe(body);
+  await expect(page.locator("[data-save-message]")).toContainText(
+    "入力内容を自動保存しました",
+  );
+
+  await page.reload();
+  await expect(page.locator('[name="title"]')).toHaveValue(
+    "再読み込み確認用の記事",
+  );
+  await expect(page.locator("[data-body]")).toHaveValue(body);
 });
 
 test("新規原稿の自動保存中に別の記事へ切り替えても入力先を混同しない", async ({

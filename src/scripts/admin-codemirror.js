@@ -1,16 +1,13 @@
-import { basicSetup, EditorView } from "https://esm.sh/codemirror@6.0.2";
-import { Decoration } from "https://esm.sh/@codemirror/view@^6.0.0?target=es2022";
-import { HighlightStyle, syntaxHighlighting } from "https://esm.sh/@codemirror/language@^6.0.0?target=es2022";
-import { tags } from "https://esm.sh/@lezer/highlight@^1.0.0?target=es2022";
+import { basicSetup, EditorView } from "codemirror";
+import { Decoration } from "@codemirror/view";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 // Match the state module URL used internally by the codemirror bundle so the
 // compartment and EditorView share the same extension registry.
-import { Compartment } from "https://esm.sh/@codemirror/state@^6.0.0?target=es2022";
-import { markdown } from "https://esm.sh/@codemirror/lang-markdown@6.3.4";
-import {
-  autocompletion,
-  snippetCompletion,
-} from "https://esm.sh/@codemirror/autocomplete@6.18.6";
-import { openSearchPanel } from "https://esm.sh/@codemirror/search@6.5.10";
+import { Compartment } from "@codemirror/state";
+import { markdown } from "@codemirror/lang-markdown";
+import { autocompletion, snippetCompletion } from "@codemirror/autocomplete";
+import { openSearchPanel } from "@codemirror/search";
 
 const activeEditors = new Map();
 const valueDescriptor = Object.getOwnPropertyDescriptor(
@@ -52,7 +49,8 @@ const atlasSyntaxDecorations = (state) => {
   const add = (from, to, className) => {
     if (to > from) marks.push({ from, to, decoration: atlasMark(className) });
   };
-  const isInFence = (from, to = from) => fencedRanges.some((range) => from < range.to && to > range.from);
+  const isInFence = (from, to = from) =>
+    fencedRanges.some((range) => from < range.to && to > range.from);
 
   // Identify fenced code first. TeX-looking text inside a code sample should
   // stay code, just as it does in VS Code and CloudLaTeX.
@@ -62,11 +60,15 @@ const atlasSyntaxDecorations = (state) => {
   while ((fenceMatch = fencePattern.exec(source))) {
     if (fenceOpen === null) fenceOpen = fenceMatch.index;
     else {
-      fencedRanges.push({ from: fenceOpen, to: fenceMatch.index + fenceMatch[0].length });
+      fencedRanges.push({
+        from: fenceOpen,
+        to: fenceMatch.index + fenceMatch[0].length,
+      });
       fenceOpen = null;
     }
   }
-  if (fenceOpen !== null) fencedRanges.push({ from: fenceOpen, to: source.length });
+  if (fenceOpen !== null)
+    fencedRanges.push({ from: fenceOpen, to: source.length });
 
   // Atlas definition/proposition/theorem blocks are not part of CommonMark,
   // so mark their complete opening/closing lines as a recognisable syntax
@@ -76,7 +78,10 @@ const atlasSyntaxDecorations = (state) => {
     const start = lineStart;
     lineStart += line.length + 1;
     if (isInFence(start, start + line.length)) continue;
-    if (/^\s*:{3,4}[A-Za-z][A-Za-z0-9_-]*/u.test(line) || /^\s*:{3,4}\s*$/u.test(line)) {
+    if (
+      /^\s*:{3,4}[A-Za-z][A-Za-z0-9_-]*/u.test(line) ||
+      /^\s*:{3,4}\s*$/u.test(line)
+    ) {
       add(start, start + line.length, "cm-atlas-directive");
     }
   }
@@ -84,14 +89,20 @@ const atlasSyntaxDecorations = (state) => {
   // Highlight TeX delimiters, commands and structural braces separately so
   // formulas remain readable even when the editor is dense. Multiline display
   // math is supported for $$...$$ and \\[...\\] forms.
-  const mathPattern = /\$\$[\s\S]*?\$\$|\$[^$\n]+\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)/g;
+  const mathPattern =
+    /\$\$[\s\S]*?\$\$|\$[^$\n]+\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)/g;
   let mathMatch;
   while ((mathMatch = mathPattern.exec(source))) {
     const from = mathMatch.index;
     const to = from + mathMatch[0].length;
     if (isInFence(from, to)) continue;
     const value = mathMatch[0];
-    const delimiterLength = value.startsWith("$$") || value.startsWith("\\[") || value.startsWith("\\(") ? 2 : 1;
+    const delimiterLength =
+      value.startsWith("$$") ||
+      value.startsWith("\\[") ||
+      value.startsWith("\\(")
+        ? 2
+        : 1;
     const innerStart = from + delimiterLength;
     const innerEnd = to - delimiterLength;
     add(from, innerStart, "cm-atlas-math-delimiter");
@@ -99,7 +110,10 @@ const atlasSyntaxDecorations = (state) => {
     let cursor = innerStart;
     let command;
     commandPattern.lastIndex = delimiterLength;
-    while ((command = commandPattern.exec(value)) && from + command.index < innerEnd) {
+    while (
+      (command = commandPattern.exec(value)) &&
+      from + command.index < innerEnd
+    ) {
       const commandFrom = from + command.index;
       const commandTo = Math.min(commandFrom + command[0].length, innerEnd);
       if (commandFrom > cursor) add(cursor, commandFrom, "cm-atlas-math");
@@ -115,7 +129,8 @@ const atlasSyntaxDecorations = (state) => {
   const commentPattern = /<!--[\s\S]*?-->/g;
   let comment;
   while ((comment = commentPattern.exec(source))) {
-    if (!isInFence(comment.index, comment.index + comment[0].length)) add(comment.index, comment.index + comment[0].length, "cm-atlas-comment");
+    if (!isInFence(comment.index, comment.index + comment[0].length))
+      add(comment.index, comment.index + comment[0].length, "cm-atlas-comment");
   }
 
   marks.sort((a, b) => a.from - b.from || a.to - b.to);
@@ -133,60 +148,165 @@ const atlasSyntaxDecorations = (state) => {
 };
 
 const mathCompletions = [
-  snippetCompletion("\\frac{${numerator}}{${denominator}}", { label: "\\frac", detail: "分数" }),
-  snippetCompletion("\\sqrt{${expression}}", { label: "\\sqrt", detail: "平方根" }),
-  snippetCompletion("\\sqrt[${n}]{${expression}}", { label: "\\sqrt[n]", detail: "n乗根" }),
-  snippetCompletion("\\binom{${n}}{${k}}", { label: "\\binom", detail: "二項係数" }),
-  snippetCompletion("\\sum_{${i=1}}^{${n}} ${expression}", { label: "\\sum", detail: "総和" }),
-  snippetCompletion("\\prod_{${i=1}}^{${n}} ${expression}", { label: "\\prod", detail: "総積" }),
-  snippetCompletion("\\int_{${a}}^{${b}} ${expression}\\,\\mathrm{d}${x}", { label: "\\int", detail: "積分" }),
-  snippetCompletion("\\lim_{${x\\to a}} ${expression}", { label: "\\lim", detail: "極限" }),
-  snippetCompletion("\\begin{${pmatrix}}\n  ${a} & ${b} \\\\\n  ${c} & ${d}\n\\end{${pmatrix}}", { label: "\\begin", detail: "行列・環境" }),
+  snippetCompletion("\\frac{${numerator}}{${denominator}}", {
+    label: "\\frac",
+    detail: "分数",
+  }),
+  snippetCompletion("\\sqrt{${expression}}", {
+    label: "\\sqrt",
+    detail: "平方根",
+  }),
+  snippetCompletion("\\sqrt[${n}]{${expression}}", {
+    label: "\\sqrt[n]",
+    detail: "n乗根",
+  }),
+  snippetCompletion("\\binom{${n}}{${k}}", {
+    label: "\\binom",
+    detail: "二項係数",
+  }),
+  snippetCompletion("\\sum_{${i=1}}^{${n}} ${expression}", {
+    label: "\\sum",
+    detail: "総和",
+  }),
+  snippetCompletion("\\prod_{${i=1}}^{${n}} ${expression}", {
+    label: "\\prod",
+    detail: "総積",
+  }),
+  snippetCompletion("\\int_{${a}}^{${b}} ${expression}\\,\\mathrm{d}${x}", {
+    label: "\\int",
+    detail: "積分",
+  }),
+  snippetCompletion("\\lim_{${x\\to a}} ${expression}", {
+    label: "\\lim",
+    detail: "極限",
+  }),
+  snippetCompletion(
+    "\\begin{${pmatrix}}\n  ${a} & ${b} \\\\\n  ${c} & ${d}\n\\end{${pmatrix}}",
+    { label: "\\begin", detail: "行列・環境" },
+  ),
   ...[
-    ["\\alpha", "α"], ["\\beta", "β"], ["\\gamma", "γ"], ["\\delta", "δ"],
-    ["\\epsilon", "ε"], ["\\theta", "θ"], ["\\lambda", "λ"], ["\\mu", "μ"],
-    ["\\pi", "π"], ["\\sigma", "σ"], ["\\phi", "φ"], ["\\omega", "ω"],
-    ["\\infty", "∞"], ["\\in", "集合への所属"], ["\\subseteq", "部分集合"],
-    ["\\notin", "所属しない"], ["\\subset", "真部分集合"], ["\\cup", "和集合"], ["\\cap", "共通部分"],
-    ["\\setminus", "差集合"], ["\\varnothing", "空集合"], ["\\forall", "全称記号"], ["\\exists", "存在記号"],
-    ["\\leq", "以下"], ["\\geq", "以上"], ["\\neq", "等しくない"], ["\\approx", "近似"], ["\\equiv", "合同・同値"],
-    ["\\sim", "相似・同値"], ["\\cong", "同型"], ["\\mapsto", "写像"], ["\\to", "写像・極限"],
-    ["\\Rightarrow", "含意"], ["\\Leftrightarrow", "同値"], ["\\mathbb", "黒板太字"],
-    ["\\mathrm", "ローマン体"], ["\\mathbf", "太字"], ["\\mathcal", "カリグラフィ体"], ["\\mathfrak", "フラクトゥール体"],
-    ["\\text", "数式内の文章"], ["\\operatorname", "演算子名"], ["\\left", "自動サイズ括弧"], ["\\right", "自動サイズ括弧"],
-    ["\\cdot", "ドット積"], ["\\times", "外積・乗算"], ["\\pm", "正負"], ["\\partial", "偏微分"], ["\\nabla", "ナブラ"],
-    ["\\overline", "上線"], ["\\hat", "ハット"], ["\\vec", "ベクトル矢印"], ["\\underbrace", "下括弧"],
-    ["\\log", "対数"], ["\\ln", "自然対数"], ["\\exp", "指数関数"], ["\\sin", "正弦"], ["\\cos", "余弦"], ["\\tan", "正接"],
-    ["\\det", "行列式"], ["\\min", "最小値"], ["\\max", "最大値"], ["\\inf", "下限"], ["\\sup", "上限"],
-    ["\\Hom", "準同型全体"], ["\\End", "自己準同型全体"], ["\\Aut", "自己同型全体"],
-    ["\\GL", "一般線形群"], ["\\SL", "特殊線形群"], ["\\id", "恒等写像"],
-    ["\\E", "期待値"], ["\\Var", "分散"], ["\\Cov", "共分散"], ["\\Prob", "確率"],
-    ["\\Bern", "ベルヌーイ分布"], ["\\floor", "床関数"], ["\\ceil", "天井関数"],
-    ["\\sgn", "符号関数"], ["\\supp", "台"], ["\\argmin", "最小点"], ["\\argmax", "最大点"],
-    ["\\dist", "距離"], ["\\diam", "直径"], ["\\Area", "面積"], ["\\vol", "体積"], ["\\ang", "角度"],
+    ["\\alpha", "α"],
+    ["\\beta", "β"],
+    ["\\gamma", "γ"],
+    ["\\delta", "δ"],
+    ["\\epsilon", "ε"],
+    ["\\theta", "θ"],
+    ["\\lambda", "λ"],
+    ["\\mu", "μ"],
+    ["\\pi", "π"],
+    ["\\sigma", "σ"],
+    ["\\phi", "φ"],
+    ["\\omega", "ω"],
+    ["\\infty", "∞"],
+    ["\\in", "集合への所属"],
+    ["\\subseteq", "部分集合"],
+    ["\\notin", "所属しない"],
+    ["\\subset", "真部分集合"],
+    ["\\cup", "和集合"],
+    ["\\cap", "共通部分"],
+    ["\\setminus", "差集合"],
+    ["\\varnothing", "空集合"],
+    ["\\forall", "全称記号"],
+    ["\\exists", "存在記号"],
+    ["\\leq", "以下"],
+    ["\\geq", "以上"],
+    ["\\neq", "等しくない"],
+    ["\\approx", "近似"],
+    ["\\equiv", "合同・同値"],
+    ["\\sim", "相似・同値"],
+    ["\\cong", "同型"],
+    ["\\mapsto", "写像"],
+    ["\\to", "写像・極限"],
+    ["\\Rightarrow", "含意"],
+    ["\\Leftrightarrow", "同値"],
+    ["\\mathbb", "黒板太字"],
+    ["\\mathrm", "ローマン体"],
+    ["\\mathbf", "太字"],
+    ["\\mathcal", "カリグラフィ体"],
+    ["\\mathfrak", "フラクトゥール体"],
+    ["\\text", "数式内の文章"],
+    ["\\operatorname", "演算子名"],
+    ["\\left", "自動サイズ括弧"],
+    ["\\right", "自動サイズ括弧"],
+    ["\\cdot", "ドット積"],
+    ["\\times", "外積・乗算"],
+    ["\\pm", "正負"],
+    ["\\partial", "偏微分"],
+    ["\\nabla", "ナブラ"],
+    ["\\overline", "上線"],
+    ["\\hat", "ハット"],
+    ["\\vec", "ベクトル矢印"],
+    ["\\underbrace", "下括弧"],
+    ["\\log", "対数"],
+    ["\\ln", "自然対数"],
+    ["\\exp", "指数関数"],
+    ["\\sin", "正弦"],
+    ["\\cos", "余弦"],
+    ["\\tan", "正接"],
+    ["\\det", "行列式"],
+    ["\\min", "最小値"],
+    ["\\max", "最大値"],
+    ["\\inf", "下限"],
+    ["\\sup", "上限"],
+    ["\\Hom", "準同型全体"],
+    ["\\End", "自己準同型全体"],
+    ["\\Aut", "自己同型全体"],
+    ["\\GL", "一般線形群"],
+    ["\\SL", "特殊線形群"],
+    ["\\id", "恒等写像"],
+    ["\\E", "期待値"],
+    ["\\Var", "分散"],
+    ["\\Cov", "共分散"],
+    ["\\Prob", "確率"],
+    ["\\Bern", "ベルヌーイ分布"],
+    ["\\floor", "床関数"],
+    ["\\ceil", "天井関数"],
+    ["\\sgn", "符号関数"],
+    ["\\supp", "台"],
+    ["\\argmin", "最小点"],
+    ["\\argmax", "最大点"],
+    ["\\dist", "距離"],
+    ["\\diam", "直径"],
+    ["\\Area", "面積"],
+    ["\\vol", "体積"],
+    ["\\ang", "角度"],
   ].map(([label, detail]) => ({ label, detail, type: "keyword" })),
 ];
 
 const dynamicMathCompletions = (textarea, source) => {
   const options = [];
   const workspace = textarea.closest("[data-editor-workspace]");
-  const selectedPreset = workspace?.querySelector("select[data-math-preset] option:checked");
+  const selectedPreset = workspace?.querySelector(
+    "select[data-math-preset] option:checked",
+  );
   try {
     const macros = JSON.parse(selectedPreset?.dataset.mathMacros ?? "{}");
     for (const command of Object.keys(macros))
-      options.push({ label: command, detail: "選択中のプリセット", type: "keyword" });
+      options.push({
+        label: command,
+        detail: "選択中のプリセット",
+        type: "keyword",
+      });
   } catch {
     // A malformed data attribute must never disable the editor.
   }
-  const declaration = /\\(?:newcommand|renewcommand|providecommand|DeclareMathOperator)\*?\s*(?:\{)?(\\[A-Za-z][A-Za-z0-9]*)|\\(?:def|gdef)\s*(\\[A-Za-z][A-Za-z0-9]*)/g;
+  const declaration =
+    /\\(?:newcommand|renewcommand|providecommand|DeclareMathOperator)\*?\s*(?:\{)?(\\[A-Za-z][A-Za-z0-9]*)|\\(?:def|gdef)\s*(\\[A-Za-z][A-Za-z0-9]*)/g;
   for (const match of source.matchAll(declaration))
-    options.push({ label: match[1] ?? match[2], detail: "この記事のマクロ", type: "keyword" });
+    options.push({
+      label: match[1] ?? match[2],
+      detail: "この記事のマクロ",
+      type: "keyword",
+    });
   return [...new Map(options.map((option) => [option.label, option])).values()];
 };
 
 const completeMath = (textarea) => (context) => {
   const word = context.matchBefore(/\\[A-Za-z]*/);
-  const options = [...mathCompletions, ...dynamicMathCompletions(textarea, context.state.doc.toString())];
+  const options = [
+    ...mathCompletions,
+    ...dynamicMathCompletions(textarea, context.state.doc.toString()),
+  ];
   if (!word && !context.explicit) return null;
   return {
     from: word?.from ?? context.pos,
@@ -234,10 +354,11 @@ const editorTheme = EditorView.theme({
     minWidth: "2rem",
     padding: ".15rem .4rem",
   },
-  ".cm-search button[name=close]:hover, .cm-search button[name=close]:focus-visible": {
-    backgroundColor: "var(--accent, #176ea6)",
-    color: "#fff",
-  },
+  ".cm-search button[name=close]:hover, .cm-search button[name=close]:focus-visible":
+    {
+      backgroundColor: "var(--accent, #176ea6)",
+      color: "#fff",
+    },
   ".cm-line": { padding: "0 1rem" },
   ".cm-gutters": {
     backgroundColor: "var(--surface-alt)",
@@ -252,12 +373,13 @@ const editorTheme = EditorView.theme({
     backgroundColor: "color-mix(in srgb, var(--accent), transparent 90%)",
     color: "var(--text)",
   },
-  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
-    // Keep an active text selection visually distinct from the pale-red
-    // locked-range overlay. The old accent-based mix inherited the site's
-    // purple accent in some themes, which made selection look muddy.
-    backgroundColor: "rgb(147 197 253 / 0.42)",
-  },
+  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection":
+    {
+      // Keep an active text selection visually distinct from the pale-red
+      // locked-range overlay. The old accent-based mix inherited the site's
+      // purple accent in some themes, which made selection look muddy.
+      backgroundColor: "rgb(147 197 253 / 0.42)",
+    },
 });
 
 const nativeValue = (textarea) =>
@@ -266,7 +388,11 @@ const setNativeValue = (textarea, value) =>
   valueDescriptor?.set?.call(textarea, value);
 
 const enhanceBodyEditor = (textarea) => {
-  if (activeEditors.has(textarea) || !textarea.parentElement || !valueDescriptor)
+  if (
+    activeEditors.has(textarea) ||
+    !textarea.parentElement ||
+    !valueDescriptor
+  )
     return;
 
   const host = document.createElement("div");
@@ -276,7 +402,9 @@ const enhanceBodyEditor = (textarea) => {
   // from inverting the white caret into a low-contrast dark caret.
   host.setAttribute("data-darkreader-ignore", "true");
   textarea.insertAdjacentElement("afterend", host);
-  textarea.closest("[data-body-surface]")?.setAttribute("data-codemirror-ready", "true");
+  textarea
+    .closest("[data-body-surface]")
+    ?.setAttribute("data-codemirror-ready", "true");
 
   textarea.dataset.bodyCodemirrorSource = "true";
   textarea.tabIndex = -1;
@@ -358,14 +486,21 @@ const enhanceBodyEditor = (textarea) => {
       basicSetup,
       markdown(),
       editorSyntaxStyle,
-      EditorView.decorations.of((viewState) => atlasSyntaxDecorations(viewState.state)),
+      EditorView.decorations.of((viewState) =>
+        atlasSyntaxDecorations(viewState.state),
+      ),
       EditorView.lineWrapping,
-      autocompletion({ override: [completeMath(textarea)], activateOnTyping: true }),
+      autocompletion({
+        override: [completeMath(textarea)],
+        activateOnTyping: true,
+      }),
       EditorView.contentAttributes.of({
         "aria-label": "本文（Markdown）",
         spellcheck: textarea.spellcheck ? "true" : "false",
       }),
-      editableCompartment.of(EditorView.editable.of(!textarea.disabled && !textarea.readOnly)),
+      editableCompartment.of(
+        EditorView.editable.of(!textarea.disabled && !textarea.readOnly),
+      ),
       editorTheme,
       EditorView.updateListener.of((update) => {
         if (syncingFromTextarea) return;
@@ -398,7 +533,10 @@ const enhanceBodyEditor = (textarea) => {
       }),
       EditorView.domEventHandlers({
         keydown: (event) => {
-          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+          if (
+            (event.ctrlKey || event.metaKey) &&
+            event.key.toLowerCase() === "f"
+          ) {
             event.preventDefault();
             openSearchPanel(view);
             return true;
@@ -421,30 +559,44 @@ const enhanceBodyEditor = (textarea) => {
 
   const syncEditableState = () => {
     const editable = !textarea.disabled && !textarea.readOnly;
-    view.dispatch({ effects: editableCompartment.reconfigure(EditorView.editable.of(editable)) });
+    view.dispatch({
+      effects: editableCompartment.reconfigure(
+        EditorView.editable.of(editable),
+      ),
+    });
     host.dataset.readonly = String(!editable);
     host.setAttribute("aria-disabled", String(!editable));
   };
   const editableObserver = new MutationObserver(syncEditableState);
-  editableObserver.observe(textarea, { attributes: true, attributeFilter: ["disabled", "readonly"] });
+  editableObserver.observe(textarea, {
+    attributes: true,
+    attributeFilter: ["disabled", "readonly"],
+  });
   syncEditableState();
 
   const forwardMacControlF = (event) => {
-    if (/Mac|iPhone|iPad/i.test(navigator.platform) && event.ctrlKey && !event.metaKey && event.key.toLowerCase() === "f") {
+    if (
+      /Mac|iPhone|iPad/i.test(navigator.platform) &&
+      event.ctrlKey &&
+      !event.metaKey &&
+      event.key.toLowerCase() === "f"
+    ) {
       event.preventDefault();
       event.stopPropagation();
       // CodeMirror's built-in search keymap uses Mod-F, which is Command-F
       // on macOS. Forward Control-F as the platform equivalent so both
       // shortcuts open the same native search panel.
-      view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "f",
-        code: "KeyF",
-        keyCode: 70,
-        which: 70,
-        metaKey: true,
-        bubbles: true,
-        cancelable: true,
-      }));
+      view.contentDOM.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "f",
+          code: "KeyF",
+          keyCode: 70,
+          which: 70,
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
     }
   };
   host.addEventListener("keydown", forwardMacControlF, true);
@@ -508,8 +660,7 @@ const enhanceBodyEditor = (textarea) => {
   textarea.setRangeText = function (replacement, start, end, selectionMode) {
     if (start === undefined || end === undefined)
       nativeSetRangeText.call(this, replacement);
-    else
-      nativeSetRangeText.call(this, replacement, start, end, selectionMode);
+    else nativeSetRangeText.call(this, replacement, start, end, selectionMode);
     syncViewFromTextarea(true);
   };
 
@@ -564,7 +715,10 @@ const enhanceBodyEditor = (textarea) => {
     refreshRoot();
     decorateSearchPanel();
   });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
   view.dom.addEventListener("pointerdown", refreshRoot);
   view.dom.addEventListener("focusin", refreshRoot);
   activeEditors.set(textarea, {
@@ -583,14 +737,19 @@ const initializeCodeMirror = () => {
 };
 
 const destroyCodeMirror = () => {
-  activeEditors.forEach(({ view, observer, editableObserver, host, syncExternalInput }, textarea) => {
-    observer.disconnect();
-    editableObserver.disconnect();
-    textarea.removeEventListener("input", syncExternalInput);
-    view.destroy();
-    host.remove();
-    delete textarea.dataset.codemirrorFocused;
-  });
+  activeEditors.forEach(
+    (
+      { view, observer, editableObserver, host, syncExternalInput },
+      textarea,
+    ) => {
+      observer.disconnect();
+      editableObserver.disconnect();
+      textarea.removeEventListener("input", syncExternalInput);
+      view.destroy();
+      host.remove();
+      delete textarea.dataset.codemirrorFocused;
+    },
+  );
   activeEditors.clear();
 };
 

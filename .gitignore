@@ -1,5 +1,6 @@
 .DS_Store
 node_modules/
+**/node_modules
 .env
 .env.*
 .dev.vars
@@ -10,3 +11,5 @@ public/build-info.json
 .astro/
 .wrangler/
 test-results/
+verification-artifacts/
+.lighthouseci/

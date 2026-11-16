@@ -10,12 +10,21 @@ const e2ePort =
 const baseURL = `${(process.env.E2E_BASE_URL ?? `http://localhost:${e2ePort}`).replace(/\/$/, "")}/`;
 const remoteBaseURL =
   /^https?:\/\/(?!localhost(?::|\/)|127\.0\.0\.1(?::|\/))/i.test(baseURL);
+const testResultsDir = process.env.PLAYWRIGHT_OUTPUT_DIR ?? "test-results";
 
 export default defineConfig({
   testDir: "tests/e2e",
   timeout: 30_000,
+  reporter: [
+    ["line"],
+    ["json", { outputFile: `${testResultsDir}/playwright-report.json` }],
+  ],
+  outputDir: testResultsDir,
   use: {
     baseURL,
+    screenshot: "only-on-failure",
+    trace: "retain-on-failure",
+    video: "retain-on-failure",
   },
   ...(remoteBaseURL
     ? {}
