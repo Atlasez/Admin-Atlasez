@@ -12062,6 +12062,11 @@ async function listApplications(request: Request, env: Env): Promise<Response> {
     : 50;
   const filters = ["a.project_slug = ?"];
   const bindings: unknown[] = [projectSlug];
+  const requestedApplicationId = searchParams.get("applicationId")?.trim() ?? "";
+  if (requestedApplicationId) {
+    filters.push("a.id = ?");
+    bindings.push(requestedApplicationId);
+  }
   const rawCursor = searchParams.get("cursor") ?? "";
   const separator = rawCursor.lastIndexOf("|");
   const cursorCreatedAt = separator > 0 ? rawCursor.slice(0, separator) : "";
@@ -12242,6 +12247,15 @@ async function memberIntakeTracking(
 
   if (request.method === "GET") {
     const projectSlug = canonicalApplicationProjectSlug(access.project.slug);
+    const requestedApplicationId = url.searchParams.get("applicationId")?.trim() ?? "";
+    let filterEmail = "";
+    if (requestedApplicationId) {
+      const application = await env.REPORTS.prepare(
+        "SELECT email FROM atlasez_member_applications WHERE id=? AND project_slug=?",
+      ).bind(requestedApplicationId, projectSlug).first<{ email: string }>();
+      if (!application) return json({ error: "応募が見つかりません。" }, 404);
+      filterEmail = application.email.toLowerCase();
+    }
     const [rows, responsibleRows] = await Promise.all([
       env.REPORTS.prepare(
         `WITH latest_applications AS (
@@ -12250,11 +12264,11 @@ async function memberIntakeTracking(
             ROW_NUMBER() OVER(PARTITION BY lower(a.email) ORDER BY a.created_at DESC,a.id DESC) AS row_number
           FROM atlasez_member_applications a
           LEFT JOIN editorial_member_profiles p ON lower(p.email)=lower(a.email)
-          WHERE a.project_slug=?
+          WHERE a.project_slug=? AND (?='' OR lower(a.email)=?)
         ), candidates AS (
           SELECT lower(m.email) AS email,MAX(m.email) AS original_email,MAX(m.role) AS role
           FROM atlasez_project_memberships m
-          WHERE m.project_id=? AND (m.project_id!='atlas' OR NOT EXISTS (
+          WHERE m.project_id=? AND (?='' OR lower(m.email)=?) AND (m.project_id!='atlas' OR NOT EXISTS (
             SELECT 1 FROM admin_member_lifecycle l
             WHERE lower(l.email)=lower(m.email) AND l.status='archived'
           )) AND NOT EXISTS (
@@ -12265,7 +12279,7 @@ async function memberIntakeTracking(
           SELECT email,email,'applicant' FROM latest_applications WHERE row_number=1
           UNION
           SELECT lower(email),MAX(email),'tracked' FROM editorial_member_intake_tracking
-          WHERE project_id=? GROUP BY lower(email)
+          WHERE project_id=? AND (?='' OR lower(email)=?) GROUP BY lower(email)
         )
         SELECT c.email,COALESCE(NULLIF(TRIM(p.display_name),''),MAX(a.display_name),MAX(c.original_email)) AS display_name,
           MAX(COALESCE(c.role,'')) AS role,MAX(CASE WHEN c.role IN ('member','manager') THEN 1 ELSE 0 END) AS is_member,
@@ -12285,7 +12299,12 @@ async function memberIntakeTracking(
         GROUP BY c.email
         ORDER BY CASE WHEN MAX(t.follow_up_completed_at) IS NULL AND MAX(t.follow_up_at) IS NOT NULL THEN 0 ELSE 1 END,
           MAX(t.follow_up_at),display_name,c.email LIMIT 500`,
-      ).bind(projectSlug, access.project.id, access.project.id, access.project.id).all<Record<string, unknown>>(),
+      ).bind(
+        projectSlug, filterEmail, filterEmail,
+        access.project.id, filterEmail, filterEmail,
+        access.project.id, filterEmail, filterEmail,
+        access.project.id,
+      ).all<Record<string, unknown>>(),
       env.REPORTS.prepare(
         `SELECT lower(membership.email) AS email,COALESCE(NULLIF(TRIM(profile.display_name),''),membership.email) AS display_name
          FROM atlasez_project_memberships membership

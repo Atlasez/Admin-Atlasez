@@ -65,7 +65,7 @@ test("T-1/T-2/T-5: タスク管理の初期表示が仕様どおりになる", a
   await page.goto("admin/operations/?project=atlas");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "タスク管理" }),
+    page.getByRole("heading", { level: 1, name: "運営タスク" }),
   ).toBeVisible();
   await expect(
     page.getByRole("heading", { level: 2, name: "タスク一覧" }),

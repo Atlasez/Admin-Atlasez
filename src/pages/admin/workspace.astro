@@ -11,10 +11,10 @@ const projectLabel = project === "secretariat" ? "Atlasez運営事務局" : proj
 const isAtlas = project === "atlas";
 ---
 
-<AdminLayout title={`${projectLabel} マイページ`} description="プロフィールやプロジェクト内の担当を確認します">
+<AdminLayout title={`${projectLabel} 担当・自己紹介`} description="プロフィールやプロジェクト内の担当を確認します">
   <main class="personal-workspace" data-personal-workspace data-project={project} data-atlas={String(isAtlas)} data-admin-load-surface aria-busy="true">
     <header class="workspace-heading">
-      <h1>マイページ</h1>
+      <h1>担当・自己紹介</h1>
       <div class="heading-actions">
         <a class="quiet-action" data-profile-review-link hidden href={`/admin/project-profile-requests/?project=${project}`}>自己紹介の承認</a>
         <button class="primary-action" type="button" data-open-profile-edit aria-haspopup="dialog">プロフィールを編集</button>
