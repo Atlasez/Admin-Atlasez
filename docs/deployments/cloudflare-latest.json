@@ -7,7 +7,7 @@
       "name": "atlasez-admin",
       "config": "wrangler.admin.jsonc",
       "production": {
-        "id": "0aefe2bb-ab2a-425c-a8e2-19d09943a557",
+        "id": "2f26f989-d62b-44cb-858d-77e02a72ad0d",
         "source": "wrangler",
         "strategy": "percentage",
         "author_email": "ukyoukay0@gmail.com",
@@ -16,29 +16,13 @@
         },
         "versions": [
           {
-            "version_id": "7d9101b4-8937-4a37-85cb-1a42fb721653",
+            "version_id": "f78b6cd7-56f3-41ad-b33e-f12d9e0082c8",
             "percentage": 100
           }
         ],
-        "created_on": "2026-11-15T19:35:47.895092Z"
+        "created_on": "2026-11-15T22:54:39.114836Z"
       },
       "recentDeployments": [
-        {
-          "id": "1f01f21a-29ba-435c-8791-d78921883c88",
-          "source": "wrangler",
-          "strategy": "percentage",
-          "author_email": "ukyoukay0@gmail.com",
-          "annotations": {
-            "workers/triggered_by": "deployment"
-          },
-          "versions": [
-            {
-              "version_id": "5e6120d9-d353-42d8-bb51-28383fb880d8",
-              "percentage": 100
-            }
-          ],
-          "created_on": "2026-11-12T15:11:11.560915Z"
-        },
         {
           "id": "59ee00d9-c0ac-4172-b12b-36a5ee36cc39",
           "source": "wrangler",
@@ -182,15 +166,31 @@
             }
           ],
           "created_on": "2026-11-15T19:35:47.895092Z"
+        },
+        {
+          "id": "2f26f989-d62b-44cb-858d-77e02a72ad0d",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "ukyoukay0@gmail.com",
+          "annotations": {
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "f78b6cd7-56f3-41ad-b33e-f12d9e0082c8",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-11-15T22:54:39.114836Z"
         }
       ],
       "buildInfo": {
         "url": "https://admin.atlasez.org/build-info.json",
         "status": 200,
-        "sha": "53e1bd02c1b071429567471467f6cfb85d1cd234",
+        "sha": "65cd5bf837c781a3bd90d54e66ce743f8b203a64",
         "ref": "main",
         "target": "admin",
-        "builtAt": "2026-11-15T19:34:57.674Z"
+        "builtAt": "2026-11-15T22:53:49.754Z"
       }
     },
     {
