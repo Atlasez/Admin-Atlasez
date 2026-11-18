@@ -1399,6 +1399,65 @@ it("commit後の保存確認read失敗はunknownとして返し、応募状況�
   });
 });
 
+it("運営通知先がない場合は応募を保存せず設定後の再試行を案内する", async () => {
+  const { db, request, env } = environment();
+  env.APPLICATION_OPERATIONS_EMAILS = "";
+  db.prepare("DELETE FROM report_admin_permissions WHERE subject='*'").run();
+  db.prepare(
+    "DELETE FROM atlasez_project_memberships WHERE project_id='secretariat' AND role='manager'",
+  ).run();
+
+  const response = await request("/api/apply", "no-operator@atlasez.test", {
+    projectSlug: "thinking-cafe",
+    familyName: "担当者",
+    givenName: "不在",
+    familyNameKana: "たんとうしゃ",
+    givenNameKana: "ふざい",
+    formLanguage: "ja",
+    affiliationEmail: "school@atlasez.test",
+    affiliationType: "大学",
+    institution: "検証大学",
+    grade: "B1",
+    country: "日本",
+    timezone: "Asia/Tokyo",
+    birthDate: "2000-01-01",
+    residenceCity: "検証市",
+    interests: "対話",
+    message: "通知先が未設定の場合の受付確認",
+    referralSource: "隔離テスト",
+    interviewAvailability: "平日18時 Asia/Tokyo",
+    projectAnswers: { theme: "通知先確認" },
+  });
+
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({
+    code: "APPLICATION_RESULT_UNCONFIRMED",
+    applicationSaved: false,
+    applicationState: "not_saved",
+    statusUrl: "/applicant/?submission=check",
+  });
+  expect(
+    db
+      .prepare("SELECT COUNT(*) AS count FROM atlasez_member_applications")
+      .get(),
+  ).toEqual({ count: 0 });
+  expect(
+    db
+      .prepare("SELECT COUNT(*) AS count FROM atlasez_applicant_profiles")
+      .get(),
+  ).toEqual({ count: 0 });
+  expect(
+    db.prepare("SELECT COUNT(*) AS count FROM editorial_tasks").get(),
+  ).toEqual({ count: 0 });
+  expect(
+    db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM atlasez_application_email_deliveries",
+      )
+      .get(),
+  ).toEqual({ count: 0 });
+});
+
 it("運営通知先の設定変更では過去応募を誤検知せず、保存queueの欠損は検知する", async () => {
   const { db, request, env } = environment();
   const email = "operator-config-snapshot@atlasez.test";

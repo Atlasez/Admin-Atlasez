@@ -15533,6 +15533,21 @@ async function submitMemberApplication(
       503,
     );
   }
+  if (operatorEmails.length === 0) {
+    logSubmissionFailure("notification_recipients_missing");
+    return json(
+      {
+        error:
+          "応募を受け付ける運営担当者を確認できません。運営が設定後、もう一度お試しください。",
+        code: "APPLICATION_RESULT_UNCONFIRMED",
+        applicationSaved: false,
+        applicationState: "not_saved",
+        correlationId,
+        statusUrl: "/applicant/?submission=check",
+      },
+      503,
+    );
+  }
   if (authenticatedEmail) {
     await env.REPORTS.prepare(
       `INSERT INTO atlasez_applicant_profiles
