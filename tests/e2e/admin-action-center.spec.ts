@@ -1,4 +1,9 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Locator,
+  type Page,
+} from "../helpers/verification-test";
 
 function contrast(foreground: number[], background: number[]) {
   const channel = (value: number) => {
@@ -268,6 +273,73 @@ async function mockShell(
   });
 }
 
+test("承認待ちへの直リンクは承認項目だけを初期表示する", async ({ page }) => {
+  await mockShell(page);
+  await page.route("**/api/admin/action-center**", async (route) => {
+    const approval = {
+      id: "approval:profile-1",
+      kind: "approval",
+      title: "自己紹介の変更申請",
+      detail: "内容を確認して承認してください。",
+      href: "/admin/profile-requests/",
+      status: "pending",
+      priority: "normal",
+      updatedAt: "2026-09-10T00:00:00.000Z",
+      actions: [
+        {
+          entityType: "approval",
+          entityId: "profile-1",
+          fromState: "pending",
+          toState: "approved",
+          label: "承認",
+          expectedUpdatedAt: "2026-09-10T00:00:00.000Z",
+        },
+      ],
+    };
+    const task = {
+      id: "task:task-1",
+      kind: "task",
+      title: "定義を確認",
+      detail: "担当タスクです。",
+      href: "/admin/operations/?project=atlas",
+      status: "open",
+      priority: "normal",
+      updatedAt: "2026-09-10T00:00:00.000Z",
+      actions: [
+        {
+          entityType: "task",
+          entityId: "task-1",
+          fromState: "open",
+          toState: "doing",
+          label: "着手",
+          expectedUpdatedAt: "2026-09-10T00:00:00.000Z",
+        },
+      ],
+    };
+    await route.fulfill({
+      json: {
+        generatedAt: "2026-09-10T00:00:00.000Z",
+        counts: { today: 0, dueSoon: 0, approvals: 1, assigned: 1 },
+        items: [approval, task],
+        history: [],
+      },
+    });
+  });
+
+  await page.goto("admin/action-center/?filter=approvals");
+  await expect(
+    page.locator('[data-action-filter="approvals"]'),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("[data-action-list-heading]")).toHaveText(
+    "承認待ち",
+  );
+  await expect(page.locator(".action-item")).toHaveCount(1);
+  await expect(page.locator(".action-item")).toContainText(
+    "自己紹介の変更申請",
+  );
+  await expect(page).toHaveURL(/filter=approvals/);
+});
+
 test("アクションセンターで絞り込みと状態変更を操作できる", async ({ page }) => {
   await mockShell(page);
   await page.goto("admin/action-center/");
@@ -384,7 +456,7 @@ test("⌘Kで横断検索を開き、記事候補へ移動できる", async ({ p
       filter: `${style.backdropFilter} ${style.getPropertyValue("-webkit-backdrop-filter")}`,
     };
   });
-  expect(parseColor(searchPanel.background).alpha).toBeCloseTo(0.6, 1);
+  expect(parseColor(searchPanel.background).alpha).toBe(1);
   expect(searchPanel.filter).toContain("saturate");
   const searchBackdrop = parseColor(
     await dialog.evaluate(
@@ -447,10 +519,9 @@ test("ヘッダーのアクションセンターはページ遷移せずポッ�
   await expect(page).toHaveURL(/\/admin\/articles\//);
   await expect(dialog).toHaveAttribute("data-command-mode", "action");
   const glass = await readCommandPanel(dialog);
-  expect(glass.alpha).toBeGreaterThanOrEqual(0.55);
-  expect(glass.alpha).toBeLessThanOrEqual(0.65);
-  expect(glass.backdropAlpha).toBeGreaterThanOrEqual(0.08);
-  expect(glass.backdropAlpha).toBeLessThanOrEqual(0.14);
+  expect(glass.alpha).toBe(1);
+  expect(glass.backdropAlpha).toBeGreaterThanOrEqual(0.16);
+  expect(glass.backdropAlpha).toBeLessThanOrEqual(0.2);
   expect(glass.listAlpha).toBe(0);
   expect(glass.hintAlpha).toBe(0);
   expect(glass.innerAlpha).toBe(0);
@@ -458,8 +529,8 @@ test("ヘッダーのアクションセンターはページ遷移せずポッ�
   expect(glass.row.alpha).toBeLessThan(0.95);
   expect(glass.filter).toContain("blur");
   expect(glass.filter).toContain("saturate");
-  expect(glass.searchAlpha).toBeCloseTo(0.6, 1);
-  expect(glass.actionAlpha).toBeCloseTo(0.6, 1);
+  expect(glass.searchAlpha).toBe(1);
+  expect(glass.actionAlpha).toBe(1);
   const behind = [255, 255, 255].map(
     (channel) => channel * (1 - glass.backdropAlpha),
   );
@@ -473,6 +544,44 @@ test("ヘッダーのアクションセンターはページ遷移せずポッ�
   );
   expect(contrast(glass.title, panel)).toBeGreaterThanOrEqual(4.5);
   expect(contrast(glass.meta, row)).toBeGreaterThanOrEqual(4.5);
+});
+
+test("要対応ポップアップは検索結果なしと作業なしを区別する", async ({
+  page,
+}) => {
+  await mockShell(page);
+  await page.goto("admin/articles/");
+  const dialog = page.locator("[data-admin-command-dialog]");
+  await page.getByRole("link", { name: "アクションセンター" }).click();
+  const search = dialog.locator("[data-admin-command-input]");
+  await search.fill("該当なし");
+  await expect(dialog.locator(".admin-command-empty")).toHaveText(
+    "検索・絞り込み条件に一致する項目はありません。",
+  );
+  await expect(dialog).not.toContainText(
+    "現在、実行が必要な項目はありません。",
+  );
+});
+
+test("要対応ポップアップは対応項目がない場合に作業なしを示す", async ({
+  page,
+}) => {
+  await mockShell(page);
+  await page.route("**/api/admin/action-center*", (route) =>
+    route.fulfill({
+      json: {
+        generatedAt: "2026-11-10T00:00:00.000Z",
+        counts: { today: 0, dueSoon: 0, approvals: 0, assigned: 0 },
+        items: [],
+      },
+    }),
+  );
+  await page.goto("admin/articles/");
+  const dialog = page.locator("[data-admin-command-dialog]");
+  await page.getByRole("link", { name: "アクションセンター" }).click();
+  await expect(dialog.locator(".admin-command-empty")).toHaveText(
+    "現在、実行が必要な項目はありません。",
+  );
 });
 
 test("要対応ポップアップは透過を減らす設定で不透明に戻る", async ({ page }) => {
@@ -520,8 +629,17 @@ test("表示設定のスライダーで要対応の透け感を広く調整し�
     name: "ポップアップの透け感",
   });
   const value = glassSetting.locator("[data-glass-value]");
-  await expect(slider).toHaveValue("40");
-  await expect(value).toHaveText("40%");
+  await expect(slider).toHaveValue("0");
+  await expect(value).toHaveText("0%");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--command-glass-opacity")
+          .trim(),
+      ),
+    )
+    .toBe("100%");
 
   // Strongest: 100% see-through (0% panel opacity).
   await slider.focus();
@@ -571,8 +689,8 @@ test("表示設定のスライダーで要対応の透け感を広く調整し�
 
   await menu.locator("> summary").click();
   await menu.locator("[data-a11y-reset]").click();
-  await expect(slider).toHaveValue("40");
-  await expect(value).toHaveText("40%");
+  await expect(slider).toHaveValue("0");
+  await expect(value).toHaveText("0%");
   const resetGlass = await page.evaluate(
     () => JSON.parse(localStorage.getItem("atlasez-prefs") ?? "{}").glass,
   );
@@ -580,8 +698,7 @@ test("表示設定のスライダーで要対応の透け感を広く調整し�
   await page.reload();
   await page.getByRole("link", { name: "アクションセンター" }).click();
   const standard = await readCommandPanel(dialog);
-  expect(standard.alpha).toBeGreaterThanOrEqual(0.55);
-  expect(standard.alpha).toBeLessThanOrEqual(0.65);
+  expect(standard.alpha).toBe(1);
 });
 
 test("ポップアップの透け感は表示設定からのみ変更できる", async ({ page }) => {
@@ -620,7 +737,7 @@ test("Aa表示設定も0%と100%を即座に反映する", async ({ page }) => {
     );
     return parseColor(color).alpha;
   };
-  expect(await alpha()).toBeCloseTo(0.6, 1);
+  expect(await alpha()).toBe(1);
   await slider.focus();
   await slider.press("Home");
   expect(await alpha()).toBe(1);

@@ -45,3 +45,17 @@ it("応募一覧は応募日時とIDをカーソルにして次ページを取�
   expect(body).toContain("LIMIT ?");
   expect(body).toContain("hasMore");
 });
+
+it("応募者対応用の詳細取得は応募IDと所属プロジェクトで絞る", () => {
+  const source = readFileSync(
+    new URL("../../src/admin-worker.ts", import.meta.url),
+    "utf8",
+  );
+  const body = source
+    .split("async function listApplications(")[1]
+    .split("async function updateApplication(")[0];
+  expect(body).toContain('searchParams.get("applicationId")');
+  expect(body).toContain('filters = ["a.project_slug = ?"]');
+  expect(body).toContain('filters.push("a.id = ?")');
+  expect(body).toContain("bindings.push(requestedApplicationId)");
+});

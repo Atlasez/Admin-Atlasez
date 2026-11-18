@@ -22,7 +22,32 @@ async function mockWorkspaceApi(page: Page, avatarUrl = "") {
     if (url.pathname === "/api/admin/profile") {
       await route.fulfill({
         json: {
-          profile: { display_name: "山田 花子", avatar_url: "" },
+          profile: {
+            display_name: "山田 花子",
+            avatar_url: avatarUrl,
+            university: "既存大学 既存学部",
+            year: "M1",
+            affiliation_type: "student",
+            country: "日本",
+            timezone: "Asia/Tokyo",
+            bio: "一般プロフィールの自己紹介",
+          },
+          email: "alice@example.com",
+          discordUserId: "12345678901234567",
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/my-access") {
+      await route.fulfill({
+        json: {
+          allSubjects: false,
+          isManager: false,
+          canEditArticles: true,
+          subjects: [{ id: "mathematics", label: "数学" }],
+          coordinatorSubjects: [],
+          isProjectLeader: false,
+          projects: [],
         },
       });
       return;
@@ -92,41 +117,63 @@ test("プロジェクト側マイページで運営内自己紹介と担当を�
     0,
   );
   await expect(page.getByText("数学担当", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("運営内自己紹介")).toHaveValue(
+  await expect(page.locator("[data-project-bio]")).toHaveText(
     "既存の運営内自己紹介",
   );
+  await expect(
+    page.getByText("既存大学 既存学部", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("alice@example.com", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Discord連携" }),
+  ).toBeVisible();
+  await expect(page.locator("[data-profile-image-input]")).toBeHidden();
   await expect(page.locator('input[name="displayName"]')).toHaveCount(0);
   await expect(page.locator('input[name="university"]')).toHaveCount(0);
-  await expect(
-    page.getByRole("link", { name: "共通の基本情報を確認・変更する" }),
-  ).toHaveAttribute("href", "/admin/member-profile/");
+  await page.getByRole("button", { name: "プロフィールを編集" }).click();
+  await expect(page.locator("[data-profile-edit-dialog]")).toBeVisible();
+  await expect(page.locator("[data-profile-image-input]")).toBeVisible();
   const avatarRequest = page.waitForRequest(
     (request) =>
       request.url().endsWith("/api/admin/profile") &&
       request.method() === "PUT",
   );
-  await page.locator("[data-avatar-file]").setInputFiles({
+  await page.locator("[data-profile-image-input]").setInputFiles({
     name: "profile.png",
     mimeType: "image/png",
-    buffer: Buffer.from("profile-image"),
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    ),
   });
-  await expect(page.locator("[data-avatar-save]")).toBeEnabled();
-  await page.locator("[data-avatar-save]").click();
+  await expect(
+    page.getByRole("heading", { name: "画像の表示範囲" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "この範囲を使う" }).click();
+  await expect(page.locator("[data-save]")).toBeEnabled();
+  await page.locator("[data-save]").click();
   expect((await avatarRequest).postDataJSON()).toMatchObject({
-    avatarUrl: expect.stringMatching(/^data:image\/png;base64,/),
+    avatarUrl: expect.stringMatching(/^data:image\/webp;base64,/),
   });
-  await expect(page.locator("[data-avatar-message]")).toHaveText(
-    "アイコンを更新しました。",
-  );
+  await expect(
+    page.locator("[data-profile-edit-dialog] [data-message]"),
+  ).toContainText("画像を更新しました。");
 
+  await page.locator("[data-close-profile-edit]").first().click();
+  await page.locator("[data-open-project-bio-edit]").click();
+  await expect(page.locator("[data-project-profile-dialog]")).toBeVisible();
   await page
-    .getByLabel("運営内自己紹介")
+    .locator('[data-project-profile-form] textarea[name="internalBio"]')
     .fill("更新後の運営内自己紹介 https://example.com/profile");
   await expect(
     page.locator("[data-project-profile-preview] a"),
   ).toHaveAttribute("href", "https://example.com/profile");
-  await page.getByRole("button", { name: "変更を承認申請" }).click();
-  await expect(page.locator("[data-profile-message]")).toContainText(
+  await page
+    .locator('[data-project-profile-form] button[type="submit"]')
+    .click();
+  await expect(page.locator("[data-project-profile-message]")).toContainText(
     "運営事務局へ承認申請を送りました",
   );
   expect(getSavedProjectProfile()).toMatchObject({
@@ -154,7 +201,7 @@ test("個人アイコンは円形カード内で中央トリミングして表�
   await mockWorkspaceApi(page, "https://cdn.example.com/profile.png");
   await page.goto("admin/workspace/?project=atlas");
 
-  const avatar = page.locator("[data-avatar-preview]");
+  const avatar = page.locator("[data-profile-avatar]").first();
   await expect(avatar).toHaveCSS("background-size", "cover");
   await expect(avatar).toHaveCSS("background-position", "50% 50%");
   await expect(avatar).toHaveCSS("background-repeat", "no-repeat");

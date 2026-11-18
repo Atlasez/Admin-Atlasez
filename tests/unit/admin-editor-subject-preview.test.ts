@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
 
-import { createMarkdownProcessor } from "@astrojs/markdown-remark";
+import { Blob as NodeBlob } from "node:buffer";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ARTICLE_MARKDOWN_PROCESSOR_OPTIONS } from "../../src/lib/article-markdown.mjs";
 import { applySubjectPreviewProfile } from "../../src/scripts/admin-editor-subject-preview";
+
+// Shiki's WASM loader needs Blob.stream(), which jsdom does not implement.
+globalThis.Blob = NodeBlob as unknown as typeof Blob;
+const { createMarkdownProcessor } = await import("@astrojs/markdown-remark");
 
 const mountPreview = (html: string) => {
   document.body.innerHTML = `<article class="article-preview">${html}</article>`;
@@ -55,6 +59,60 @@ describe("admin editor subject preview", () => {
     expect(body?.textContent).toContain("定義 1 (群)");
     expect(body?.textContent).toContain("命題 2 (可除律による群の特徴づけ)");
     expect(body?.querySelector(".katex")).not.toBeNull();
+  });
+
+  it("normalizes math statements and opens proofs before folding preview chapters", async () => {
+    const rendered = await renderArticleMarkdown(
+      [
+        "## 定義、命題枠",
+        "",
+        "定義 1 (タイトル $ab$).",
+        "",
+        "$$",
+        "\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}",
+        "$$",
+        "",
+        "命題 2 (タイトル $ab$).",
+        "",
+        "命題の本文",
+        "",
+        "証明.",
+        "",
+        "証明の内容",
+        "",
+        "## 次の章",
+        "",
+        "続き",
+      ].join("\n"),
+    );
+    const preview = mountPreview(rendered.code)!;
+
+    applySubjectPreviewProfile(preview, "mathematics");
+
+    const chapters = preview.querySelectorAll<HTMLDetailsElement>(
+      ".article-body > details.preview-chapter",
+    );
+    const firstChapter = chapters[0];
+    const chapterBody = firstChapter?.querySelector<HTMLElement>(
+      ":scope > .preview-chapter-body",
+    );
+    const definition = chapterBody?.querySelector<HTMLElement>(".defi");
+    const proposition = chapterBody?.querySelector<HTMLElement>(".prop");
+    const proof = chapterBody?.querySelector<HTMLDetailsElement>(
+      "details.proof-details",
+    );
+
+    expect(chapters).toHaveLength(2);
+    expect(firstChapter?.open).toBe(true);
+    expect(definition?.querySelector(".thmtitle")?.textContent).toContain(
+      "定義 1",
+    );
+    expect(definition?.querySelector(".katex")).not.toBeNull();
+    expect(proposition?.querySelector(".thmtitle")?.textContent).toContain(
+      "命題 2",
+    );
+    expect(proof?.open).toBe(true);
+    expect(proof?.textContent).toContain("証明の内容");
   });
 
   it("renders ::: defi with the same directive transform used by published Markdown", async () => {
@@ -112,9 +170,11 @@ describe("admin editor subject preview", () => {
     expect(
       body?.querySelector('[data-directive="theorem"].thm'),
     ).not.toBeNull();
-    expect(
-      body?.querySelector('details.proof-details[data-directive="proof"]'),
-    ).not.toBeNull();
+    const proof = body?.querySelector<HTMLDetailsElement>(
+      'details.proof-details[data-directive="proof"]',
+    );
+    expect(proof).not.toBeNull();
+    expect(proof?.open).toBe(true);
     expect(
       body?.querySelector(
         '[data-directive="custom-box"] .article-directive-title',

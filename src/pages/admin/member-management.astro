@@ -1,14 +1,15 @@
 ---
 import AdminLayout from "../../layouts/AdminLayout.astro";
 import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
+import ProfileImagePicker from "../../components/admin/ProfileImagePicker.astro";
 ---
 
 <AdminLayout title="運営メンバー管理" description="アトラス運営メンバーの名簿">
   <main class="member-management" data-member-management data-verification-server="true">
     <header class="page-heading"><div><h1>運営メンバー管理</h1></div><a href="/admin/manage/?project=atlas">← 管理トップ</a></header>
-    <section class="toolbar" aria-label="名簿の表示設定"><label class="search">検索<input type="search" data-search placeholder="名前・メール・担当分野" /></label><div class="view-switch" role="group" aria-label="表示形式"><button type="button" data-view="list" aria-pressed="true">一覧</button><button type="button" data-view="tiles" aria-pressed="false">タイル</button></div><span data-count>読み込み中…</span><button type="button" class="load-more" data-load-more hidden>さらに読み込む</button></section>
+    <section class="toolbar" aria-label="名簿の表示設定"><label class="search">検索<input type="search" data-search placeholder="名前・メール・担当分野" /></label><div class="view-switch" role="group" aria-label="表示する名簿"><button type="button" data-view="list" aria-pressed="true">運営名簿</button><button type="button" data-view="tiles" aria-pressed="false">レポート権限者</button></div><span data-count>読み込み中…</span><button type="button" class="load-more" data-load-more hidden>さらに読み込む</button></section>
     <section class="member-list-view" data-list-view aria-label="運営メンバー一覧"><div class="table-wrap"><table><thead><tr><th>メンバー</th><th>所属</th><th>役割</th><th>担当分野</th><th>最終確認</th><th>操作</th></tr></thead><tbody data-table-body><tr><td colspan="6">読み込み中…</td></tr></tbody></table></div></section>
-    <section class="member-tile-view" data-tile-view aria-label="運営メンバーのタイル表示" hidden><div class="tile-grid" data-tile-grid></div></section>
+    <section class="member-tile-view" data-tile-view aria-label="レポート権限者一覧" hidden><div class="tile-grid" data-tile-grid></div></section>
     <AdminRetryNotice />
     <details class="verification-archive" data-verification-archive hidden>
       <summary><span>検証用アーカイブ</span><span class="verification-archive-count" data-verification-count>0件</span></summary>
@@ -25,6 +26,22 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       <section class="member-detail-panel">
         <header><div><h2 id="member-detail-title">メンバー詳細</h2><p data-member-detail-email></p></div><button type="button" data-close-member-detail>閉じる</button></header>
         <div class="member-detail-content" data-member-detail-content aria-live="polite">読み込み中…</div>
+        <form class="member-profile-editor" data-member-profile-editor data-updated-at="" hidden>
+          <h3>プロフィールを編集</h3>
+          <div class="member-profile-editor-grid">
+            <label>表示名<input data-profile-field="displayName" maxlength="120" required /></label>
+            <label>学校・所属<input data-profile-field="university" maxlength="200" /></label>
+            <label>学年等<input data-profile-field="year" maxlength="80" /></label>
+            <label>分野<input data-profile-field="interests" maxlength="800" /><small>複数の場合はカンマで区切ります。</small></label>
+            <label>所属区分<input data-profile-field="affiliationType" maxlength="80" /></label>
+            <label>国・地域<input data-profile-field="country" maxlength="120" /></label>
+            <label>タイムゾーン<input data-profile-field="timezone" maxlength="80" /></label>
+          </div>
+          <label>運営内自己紹介<textarea data-profile-field="bio" maxlength="4000"></textarea></label>
+          <div class="member-profile-avatar-row"><span class="member-profile-avatar-preview" data-member-avatar-preview aria-label="プロフィール画像">画像なし</span><div class="member-profile-avatar-actions"><ProfileImagePicker id="member-management-avatar" label="プロフィール画像を選択" /><small>画像を選ばない場合は現在の画像を保持します。</small><button type="button" data-remove-member-avatar>画像を削除</button></div></div>
+          <output data-profile-form-message aria-live="polite"></output>
+          <div class="member-profile-editor-actions"><button type="button" data-cancel-profile-edit>キャンセル</button><button type="submit" data-save-profile>保存</button></div>
+        </form>
       </section>
     </dialog>
   </main>
@@ -69,6 +86,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
   .member-detail-panel header p { color:var(--text-secondary); font-size:.78rem; margin:.25rem 0 0; }
   .member-detail-panel header button { background:transparent; border:1px solid var(--border-default); color:var(--text-primary); cursor:pointer; font:inherit; padding:.4rem .65rem; }
   .member-detail-content { display:grid; gap:1rem; max-height:70vh; overflow:auto; padding:1rem 1.1rem; }
+  .member-detail-content[hidden] { display:none; }
   .member-detail-section { border-bottom:1px solid var(--border-default); display:grid; gap:.45rem; padding-bottom:.8rem; }
   .member-detail-section h3 { color:var(--text-secondary); font-size:.78rem; margin:0; }
   .member-detail-section p,.member-detail-section ul { font-size:.8rem; line-height:1.6; margin:0; }
@@ -76,6 +94,23 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
   .member-detail-bio { border:1px solid var(--border-default); padding:.65rem; white-space:pre-wrap; }
   .member-detail-empty { color:var(--text-muted); }
   .member-detail-retry { background:var(--background-secondary); border:1px solid var(--border-default); color:var(--text-primary); cursor:pointer; font:inherit; justify-self:start; padding:.45rem .7rem; }
+  .member-profile-edit-button,.member-profile-editor button { background:var(--background-secondary); border:1px solid var(--border-default); color:var(--text-primary); cursor:pointer; font:inherit; font-size:.75rem; padding:.45rem .65rem; }
+  .member-profile-editor { border-bottom:1px solid var(--border-default); display:grid; gap:.75rem; max-height:70vh; overflow:auto; padding:1rem 1.1rem; }
+  .member-profile-editor[hidden] { display:none; }
+  .member-profile-editor h3 { color:var(--text-secondary); font-size:.9rem; margin:0; }
+  .member-profile-editor-grid { display:grid; gap:.65rem; grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .member-profile-editor label { display:grid; font-size:.73rem; font-weight:700; gap:.3rem; }
+  .member-profile-editor input,.member-profile-editor textarea { background:var(--background-primary); border:1px solid var(--border-default); box-sizing:border-box; color:var(--text-primary); font:inherit; font-size:.78rem; padding:.5rem; width:100%; }
+  .member-profile-editor textarea { min-height:7rem; resize:vertical; }
+  .member-profile-avatar-row { align-items:center; display:flex; gap:.7rem; }
+  .member-profile-avatar-preview { align-items:center; background:var(--background-secondary); border:1px solid var(--border-default); border-radius:50%; color:var(--text-secondary); display:flex; flex:0 0 3rem; height:3rem; justify-content:center; overflow:hidden; width:3rem; }
+  .member-profile-avatar-preview img { height:100%; object-fit:cover; width:100%; }
+  .member-profile-avatar-actions { display:grid; gap:.3rem; }
+  .member-profile-avatar-actions small,.member-profile-editor output { color:var(--text-secondary); font-size:.7rem; }
+  .member-profile-editor-actions { align-items:center; display:flex; gap:.5rem; justify-content:flex-end; }
+  .member-profile-editor-actions button[type="submit"] { background:var(--accent-primary); border-color:var(--accent-primary); color:var(--on-accent); font-weight:800; }
+  .member-profile-editor-actions button:disabled { cursor:wait; opacity:.6; }
+  .member-profile-pending { color:var(--text-secondary); font-size:.74rem!important; }
   @media (max-width:600px) { .member-detail-dialog { max-width:calc(100vw - 1rem); } .member-detail-panel > header,.member-detail-content { padding-left:.8rem; padding-right:.8rem; } }
 </style>
 
@@ -140,21 +175,36 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
   type VerificationResponse = { members?: Array<{ email?: string; display_name?: string; avatar_url?: string }>; error?: string };
   type ArchivedMember = { email: string; display_name: string; avatar_url: string; created_by: string; archived_by: string | null; archived_at: string | null };
   type ArchivedResponse = { members?: ArchivedMember[]; error?: string };
-  type MemberDetail = { email: string; status: string; createdBy: string | null; createdAt: string | null; archivedBy: string | null; archivedAt: string | null; profile: { displayName: string; avatarUrl: string; bio: string; university: string; year: string; interests: string; affiliationType: string; country: string; timezone: string; updatedAt: string } | null; memberships: Array<{ project_id: string; role: string; joined_at: string }>; permissions: Array<{ subject: string }>; workflowRoles: Array<{ role: string; subject: string; created_at: string; created_by: string }>; genreRoles: Array<{ kind: string; name: string; created_at: string; created_by: string }>; articleCount: number; applicationCount: number; history: Array<{ actorEmail: string; action: string; summary: string; createdAt: string; category: string }> };
+  type MemberDetail = { email: string; status: string; createdBy: string | null; createdAt: string | null; archivedBy: string | null; archivedAt: string | null; profileChangePending?: boolean; profile: { displayName: string; avatarUrl: string; bio: string; university: string; year: string; interests: string; affiliationType: string; country: string; timezone: string; updatedAt: string } | null; memberships: Array<{ project_id: string; role: string; joined_at: string }>; permissions: Array<{ subject: string }>; workflowRoles: Array<{ role: string; subject: string; created_at: string; created_by: string }>; genreRoles: Array<{ kind: string; name: string; created_at: string; created_by: string }>; articleCount: number; applicationCount: number; history: Array<{ actorEmail: string; action: string; summary: string; createdAt: string; category: string }> };
   type MemberDetailResponse = { member?: MemberDetail; error?: string };
-  const initialize = () => { const root = document.querySelector<HTMLElement>("[data-member-management]"); if (!root || root.dataset.ready) return; root.dataset.ready = "true"; const table = root.querySelector<HTMLElement>("[data-table-body]")!; const tiles = root.querySelector<HTMLElement>("[data-tile-grid]")!; const search = root.querySelector<HTMLInputElement>("[data-search]")!; const count = root.querySelector<HTMLElement>("[data-count]")!; const loadMoreButton = root.querySelector<HTMLButtonElement>("[data-load-more]")!; const listView = root.querySelector<HTMLElement>("[data-list-view]")!; const tileView = root.querySelector<HTMLElement>("[data-tile-view]")!; const archive = root.querySelector<HTMLElement>("[data-verification-archive]")!; const archiveList = root.querySelector<HTMLElement>("[data-verification-list]")!; const archiveCount = root.querySelector<HTMLElement>("[data-verification-count]")!; const lifecycleArchive = root.querySelector<HTMLElement>("[data-member-archive]")!; const lifecycleArchiveList = root.querySelector<HTMLElement>("[data-member-archive-list]")!; const lifecycleArchiveCount = root.querySelector<HTMLElement>("[data-member-archive-count]")!; const detailDialog = root.querySelector<HTMLDialogElement>("[data-member-detail-dialog]")!; const detailEmail = root.querySelector<HTMLElement>("[data-member-detail-email]")!; const detailContent = root.querySelector<HTMLElement>("[data-member-detail-content]")!; const message = root.querySelector<HTMLOutputElement>("[data-message]")!; let members: Member[] = []; let participants: Participant[] = []; let verificationAccounts: VerificationResponse["members"] = []; let archivedMembers: ArchivedMember[] = []; let memberCursor: string | null = null; let participantCursor: string | null = null; let membersHaveMore = false; let participantsHaveMore = false; let loadingMore = false;
+  const initialize = () => { const root = document.querySelector<HTMLElement>("[data-member-management]"); if (!root || root.dataset.ready) return; root.dataset.ready = "true"; const table = root.querySelector<HTMLElement>("[data-table-body]")!; const tiles = root.querySelector<HTMLElement>("[data-tile-grid]")!; const search = root.querySelector<HTMLInputElement>("[data-search]")!; const count = root.querySelector<HTMLElement>("[data-count]")!; const loadMoreButton = root.querySelector<HTMLButtonElement>("[data-load-more]")!; const listView = root.querySelector<HTMLElement>("[data-list-view]")!; const tileView = root.querySelector<HTMLElement>("[data-tile-view]")!; const archive = root.querySelector<HTMLElement>("[data-verification-archive]")!; const archiveList = root.querySelector<HTMLElement>("[data-verification-list]")!; const archiveCount = root.querySelector<HTMLElement>("[data-verification-count]")!; const lifecycleArchive = root.querySelector<HTMLElement>("[data-member-archive]")!; const lifecycleArchiveList = root.querySelector<HTMLElement>("[data-member-archive-list]")!; const lifecycleArchiveCount = root.querySelector<HTMLElement>("[data-member-archive-count]")!; const detailDialog = root.querySelector<HTMLDialogElement>("[data-member-detail-dialog]")!; const detailEmail = root.querySelector<HTMLElement>("[data-member-detail-email]")!; const detailContent = root.querySelector<HTMLElement>("[data-member-detail-content]")!; const message = root.querySelector<HTMLOutputElement>("[data-message]")!; let members: Member[] = []; let participants: Participant[] = []; let activeRoster: "members" | "permissions" = "members"; let verificationAccounts: VerificationResponse["members"] = []; let archivedMembers: ArchivedMember[] = []; let memberCursor: string | null = null; let participantCursor: string | null = null; let membersHaveMore = false; let participantsHaveMore = false; let loadingMore = false; let participantLoadError = "";
+    const profileEditor = root.querySelector<HTMLFormElement>("[data-member-profile-editor]")!;
+    const profileAvatarPreview = root.querySelector<HTMLElement>("[data-member-avatar-preview]")!;
+    let currentMemberAvatarUrl = "";
+    let currentMemberAvatarChanged = false;
+    const renderProfileAvatar = () => {
+      profileAvatarPreview.replaceChildren();
+      if (!currentMemberAvatarUrl) {
+        profileAvatarPreview.textContent = "画像なし";
+        return;
+      }
+      const image = document.createElement("img");
+      image.alt = "";
+      image.src = currentMemberAvatarUrl;
+      profileAvatarPreview.append(image);
+    };
     const esc = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" })[character] ?? character);
     const memberName = (member: Member | Participant | ArchivedMember) => member.display_name?.trim() || "表示名未設定";
     const avatar = (member: Member | Participant | ArchivedMember) => member.avatar_url?.trim() ? `<span class="avatar"><img src="${esc(member.avatar_url)}" alt="" loading="lazy" /></span>` : `<span class="avatar" aria-hidden="true">${esc(memberName(member).slice(0,1))}</span>`;
     const chips = (items: string[] = [], accent = false) => items.length ? items.map((item) => `<span class="chip${accent ? " chip--accent" : ""}">${esc(item)}</span>`).join("") : '<span class="muted">未設定</span>';
     const participantSubjects = (participant: Participant) => String(participant.subjects ?? "").split(",").map((subject) => subject.trim()).filter(Boolean);
     const participantRoleIds = (participant: Participant) => String(participant.discord_role_ids ?? "").split(",").map((role) => role.trim()).filter(Boolean);
-    const render = () => { const query = search.value.trim().toLocaleLowerCase(); const filtered = members.filter((member) => `${memberName(member)} ${member.email ?? ""} ${member.university ?? ""} ${(member.assignments ?? []).join(" ")}`.toLocaleLowerCase().includes(query)); count.textContent = `${filtered.length} / ${members.length}人`; if (!filtered.length) { table.innerHTML = '<tr><td colspan="6" class="empty">条件に一致するメンバーはいません。</td></tr>'; return; } table.innerHTML = filtered.map((member) => `<tr><td><div class="identity">${avatar(member)}<span class="identity-copy"><strong>${esc(memberName(member))}</strong><small>${esc(member.email)}</small></span></div></td><td>${esc([member.university, member.year].filter(Boolean).join(" / ") || "未登録")}</td><td><div class="role">${chips([member.role === "manager" ? "運営統括" : "運営メンバー"], true)}</div></td><td><div class="assignment">${chips(member.assignments)}</div></td><td class="muted">現在の登録情報</td><td><button type="button" data-open-member data-email="${esc(member.email)}">詳細</button> <button type="button" class="member-remove" data-archive-member data-email="${esc(member.email)}">アーカイブ</button></td></tr>`).join(""); };
-    const renderParticipants = () => { const query = search.value.trim().toLocaleLowerCase(); const filtered = participants.filter((participant) => `${memberName(participant)} ${participant.email ?? ""} ${participant.discord_user_id ?? ""} ${participant.university ?? ""}`.toLocaleLowerCase().includes(query)); if (!filtered.length) { tiles.innerHTML = '<p class="empty">条件に一致する参加者はいません。</p>'; return; } tiles.innerHTML = filtered.map((participant) => { const subjects = participantSubjects(participant); const roles = subjects.map((subject) => subject === "*" ? "全分野管理" : subject); const roleIds = participantRoleIds(participant); const roleChips = roleIds.length ? roleIds.slice(0, 4).map((role) => `<span class="participant-role-chip">${esc(role)}</span>`).join("") : '<span class="participant-role-chip participant-role-chip--empty">未付与</span>'; return `<article class="participant-card"><div class="participant-card__top">${avatar(participant)}<div class="participant-card__identity"><strong class="participant-card__name">${esc(memberName(participant))}</strong><div class="participant-card__email">${esc(participant.email)}</div></div><span class="participant-card__role">${esc(roles.join("・") || "担当未設定")}</span></div><div class="participant-card__access"><div class="participant-card__facts"><span class="participant-fact"><b>所属</b> ${esc(participant.university || "未登録")}</span><span class="participant-fact"><b>学年</b> ${esc(participant.year || "未登録")}</span><span class="participant-fact"><b>分野</b> ${esc(participant.interests || "未登録")}</span></div></div><div class="participant-card__discord"><div class="participant-card__discord-heading"><strong>Discord</strong><span class="participant-card__discord-state" data-state="${participant.discord_user_id ? "connected" : "unconnected"}">${participant.discord_user_id ? "連携済み" : "未連携"}</span></div><div class="participant-role-chips">${roleChips}</div></div><div class="participant-card__actions"><button type="button" data-open-member data-email="${esc(participant.email)}">詳細</button><button type="button" class="member-remove" data-archive-member data-email="${esc(participant.email)}">アーカイブ</button></div></article>`; }).join(""); };
+    const render = () => { const query = search.value.trim().toLocaleLowerCase(); const filtered = members.filter((member) => `${memberName(member)} ${member.email ?? ""} ${member.university ?? ""} ${(member.assignments ?? []).join(" ")}`.toLocaleLowerCase().includes(query)); if (activeRoster === "members") count.textContent = `${filtered.length} / ${members.length}人`; if (!filtered.length) { table.innerHTML = '<tr><td colspan="6" class="empty">条件に一致するメンバーはいません。</td></tr>'; return; } table.innerHTML = filtered.map((member) => `<tr><td><div class="identity">${avatar(member)}<span class="identity-copy"><strong>${esc(memberName(member))}</strong><small>${esc(member.email)}</small></span></div></td><td>${esc([member.university, member.year].filter(Boolean).join(" / ") || "未登録")}</td><td><div class="role">${chips([member.role === "manager" ? "運営統括" : "運営メンバー"], true)}</div></td><td><div class="assignment">${chips(member.assignments)}</div></td><td class="muted">現在の登録情報</td><td><button type="button" data-open-member data-email="${esc(member.email)}">詳細</button> <button type="button" class="member-remove" data-archive-member data-email="${esc(member.email)}">アーカイブ</button></td></tr>`).join(""); };
+    const renderParticipants = () => { const query = search.value.trim().toLocaleLowerCase(); const filtered = participants.filter((participant) => `${memberName(participant)} ${participant.email ?? ""} ${participant.discord_user_id ?? ""} ${participant.university ?? ""}`.toLocaleLowerCase().includes(query)); if (activeRoster === "permissions") count.textContent = participantLoadError ? "読み込みに失敗しました" : `${filtered.length} / ${participants.length}人`; if (!filtered.length) { tiles.innerHTML = participantLoadError ? `<p class="empty">${esc(participantLoadError)}</p>` : '<p class="empty">条件に一致する権限者はいません。</p>'; return; } tiles.innerHTML = filtered.map((participant) => { const subjects = participantSubjects(participant); const roles = subjects.map((subject) => subject === "*" ? "全分野管理" : subject); const roleIds = participantRoleIds(participant); const roleChips = roleIds.length ? roleIds.slice(0, 4).map((role) => `<span class="participant-role-chip">${esc(role)}</span>`).join("") : '<span class="participant-role-chip participant-role-chip--empty">未付与</span>'; return `<article class="participant-card"><div class="participant-card__top">${avatar(participant)}<div class="participant-card__identity"><strong class="participant-card__name">${esc(memberName(participant))}</strong><div class="participant-card__email">${esc(participant.email)}</div></div><span class="participant-card__role">${esc(roles.join("・") || "担当未設定")}</span></div><div class="participant-card__access"><div class="participant-card__facts"><span class="participant-fact"><b>所属</b> ${esc(participant.university || "未登録")}</span><span class="participant-fact"><b>学年</b> ${esc(participant.year || "未登録")}</span><span class="participant-fact"><b>分野</b> ${esc(participant.interests || "未登録")}</span></div></div><div class="participant-card__discord"><div class="participant-card__discord-heading"><strong>Discord</strong><span class="participant-card__discord-state" data-state="${participant.discord_user_id ? "connected" : "unconnected"}">${participant.discord_user_id ? "連携済み" : "未連携"}</span></div><div class="participant-role-chips">${roleChips}</div></div><div class="participant-card__actions"><button type="button" data-open-member data-email="${esc(participant.email)}">詳細</button><button type="button" class="member-remove" data-archive-member data-email="${esc(participant.email)}">アーカイブ</button></div></article>`; }).join(""); };
     const renderVerification = () => { const entries = (verificationAccounts ?? []).filter((entry) => entry?.email?.trim()); archiveCount.textContent = `${entries.length}件`; archive.hidden = entries.length === 0; archiveList.innerHTML = entries.map((entry) => { const name = entry.display_name?.trim() || "表示名未設定"; const email = entry.email?.trim() || ""; const initial = name.slice(0, 1); const image = entry.avatar_url?.trim() ? `<img src="${esc(entry.avatar_url)}" alt="" loading="lazy" />` : esc(initial); return `<div class="verification-member">${image ? `<span class="avatar" aria-hidden="true">${image}</span>` : ""}<span class="verification-member-copy"><strong>${esc(name)}</strong><small>${esc(email)}</small></span><span class="verification-member-label">検証用・保持</span></div>`; }).join(""); };
     const renderArchivedMembers = (error = "") => { lifecycleArchiveCount.textContent = `${archivedMembers.length}人`; lifecycleArchive.hidden = archivedMembers.length === 0 && !error; lifecycleArchiveList.innerHTML = error ? `<p class="empty">${esc(error)}</p>` : archivedMembers.map((member) => `<div class="member-archive-entry">${avatar(member)}<span class="member-archive-entry__identity"><strong>${esc(member.display_name || "表示名未設定")}</strong><small>${esc(member.email)}</small></span><span class="member-archive-entry__meta">${member.archived_at ? `${esc(new Date(member.archived_at).toLocaleDateString("ja-JP"))}にアーカイブ` : "アーカイブ済み"}</span><button type="button" data-restore-member data-email="${esc(member.email)}">復元</button></div>`).join("") || '<p class="empty">アーカイブ済みのメンバーはいません。</p>'; };
     const updateLoadMore = () => { const visible = membersHaveMore || participantsHaveMore; loadMoreButton.hidden = !visible; loadMoreButton.disabled = loadingMore; loadMoreButton.textContent = loadingMore ? "読み込み中…" : "さらに読み込む"; };
-    const setView = (view: string) => { const tilesMode = view === "tiles"; listView.hidden = tilesMode; tileView.hidden = !tilesMode; root.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.view === view))); if (tilesMode) renderParticipants(); else render(); };
+    const setView = (view: string) => { const tilesMode = view === "tiles"; activeRoster = tilesMode ? "permissions" : "members"; listView.hidden = tilesMode; tileView.hidden = !tilesMode; root.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.view === view))); if (tilesMode) renderParticipants(); else render(); };
     search.addEventListener("input", () => { render(); renderParticipants(); }); root.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view ?? "list")));
     const loadMore = async () => { if (loadingMore || (!membersHaveMore && !participantsHaveMore)) return; loadingMore = true; updateLoadMore(); message.value = "追加のメンバーを読み込んでいます…"; try { const requests: Promise<Response>[] = []; if (membersHaveMore && memberCursor) requests.push(fetch(`/api/admin/genre-overviews?project=atlas&limit=50&cursor=${encodeURIComponent(memberCursor)}`, { credentials: "same-origin", cache: "no-store" })); if (participantsHaveMore && participantCursor) requests.push(fetch(`/api/admin/report-admin-permissions?limit=50&cursor=${encodeURIComponent(participantCursor)}`, { credentials: "same-origin", cache: "no-store" })); const responses = await Promise.all(requests); for (const response of responses) { const data = await response.json() as ResponseData & ParticipantResponse; if (!response.ok) throw new Error(data.error ?? "追加のメンバーを読み込めませんでした。"); if (Array.isArray(data.members)) members = [...members, ...data.members]; if (data.pagination && Array.isArray(data.members)) { memberCursor = data.pagination.nextCursor ?? null; membersHaveMore = Boolean(data.pagination.hasMore); } if (Array.isArray(data.permissions)) participants = [...participants, ...data.permissions]; if (data.pagination && Array.isArray(data.permissions)) { participantCursor = data.pagination.nextCursor ?? null; participantsHaveMore = Boolean(data.pagination.hasMore); } } render(); renderParticipants(); message.value = "追加のメンバーを読み込みました。"; } catch (error) { message.value = error instanceof Error ? error.message : "追加のメンバーを読み込めませんでした。"; } finally { loadingMore = false; updateLoadMore(); } };
     loadMoreButton.addEventListener("click", () => { void loadMore(); });
@@ -162,6 +212,8 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
     loadArchivedMembers = async () => { try { const response = await fetch("/api/admin/member-management", { credentials: "same-origin", cache: "no-store" }); const data = await response.json() as ArchivedResponse; if (!response.ok) throw new Error(data.error ?? "アーカイブ一覧を読み込めませんでした。"); archivedMembers = data.members ?? []; renderArchivedMembers(); } catch (error) { renderArchivedMembers(error instanceof Error ? error.message : "アーカイブ一覧を読み込めませんでした。"); } };
     const openMemberDetail = async (email: string) => {
       detailEmail.textContent = email;
+      detailContent.hidden = false;
+      profileEditor.hidden = true;
       detailContent.textContent = "メンバー情報を読み込んでいます…";
       detailDialog.showModal();
       try {
@@ -173,6 +225,37 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
         const section = (title: string, content: string) => `<section class="member-detail-section"><h3>${esc(title)}</h3>${content}</section>`;
         const list = (values: string[], empty: string) => values.length ? `<ul>${values.map((value) => `<li>${esc(value)}</li>`).join("")}</ul>` : `<p class="member-detail-empty">${esc(empty)}</p>`;
         const profile = member.profile;
+        detailContent.hidden = false;
+        profileEditor.hidden = true;
+        profileEditor.dataset.updatedAt = profile?.updatedAt ?? "";
+        const profileAvatarInput = profileEditor.querySelector<HTMLInputElement>("[data-profile-image-input]");
+        if (profileAvatarInput) profileAvatarInput.value = "";
+        const profileImageStatus = profileEditor.querySelector<HTMLOutputElement>("[data-profile-image-status]");
+        if (profileImageStatus) {
+          profileImageStatus.value = "画像を選択してください。";
+          profileImageStatus.dataset.state = "idle";
+        }
+        currentMemberAvatarChanged = false;
+        const profileFormMessage = profileEditor.querySelector<HTMLOutputElement>("[data-profile-form-message]");
+        if (profileFormMessage) profileFormMessage.value = "";
+        const profileSaveButton = profileEditor.querySelector<HTMLButtonElement>("[data-save-profile]");
+        if (profileSaveButton) profileSaveButton.disabled = false;
+        currentMemberAvatarUrl = profile?.avatarUrl ?? "";
+        const profileValues: Record<string, string> = {
+          displayName: profile?.displayName ?? "",
+          university: profile?.university ?? "",
+          year: profile?.year ?? "",
+          interests: profile?.interests ?? "",
+          affiliationType: profile?.affiliationType ?? "",
+          country: profile?.country ?? "",
+          timezone: profile?.timezone || "Asia/Tokyo",
+          bio: profile?.bio ?? "",
+        };
+        for (const [name, value] of Object.entries(profileValues)) {
+          const field = profileEditor.querySelector<HTMLInputElement | HTMLTextAreaElement>('[data-profile-field="' + name + '"]');
+          if (field) field.value = value;
+        }
+        renderProfileAvatar();
         const history = member.history.map((entry) => `${date(entry.createdAt)} — ${entry.summary}（${entry.actorEmail}）`);
         detailContent.innerHTML = [
           section("登録", `<p>状態：${esc(member.status === "archived" ? "アーカイブ済み" : "有効")}</p><p>初回作成者：${esc(member.createdBy || "記録なし")}</p><p>登録日時：${esc(date(member.createdAt))}</p>${member.archivedAt ? `<p>アーカイブ：${esc(date(member.archivedAt))}（${esc(member.archivedBy || "操作者記録なし")}）</p>` : ""}`),
@@ -186,6 +269,26 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
           section("関連記録", `<p>作成記事：${member.articleCount}件</p><p>応募：${member.applicationCount}件</p>`),
           section("記録されている変更履歴（最大40件）", list(history, "表示できる変更履歴はありません。")),
         ].join("");
+        const profileSection = Array.from(detailContent.querySelectorAll<HTMLElement>(".member-detail-section"))
+          .find((entry) => entry.querySelector("h3")?.textContent === "プロフィール");
+        if (member.status === "active" && profileSection && !member.profileChangePending) {
+          const editButton = document.createElement("button");
+          editButton.className = "member-profile-edit-button";
+          editButton.type = "button";
+          editButton.dataset.editMemberProfile = "true";
+          editButton.textContent = "プロフィールを編集";
+          editButton.addEventListener("click", () => {
+            detailContent.hidden = true;
+            profileEditor.hidden = false;
+          });
+          profileSection.append(editButton);
+        }
+        if (member.profileChangePending && profileSection) {
+          const pendingNote = document.createElement("p");
+          pendingNote.className = "member-profile-pending";
+          pendingNote.textContent = "本人からのプロフィール変更申請が審査中です。申請を確認した後に編集できます。";
+          profileSection.append(pendingNote);
+        }
       } catch (error) {
         const errorMessage = document.createElement("p");
         errorMessage.textContent = error instanceof Error ? error.message : "メンバー詳細を読み込めませんでした。";
@@ -197,6 +300,79 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
         detailContent.replaceChildren(errorMessage, retryButton);
       }
     };
+    profileEditor.querySelector<HTMLButtonElement>("[data-cancel-profile-edit]")?.addEventListener("click", () => {
+      profileEditor.hidden = true;
+      detailContent.hidden = false;
+    });
+    profileEditor.querySelector<HTMLButtonElement>("[data-remove-member-avatar]")?.addEventListener("click", () => {
+      currentMemberAvatarUrl = "";
+      currentMemberAvatarChanged = true;
+      const fileInput = profileEditor.querySelector<HTMLInputElement>("[data-profile-image-input]");
+      if (fileInput) fileInput.value = "";
+      const pickerStatus = profileEditor.querySelector<HTMLOutputElement>("[data-profile-image-status]");
+      if (pickerStatus) {
+        pickerStatus.value = "プロフィール画像を削除する設定です。保存すると反映されます。";
+        pickerStatus.dataset.state = "selected";
+      }
+      const output = profileEditor.querySelector<HTMLOutputElement>("[data-profile-form-message]");
+      if (output) output.value = "画像を削除する設定です。保存すると反映されます。";
+      renderProfileAvatar();
+    });
+    profileEditor.addEventListener("profile-image-cropped", (event) => {
+      const detail = (event as CustomEvent<{ avatarUrl?: string; fileName?: string }>).detail;
+      if (!detail?.avatarUrl) return;
+      currentMemberAvatarUrl = detail.avatarUrl;
+      currentMemberAvatarChanged = true;
+      const output = profileEditor.querySelector<HTMLOutputElement>("[data-profile-form-message]");
+      if (output) output.value = `${detail.fileName ?? "画像"}を調整しました。保存すると反映されます。`;
+      renderProfileAvatar();
+    });
+    profileEditor.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const saveButton = profileEditor.querySelector<HTMLButtonElement>("[data-save-profile]");
+      const output = profileEditor.querySelector<HTMLOutputElement>("[data-profile-form-message]");
+      const field = (name: string) => profileEditor.querySelector<HTMLInputElement | HTMLTextAreaElement>('[data-profile-field="' + name + '"]')?.value ?? "";
+      const email = detailEmail.textContent?.trim() ?? "";
+      if (saveButton) saveButton.disabled = true;
+      if (output) output.value = "保存しています…";
+      try {
+        const response = await fetch("/api/admin/member-management", {
+          method: "PATCH",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            email,
+            expectedUpdatedAt: profileEditor.dataset.updatedAt || null,
+            displayName: field("displayName"),
+            avatarUrl: currentMemberAvatarUrl,
+            bio: field("bio"),
+            university: field("university"),
+            year: field("year"),
+            interests: field("interests"),
+            affiliationType: field("affiliationType"),
+            country: field("country"),
+            timezone: field("timezone"),
+          }),
+        });
+        const result = await response.json() as { error?: string };
+        if (!response.ok) throw new Error(result.error ?? "プロフィールを保存できませんでした。");
+        if (currentMemberAvatarChanged) {
+          profileEditor.querySelector<HTMLElement>("[data-profile-image-picker]")?.dispatchEvent(
+            new CustomEvent("profile-image-saved", {
+              bubbles: true,
+              detail: { fileName: "プロフィール画像" },
+            }),
+          );
+          document.dispatchEvent(new Event("atlasez-profile-updated"));
+        }
+        message.value = "プロフィールを更新しました。";
+        await load();
+        await openMemberDetail(email);
+      } catch (error) {
+        if (output) output.value = error instanceof Error ? error.message : "プロフィールを保存できませんでした。";
+        if (saveButton?.isConnected) saveButton.disabled = false;
+      }
+    });
     root.querySelector<HTMLButtonElement>("[data-close-member-detail]")?.addEventListener("click", () => detailDialog.close());
     root.addEventListener("click", (event) => {
       const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-open-member]");
@@ -205,7 +381,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
     root.addEventListener("click", (event) => { const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-archive-member], [data-restore-member]"); if (!button) return; const email = button.dataset.email ?? ""; const action = button.hasAttribute("data-restore-member") ? "restore" : "archive"; const messageText = action === "archive" ? `${email} を運営メンバーからアーカイブしますか？\n担当・権限から外れますが、プロフィールや記事、応募、監査履歴、Discordアカウントは保持され、後から復元できます。` : `${email} を運営メンバーへ復元しますか？\nアーカイブ時の担当・権限を復元します。`; if (!email || !window.confirm(messageText)) return; button.disabled = true; message.value = action === "archive" ? "アーカイブしています…" : "復元しています…"; void fetch("/api/admin/member-management", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, email }) }).then(async (response) => { const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error ?? (action === "archive" ? "メンバーをアーカイブできませんでした。" : "メンバーを復元できませんでした。")); message.value = action === "archive" ? "メンバーをアーカイブしました。プロフィール等は保持されています。" : "メンバーを復元しました。"; await load(); await loadArchivedMembers(); }).catch((error) => { message.value = error instanceof Error ? error.message : "メンバー状態を変更できませんでした。"; }).finally(() => { button.disabled = false; }); });
     let load: () => Promise<void>;
     const retry = createAdminLoadRetry(root, () => load(), "メンバー情報を読み込めませんでした。");
-    load = async () => { root.setAttribute("aria-busy", "true"); retry.begin(); try { const [memberData, participantData, verificationData] = await Promise.all([fetch("/api/admin/genre-overviews?project=atlas&limit=50", { credentials: "same-origin", cache: "no-store" }).then(async (response) => { const data = await response.json() as ResponseData; if (!response.ok) throw new Error(data.error ?? "メンバー情報を読み込めませんでした。"); return data; }), fetch("/api/admin/report-admin-permissions?limit=50", { credentials: "same-origin", cache: "no-store" }).then(async (response) => { const data = await response.json() as ParticipantResponse; if (!response.ok) throw new Error(data.error ?? "参加者一覧を読み込めませんでした。"); return data; }).catch(() => null), fetch("/api/admin/verification-members", { credentials: "same-origin", cache: "no-store" }).then(async (response) => { const data = await response.json() as VerificationResponse; if (!response.ok) throw new Error(data.error ?? "検証用アカウントを読み込めませんでした。"); return data; }).catch(() => ({ members: [] }))]); members = memberData.members ?? []; memberCursor = memberData.pagination?.nextCursor ?? null; membersHaveMore = Boolean(memberData.pagination?.hasMore); participants = participantData?.permissions ?? members.map((member) => ({ email: member.email, display_name: member.display_name, university: member.university, year: member.year, avatar_url: member.avatar_url, subjects: [...(member.subjectAssignments ?? []), ...(member.workflowSubjects ?? [])].join(",") })); participantCursor = participantData?.pagination?.nextCursor ?? null; participantsHaveMore = Boolean(participantData?.pagination?.hasMore); verificationAccounts = verificationData.members ?? []; render(); renderParticipants(); renderVerification(); updateLoadMore(); retry.success(); } catch (error) { const message = error instanceof Error ? error.message : "メンバー情報を読み込めませんでした。"; table.innerHTML = `<tr><td colspan="6" class="empty">${esc(message)}</td></tr>`; tiles.innerHTML = `<p class="empty">${esc(message)}</p>`; archive.hidden = true; archiveList.innerHTML = ""; count.textContent = "—"; loadMoreButton.hidden = true; retry.fail(error); throw error; } finally { root.removeAttribute("aria-busy"); } };
+    load = async () => { root.setAttribute("aria-busy", "true"); retry.begin(); try { const [memberData, participantData, verificationData] = await Promise.all([fetch("/api/admin/genre-overviews?project=atlas&limit=50", { credentials: "same-origin", cache: "no-store" }).then(async (response) => { const data = await response.json() as ResponseData; if (!response.ok) throw new Error(data.error ?? "メンバー情報を読み込めませんでした。"); return data; }), fetch("/api/admin/report-admin-permissions?limit=50", { credentials: "same-origin", cache: "no-store" }).then(async (response) => { const data = await response.json() as ParticipantResponse; if (!response.ok) throw new Error(data.error ?? "参加者一覧を読み込めませんでした。"); return data; }).catch((error): ParticipantResponse => ({ permissions: [], pagination: {}, error: error instanceof Error ? error.message : "参加者一覧を読み込めませんでした。" })), fetch("/api/admin/verification-members", { credentials: "same-origin", cache: "no-store" }).then(async (response) => { const data = await response.json() as VerificationResponse; if (!response.ok) throw new Error(data.error ?? "検証用アカウントを読み込めませんでした。"); return data; }).catch(() => ({ members: [] }))]); members = memberData.members ?? []; memberCursor = memberData.pagination?.nextCursor ?? null; membersHaveMore = Boolean(memberData.pagination?.hasMore); participants = participantData.permissions ?? []; participantLoadError = participantData.error ?? ""; participantCursor = participantData.pagination?.nextCursor ?? null; participantsHaveMore = Boolean(participantData.pagination?.hasMore); verificationAccounts = verificationData.members ?? []; render(); renderParticipants(); renderVerification(); updateLoadMore(); retry.success(); } catch (error) { const message = error instanceof Error ? error.message : "メンバー情報を読み込めませんでした。"; table.innerHTML = `<tr><td colspan="6" class="empty">${esc(message)}</td></tr>`; tiles.innerHTML = `<p class="empty">${esc(message)}</p>`; archive.hidden = true; archiveList.innerHTML = ""; count.textContent = "—"; loadMoreButton.hidden = true; retry.fail(error); throw error; } finally { root.removeAttribute("aria-busy"); } };
     void load().then(() => loadArchivedMembers()).catch(() => undefined);
   }; document.addEventListener("astro:page-load", initialize); initialize();
 </script>

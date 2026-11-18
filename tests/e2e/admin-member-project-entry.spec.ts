@@ -91,7 +91,7 @@ test("通常メンバーのプロジェクトマイページは対象自己紹�
       personalWorkspaceCalls += 1;
   });
   await page.goto("admin/workspace/?project=thinking-cafe");
-  await expect(page.getByLabel("運営内自己紹介", { exact: true })).toHaveValue(
+  await expect(page.locator("[data-project-bio]")).toHaveText(
     "カフェの自己紹介",
   );
   await expect(page.locator("[data-article-workspace]")).toBeHidden();

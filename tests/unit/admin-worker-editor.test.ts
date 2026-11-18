@@ -1997,7 +1997,7 @@ describe("admin worker editor APIs", () => {
     ).toBe(true);
   });
 
-  it("serves the CodeMirror completion module used by the article editor", async () => {
+  it("serves the locally bundled CodeMirror module used by the article editor", async () => {
     let requestedPath = "";
     const assetEnv = {
       ...emptyEnv,
@@ -2012,12 +2012,12 @@ describe("admin worker editor APIs", () => {
       },
     };
     const response = await worker.fetch(
-      new Request("http://localhost/admin-codemirror.js"),
+      new Request("http://localhost/_astro/admin-codemirror.test.js"),
       assetEnv as never,
     );
 
     expect(response.status).toBe(200);
-    expect(requestedPath).toBe("/admin-codemirror.js");
+    expect(requestedPath).toBe("/_astro/admin-codemirror.test.js");
     await expect(response.text()).resolves.toContain("completion module");
   });
 
@@ -2204,15 +2204,19 @@ describe("admin worker editor APIs", () => {
       },
     };
     const response = await worker.fetch(
-      new Request("http://localhost/api/admin/editor/documents", {
-        headers: { "Cf-Access-Authenticated-User-Email": "math@example.com" },
-      }),
+      new Request(
+        "http://localhost/api/admin/editor/documents?subject=physics",
+        {
+          headers: { "Cf-Access-Authenticated-User-Email": "math@example.com" },
+        },
+      ),
       env as never,
     );
 
     expect(response.status).toBe(200);
     expect(documentQueries).toHaveLength(1);
     expect(documentQueries[0]).toContain("d.subject IN (?)");
+    expect(documentQueries[0]).toContain("d.subject = ?");
     expect(documentQueries[0]).not.toContain(
       "publication_review_stage='subject-coordinator'",
     );
@@ -2926,6 +2930,8 @@ describe("admin worker editor APIs", () => {
       feedbackTaskDone: 1,
       feedbackComplete: false,
       canCompleteWriting: true,
+      canDecide: false,
+      managerOverride: true,
     });
   });
 

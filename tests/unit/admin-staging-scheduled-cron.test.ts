@@ -287,6 +287,29 @@ it("Resend test-sink mode fails closed without its secret recipient allowlist", 
   expect(fetcher).not.toHaveBeenCalled();
 });
 
+it("staging never dispatches seminar email even when the application test sink is enabled", async () => {
+  const { env } = createAdminTestEnvironment();
+  Object.assign(env, {
+    ATLASEZ_STAGING_MODE: "true",
+    ATLASEZ_STAGING_EMAIL_DELIVERY: "test-sink",
+    ATLASEZ_STAGING_EMAIL_ALLOWLIST: "delivered@resend.dev",
+    RESEND_API_KEY: "synthetic-provider-key",
+    EMAIL_FROM: "Atlasez Staging <noreply@staging.example.test>",
+  });
+  const prepare = vi.spyOn(env.REPORTS, "prepare");
+  const fetcher = vi.fn(async () => Response.json({ id: "unexpected" }));
+
+  await expect(
+    dispatchApplicationEmails(env as never, {
+      channel: "seminar",
+      fetcher,
+      logger: { info: vi.fn(), error: vi.fn() },
+    }),
+  ).resolves.toMatchObject({ skipped: true, sent: 0, failed: 0 });
+  expect(prepare).not.toHaveBeenCalled();
+  expect(fetcher).not.toHaveBeenCalled();
+});
+
 it("rejects arbitrary staging-looking allowlist recipients without logging the address", async () => {
   const { env } = createAdminTestEnvironment();
   Object.assign(env, {

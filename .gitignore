@@ -2,6 +2,7 @@
 node_modules/
 /prototypes/admin-ui-review/node_modules
 /prototypes/xai/node_modules
+**/node_modules
 .env
 .env.*
 .dev.vars
@@ -14,3 +15,5 @@ public/build-info.json
 .astro/
 .wrangler/
 test-results/
+verification-artifacts/
+.lighthouseci/

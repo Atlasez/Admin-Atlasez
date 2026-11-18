@@ -1,23 +1,77 @@
 import { expect, test, type Page } from "@playwright/test";
+import { decompressFrames, parseGIF } from "gifuct-js";
+import { createRequire } from "node:module";
 
-const baseAdminMocks = async (page: Page) => {
+const { applyPalette, GIFEncoder, quantize } = createRequire(import.meta.url)(
+  "gifenc",
+) as typeof import("gifenc");
+
+const makeTransparentGif = () => {
+  const encoder = GIFEncoder();
+  const frames = [
+    new Uint8ClampedArray(
+      Array.from({ length: 4 * 4 }, () => [255, 0, 0, 255]).flat(),
+    ),
+    new Uint8ClampedArray(
+      Array.from({ length: 4 * 4 }, (_, index) =>
+        index === 5 || index === 6 || index === 9 || index === 10
+          ? [0, 0, 255, 255]
+          : [0, 0, 0, 0],
+      ).flat(),
+    ),
+  ];
+
+  for (const rgba of frames) {
+    const palette = quantize(rgba, 16, {
+      format: "rgba4444",
+      oneBitAlpha: true,
+    });
+    const transparentIndex = palette.findIndex(
+      (color) => (color[3] ?? 255) < 128,
+    );
+    encoder.writeFrame(applyPalette(rgba, palette, "rgba4444"), 4, 4, {
+      delay: 100,
+      dispose: 1,
+      palette,
+      repeat: 0,
+      transparent: transparentIndex >= 0,
+      ...(transparentIndex >= 0 ? { transparentIndex } : {}),
+    });
+  }
+  encoder.finish();
+  // Exercise the new upload allowance with a source file larger than the old 2MB cap.
+  return Buffer.concat([Buffer.from(encoder.bytes()), Buffer.alloc(2_100_000)]);
+};
+
+const baseAdminMocks = async (page: Page, email = "manager@example.com") => {
   await page.route("**/api/admin/auth-status", (route) =>
-    route.fulfill({ json: { email: "manager@example.com", isManager: true } }),
+    route.fulfill({ json: { email, isManager: true } }),
   );
   await page.route("**/api/admin/notifications", (route) =>
     route.fulfill({ json: { notifications: [] } }),
   );
 };
 
-test("マイページは基本情報を表示し、編集画面から公開プロフィールを承認申請する", async ({
+test("GIF画像は承認なしで保存し、基本情報だけ承認申請する", async ({
   page,
 }) => {
-  await baseAdminMocks(page);
-  let submitted: Record<string, unknown> | null = null;
+  await baseAdminMocks(page, "hanako@school.example");
+  await page.addInitScript(() => {
+    sessionStorage.removeItem("atlasez-admin-profile-cache");
+  });
+  const submitted: Record<string, unknown>[] = [];
   await page.route("**/api/admin/profile", async (route) => {
     if (route.request().method() === "PUT") {
-      submitted = route.request().postDataJSON() as Record<string, unknown>;
-      await route.fulfill({ json: { ok: true, approvalRequired: true } });
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      submitted.push(body);
+      await route.fulfill({
+        json: {
+          ok: true,
+          approvalRequired: Object.keys(body).some(
+            (key) => key !== "avatarUrl",
+          ),
+        },
+      });
       return;
     }
     await route.fulfill({
@@ -47,33 +101,97 @@ test("マイページは基本情報を表示し、編集画面から公開プ�
     "Atlasez大学",
   );
   await expect(page.locator("[data-fact=year]")).toHaveText("B2");
-  await expect(page.locator("[data-bio]")).toContainText(
-    "運営外向けプロフィール",
-  );
-  await expect(page.locator("[data-bio] a")).toHaveAttribute(
-    "href",
-    "https://example.com/profile",
-  );
   await expect(
-    page.getByRole("link", { name: "プロフィールを編集" }),
-  ).toHaveAttribute("href", "/admin/member-profile/edit/");
+    page.locator("[data-member-profile] .bio-card > [data-bio]"),
+  ).toContainText("運営外向けプロフィール");
+  await expect(
+    page.locator("[data-member-profile] .bio-card > [data-bio] a"),
+  ).toHaveAttribute("href", "https://example.com/profile");
+  await expect(page.locator("[data-avatar]")).toHaveCSS("width", "136px");
+  await expect(
+    page.getByRole("button", { name: "プロフィールを編集" }),
+  ).toBeVisible();
   await expect(page.locator("[data-discord-status]")).toHaveText("未連携");
   await expect(page.locator("[data-discord-link]")).toHaveText("Discordと連携");
   await expect(page.locator("[data-discord-link]")).toHaveAttribute(
     "href",
     "/auth/discord/start?returnTo=%2Fadmin%2Fmember-profile%2F",
   );
-  await page.goto("admin/member-profile/edit/");
-  await expect(page.locator("[data-display-name]")).toHaveValue("山田 花子");
-  await page.locator("[data-bio]").fill("更新した公開プロフィール");
-  await page.getByRole("button", { name: "変更を承認申請" }).click();
-  await expect(page.locator("[data-message]")).toContainText(
-    "運営事務局へ送りました",
+  await page.getByRole("button", { name: "プロフィールを編集" }).click();
+  await expect(page).toHaveURL(/admin\/member-profile\/$/);
+  const editor = page.getByRole("dialog", { name: "プロフィールを編集" });
+  await expect(editor).toBeVisible();
+  await expect(editor.locator("[data-display-name]")).toHaveValue("山田 花子");
+  await expect(editor.locator("[data-profile-image-picker]")).toContainText(
+    "10MB以下",
   );
-  expect(submitted).toMatchObject({
+  const sourceGif = makeTransparentGif();
+  expect(sourceGif.length).toBeGreaterThan(2_000_000);
+  await editor.locator("[data-profile-image-input]").setInputFiles({
+    name: "avatar.gif",
+    mimeType: "image/gif",
+    buffer: sourceGif,
+  });
+  await expect(
+    editor.getByRole("heading", { name: "画像の表示範囲" }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      editor
+        .locator("[data-crop-source]")
+        .evaluate((image) => image.getBoundingClientRect().width),
+    )
+    .toBeGreaterThan(0);
+  await expect(editor.locator("[data-profile-image-status]")).toContainText(
+    "avatar.gif（2.1MB）",
+  );
+  await editor.getByRole("button", { name: "この範囲を使う" }).click();
+  await expect(editor.locator("[data-avatar-preview]")).toHaveCSS(
+    "background-image",
+    /data:image\/gif;base64/,
+  );
+  await editor.getByRole("button", { name: "画像を保存（承認不要）" }).click();
+  await expect(editor.locator("[data-message]")).toContainText(
+    "画像の変更に承認は不要です",
+  );
+  const navigationAvatar = page.locator("[data-admin-account-image]");
+  await expect(navigationAvatar).toBeVisible();
+  await expect(navigationAvatar).toHaveAttribute(
+    "src",
+    /^data:image\/gif;base64,/,
+  );
+  expect(submitted).toHaveLength(1);
+  expect(Object.keys(submitted[0] ?? {})).toEqual(["avatarUrl"]);
+  const avatarUrl = String(submitted[0]?.avatarUrl ?? "");
+  expect(avatarUrl).toMatch(/^data:image\/gif;base64,/);
+  const gifBytes = Buffer.from(avatarUrl.split(",")[1] ?? "", "base64");
+  const parsedGif = parseGIF(
+    gifBytes.buffer.slice(
+      gifBytes.byteOffset,
+      gifBytes.byteOffset + gifBytes.byteLength,
+    ),
+  );
+  const outputFrames = decompressFrames(parsedGif, true);
+  expect(outputFrames.length).toBeGreaterThan(1);
+  const preservedBackground = Array.from(
+    outputFrames[1]?.patch.slice(0, 4) ?? [],
+  );
+  expect(preservedBackground[0]).toBeGreaterThan(240);
+  expect(preservedBackground[1]).toBeLessThan(10);
+  expect(preservedBackground[2]).toBeLessThan(10);
+  expect(preservedBackground[3]).toBeGreaterThan(240);
+
+  await editor.locator("[data-bio]").fill("更新した公開プロフィール");
+  await editor.getByRole("button", { name: "変更を承認申請" }).click();
+  await expect(editor.locator("[data-message]")).toContainText(
+    "基本情報の変更を運営事務局へ申請しました",
+  );
+  expect(submitted).toHaveLength(2);
+  expect(submitted[1]).toMatchObject({
     displayName: "山田 花子",
     bio: "更新した公開プロフィール",
   });
+  expect(submitted[1]).not.toHaveProperty("avatarUrl");
 });
 
 test("マイページはDiscord連携済みの状態と再連携ボタンを表示する", async ({
@@ -113,12 +231,12 @@ test("APIがHTMLエラーを返してもJSON解析例外を画面へ表示しな
   );
 
   await page.goto("admin/member-profile/");
-  await expect(page.locator("[data-message]")).toContainText(
+  await expect(page.locator("[data-member-profile] .message")).toContainText(
     "プロフィール情報を読み込めませんでした。（HTTP 500）",
   );
-  await expect(page.locator("[data-message]")).not.toContainText(
-    "Unexpected token",
-  );
+  await expect(
+    page.locator("[data-member-profile] .message"),
+  ).not.toContainText("Unexpected token");
 });
 
 test("マイページの読み込み失敗から共通の再試行で復帰できる", async ({
@@ -740,6 +858,195 @@ test("タスク検索はAPIに条件を渡し、全件数と表示件数を区�
   expect(queries.at(-1)?.get("q")).toBe("後半");
   await page.locator("[data-status-filter]").selectOption("doing");
   await expect.poll(() => queries.at(-1)?.get("status")).toBe("doing");
+});
+
+test("タスク詳細から戻ると検索条件・表示対象・一覧位置を復元する", async ({
+  page,
+}) => {
+  await baseAdminMocks(page);
+  const taskId = (index: number) =>
+    `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`;
+  const tasks = Array.from({ length: 51 }, (_, index) => ({
+    id: taskId(index + 1),
+    project_id: "atlas",
+    title: `復元対象 ${String(index + 1).padStart(2, "0")}`,
+    status: "open",
+    created_by_me: true,
+    assigned_to_me: false,
+    can_update: false,
+    is_test_data: 1,
+  }));
+  const queries: URLSearchParams[] = [];
+  await page.route("**/api/admin/member-tasks**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    queries.push(new URLSearchParams(params));
+    const isSecondPage = params.get("cursor") === "second-page";
+    return route.fulfill({
+      json: {
+        scope: {
+          email: "manager@example.com",
+          isManager: true,
+          memberAccess: true,
+        },
+        projects: [{ id: "atlas", name: "アトラス", role: "manager" }],
+        members: [],
+        tasks: isSecondPage ? tasks.slice(50) : tasks.slice(0, 50),
+        pagination: {
+          nextCursor: isSecondPage ? null : "second-page",
+          hasMore: !isSecondPage,
+        },
+      },
+    });
+  });
+  await page.route("**/api/admin/task-workspaces/**", (route) =>
+    route.fulfill({
+      json: {
+        task: {
+          id: taskId(51),
+          title: "復元対象 51",
+          status: "open",
+          updatedAt: "2026-11-10T00:00:00.000Z",
+          assigneeEmails: [],
+        },
+        workspace: {
+          summary: "",
+          nextAction: "",
+          waitingFor: "",
+          documentId: null,
+          checklist: [],
+          revision: 0,
+        },
+        dependencies: [],
+        candidates: [],
+        members: [],
+        history: [],
+        canEdit: true,
+        canAssign: true,
+      },
+    }),
+  );
+
+  await page.goto("admin/member-tasks/?project=atlas");
+  await page.getByRole("button", { name: "自分が依頼" }).click();
+  await page.locator("[data-task-search]").fill("復元");
+  await page.locator("[data-status-filter]").selectOption("unfinished");
+  await page.locator("[data-due-filter]").selectOption("week");
+  await page.locator("[data-show-archived]").check();
+  await page.locator("[data-show-test]").check();
+  await expect(page.locator(`[data-task-id="${taskId(1)}"]`)).toBeVisible();
+  await page.locator("[data-task-load-more]").click();
+  const targetTask = page.locator(`[data-task-id="${taskId(51)}"]`);
+  await expect(targetTask).toBeVisible();
+  const detailLink = targetTask.getByRole("link", {
+    name: "詳細・引き継ぎ →",
+  });
+  await detailLink.scrollIntoViewIfNeeded();
+  const originalScrollY = await page.evaluate(() => window.scrollY);
+  expect(originalScrollY).toBeGreaterThan(0);
+  await detailLink.click();
+
+  const backLink = page.getByRole("link", { name: "タスク管理へ戻る" });
+  await expect(backLink).toHaveAttribute("href", /view=created/);
+  await expect(backLink).toHaveAttribute("href", /__returnScroll=/);
+  await expect(backLink).toHaveAttribute("href", /__returnCount=51/);
+  await backLink.click();
+
+  await expect(page.locator(`[data-task-id="${taskId(51)}"]`)).toBeVisible();
+  await expect(page.locator("[data-task-search]")).toHaveValue("復元");
+  await expect(page.locator("[data-status-filter]")).toHaveValue("unfinished");
+  await expect(page.locator("[data-due-filter]")).toHaveValue("week");
+  await expect(page.locator("[data-show-archived]")).toBeChecked();
+  await expect(page.locator("[data-show-test]")).toBeChecked();
+  await expect(page.locator('[data-filter="created"]')).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect
+    .poll(() =>
+      queries.some(
+        (params) =>
+          params.get("cursor") === "second-page" &&
+          params.get("view") === "created" &&
+          params.get("q") === "復元" &&
+          params.get("status") === "unfinished" &&
+          params.get("due") === "week" &&
+          params.get("includeArchived") === "1" &&
+          params.get("includeTestData") === "1" &&
+          params.get("project") === "atlas",
+      ),
+    )
+    .toBe(true);
+  await expect
+    .poll(async () =>
+      Math.abs((await page.evaluate(() => window.scrollY)) - originalScrollY),
+    )
+    .toBeLessThanOrEqual(3);
+});
+
+test("遷移イベント後に古いタスク一覧位置を適用しない", async ({ page }) => {
+  await baseAdminMocks(page);
+  let releaseSecondPage!: () => void;
+  let markSecondPageStarted!: () => void;
+  const secondPageGate = new Promise<void>((resolve) => {
+    releaseSecondPage = resolve;
+  });
+  const secondPageStarted = new Promise<void>((resolve) => {
+    markSecondPageStarted = resolve;
+  });
+  const firstPageTasks = Array.from({ length: 50 }, (_, index) => ({
+    id: `task-${index + 1}`,
+    project_id: "atlas",
+    title: `タスク ${index + 1}`,
+    status: "open",
+    created_by_me: true,
+    can_update: false,
+  }));
+  await page.route("**/api/admin/member-tasks**", async (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    const isSecondPage = params.get("cursor") === "second-page";
+    if (isSecondPage) {
+      markSecondPageStarted();
+      await secondPageGate;
+    }
+    return route.fulfill({
+      json: {
+        scope: {
+          email: "manager@example.com",
+          isManager: true,
+          memberAccess: true,
+        },
+        projects: [{ id: "atlas", name: "アトラス", role: "manager" }],
+        tasks: isSecondPage
+          ? [
+              {
+                id: "task-51",
+                project_id: "atlas",
+                title: "タスク 51",
+                status: "open",
+                created_by_me: true,
+                can_update: false,
+              },
+            ]
+          : firstPageTasks,
+        pagination: {
+          nextCursor: isSecondPage ? null : "second-page",
+          hasMore: !isSecondPage,
+        },
+      },
+    });
+  });
+
+  await page.goto(
+    "admin/member-tasks/?view=created&__returnScroll=1200&__returnCount=51",
+  );
+  await secondPageStarted;
+  await page.evaluate(() => {
+    document.dispatchEvent(new Event("astro:before-swap"));
+    window.scrollTo(0, 0);
+  });
+  releaseSecondPage();
+
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
 });
 
 test("横断タスクで閲覧のみのタスクは状態保存とアーカイブを表示しない", async ({
