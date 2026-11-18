@@ -975,6 +975,7 @@ test("新規記事には概念IDを初期値として設定する", async ({ pag
   await page.goto("./admin/editor/?new=1");
 
   const slug = page.locator('[name="slug"]');
+  await expect(slug).toHaveValue(/^new-article-[a-z0-9-]+$/);
   const draftSlug = await slug.inputValue();
   expect(draftSlug).toMatch(/^new-article-[a-z0-9-]+$/);
   await expect(page.locator('[name="conceptId"]')).toHaveValue(
