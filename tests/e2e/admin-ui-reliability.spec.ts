@@ -214,7 +214,7 @@ test("プロフィールGET失敗後は保存できず、再読込後に既存�
   await page.locator("[data-display-name]").fill("更新後の表示名");
   await save.click();
   await expect(page.locator("[data-message]")).toContainText(
-    "運営事務局へ送りました",
+    "基本情報の変更を運営事務局へ申請しました",
   );
   expect(submitted).toMatchObject({
     displayName: "更新後の表示名",

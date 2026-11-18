@@ -1,4 +1,9 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Locator,
+  type Page,
+} from "../helpers/verification-test";
 
 function contrast(foreground: number[], background: number[]) {
   const channel = (value: number) => {
@@ -267,6 +272,73 @@ async function mockShell(
     await route.fulfill({ status: 404, json: { error: "not found" } });
   });
 }
+
+test("承認待ちへの直リンクは承認項目だけを初期表示する", async ({ page }) => {
+  await mockShell(page);
+  await page.route("**/api/admin/action-center**", async (route) => {
+    const approval = {
+      id: "approval:profile-1",
+      kind: "approval",
+      title: "自己紹介の変更申請",
+      detail: "内容を確認して承認してください。",
+      href: "/admin/profile-requests/",
+      status: "pending",
+      priority: "normal",
+      updatedAt: "2026-09-10T00:00:00.000Z",
+      actions: [
+        {
+          entityType: "approval",
+          entityId: "profile-1",
+          fromState: "pending",
+          toState: "approved",
+          label: "承認",
+          expectedUpdatedAt: "2026-09-10T00:00:00.000Z",
+        },
+      ],
+    };
+    const task = {
+      id: "task:task-1",
+      kind: "task",
+      title: "定義を確認",
+      detail: "担当タスクです。",
+      href: "/admin/operations/?project=atlas",
+      status: "open",
+      priority: "normal",
+      updatedAt: "2026-09-10T00:00:00.000Z",
+      actions: [
+        {
+          entityType: "task",
+          entityId: "task-1",
+          fromState: "open",
+          toState: "doing",
+          label: "着手",
+          expectedUpdatedAt: "2026-09-10T00:00:00.000Z",
+        },
+      ],
+    };
+    await route.fulfill({
+      json: {
+        generatedAt: "2026-09-10T00:00:00.000Z",
+        counts: { today: 0, dueSoon: 0, approvals: 1, assigned: 1 },
+        items: [approval, task],
+        history: [],
+      },
+    });
+  });
+
+  await page.goto("admin/action-center/?filter=approvals");
+  await expect(
+    page.locator('[data-action-filter="approvals"]'),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("[data-action-list-heading]")).toHaveText(
+    "承認待ち",
+  );
+  await expect(page.locator(".action-item")).toHaveCount(1);
+  await expect(page.locator(".action-item")).toContainText(
+    "自己紹介の変更申請",
+  );
+  await expect(page).toHaveURL(/filter=approvals/);
+});
 
 test("アクションセンターで絞り込みと状態変更を操作できる", async ({ page }) => {
   await mockShell(page);

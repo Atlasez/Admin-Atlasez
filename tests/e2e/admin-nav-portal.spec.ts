@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../helpers/verification-test";
 
 type MockOptions = {
   notificationStatus?: number;
@@ -494,6 +494,9 @@ test("承認待ちは履歴通知ではなくpending申請の件数を表示す�
   await expect(page.locator('[data-summary-detail="approvals"]')).toHaveText(
     "承認待ちはありません",
   );
+  await expect(
+    page.locator('[data-summary-value="approvals"]').locator("xpath=.."),
+  ).toHaveAttribute("href", "/admin/action-center/?filter=approvals");
 });
 
 test("ポータルのサマリーは表示上限を超えたタスク・通知も正確に表示する", async ({

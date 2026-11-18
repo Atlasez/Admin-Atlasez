@@ -26,13 +26,12 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
 
     <section class="portal-summary" aria-label="ポータルの概要" data-portal-summary>
       <a class="portal-summary-item portal-summary-item--action" href="/admin/member-tasks/">
-        <span class="portal-summary-label">今日の要対応</span>
-        <strong data-summary-value="today">—</strong>
-        <small data-summary-detail="today">期限のあるタスクを確認</small>
-      </a>
-      <a class="portal-summary-item portal-summary-item--action" href="/admin/member-tasks/">
-        <span class="portal-summary-label">期限が近いタスク</span>
-        <strong data-summary-value="due-soon">—</strong>
+        <span class="portal-summary-label">自分のタスク</span>
+        <span class="portal-task-summary-values">
+          <span class="portal-task-summary-value"><span>今日が期限</span><strong data-summary-value="today">—</strong></span>
+          <span class="portal-task-summary-value"><span>7日以内が期限</span><strong data-summary-value="due-soon">—</strong></span>
+        </span>
+        <small data-summary-detail="today">今日の期限</small>
         <small data-summary-detail="due-soon">7日以内の期限</small>
       </a>
       <button class="portal-summary-item portal-summary-item--action" type="button" data-summary-notifications>
@@ -40,10 +39,10 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
         <strong data-summary-value="unread">—</strong>
         <small data-summary-detail="unread">通知を確認</small>
       </button>
-      <a class="portal-summary-item portal-summary-item--action" href="/admin/notifications/">
+      <a class="portal-summary-item portal-summary-item--action" href="/admin/action-center/?filter=approvals">
         <span class="portal-summary-label">承認待ち</span>
         <strong data-summary-value="approvals">—</strong>
-        <small data-summary-detail="approvals">確認が必要な項目</small>
+        <small data-summary-detail="approvals">承認・却下が必要な項目</small>
       </a>
       <a class="portal-summary-item" href="/admin/member-calendar/">
         <span class="portal-summary-label">次回予定</span>
@@ -133,12 +132,15 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
   .portal > header span, .portal small { color: var(--text-secondary); line-height: 1.6; }
   .application-link { align-self: center; background: var(--accent-primary); color: #fff; font-size: .8rem; font-weight: 800; padding: .7rem .9rem; text-decoration: none; white-space: nowrap; }
   .application-link:hover { filter: brightness(.94); transform: translateY(-1px); }
-  .portal-summary { align-items: stretch; background: var(--background-secondary); border: 1px solid var(--border-default); display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 1rem 0 1.5rem; overflow: hidden; }
+  .portal-summary { align-items: stretch; background: var(--background-secondary); border: 1px solid var(--border-default); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 1rem 0 1.5rem; overflow: hidden; }
   .portal-summary-item { background: transparent; border: 0; border-left: 1px solid var(--border-default); color: var(--text-primary); display: grid; gap: .22rem; min-width: 0; padding: .72rem .85rem; text-align: left; text-decoration: none; }
   .portal-summary-item:first-child { border-left: 0; }
   .portal-summary-item--action { cursor: pointer; font: inherit; }
   .portal-summary-item--action:hover, .portal-summary-item--action:focus-visible { background: var(--background-inset); outline: 0; }
   .portal-summary-label { color: var(--text-secondary); font-size: .7rem; font-weight: 800; line-height: 1.35; }
+  .portal-task-summary-values { display: flex; gap: .85rem; }
+  .portal-task-summary-value { display: grid; gap: .15rem; }
+  .portal-task-summary-value > span { color: var(--text-muted); font-size: .66rem; line-height: 1.35; }
   /* Linear風に、サマリーの数値は小さく鮮明な緑で統一する。
      背景やラベルは無彩色のままにし、色の面積を増やさない。 */
   .portal-summary-item strong { color: var(--task-count); font-size: 1.2rem; font-variant-numeric: tabular-nums; line-height: 1.1; }

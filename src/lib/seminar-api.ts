@@ -51,6 +51,51 @@ type Proposal = Seminar & {
 const publicColumns =
   "number,title,details,proposal_status,recruitment,phase,host_id,source_url,created_at,decided_at,decision_note";
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+const publicSeminarOrigin = "https://atlasez.org";
+const uuidPath = "[0-9a-f-]{36}";
+
+function publicSeminarRequestAllowed(method: string, pathname: string) {
+  const path = pathname.replace(/\/$/, "").slice("/api/seminars".length);
+  if (method === "GET")
+    return (
+      path === "" ||
+      path === "/session" ||
+      path === "/dashboard" ||
+      /^\/\d{1,10}$/.test(path) ||
+      /^\/\d{1,10}\/workspace$/.test(path) ||
+      new RegExp(`^\\/\\d{1,10}\\/materials\\/${uuidPath}$`, "i").test(path)
+    );
+  if (method === "POST")
+    return (
+      path === "/proposals" ||
+      /^\/\d{1,10}\/join$/.test(path) ||
+      /^\/\d{1,10}\/settings$/.test(path) ||
+      new RegExp(
+        `^\\/\\d{1,10}\\/(?:applications\\/${uuidPath}|activities(?:\\/${uuidPath})?|materials)$`,
+        "i",
+      ).test(path)
+    );
+  if (method === "PATCH" || method === "DELETE")
+    return new RegExp(`^\\/\\d{1,10}\\/materials\\/${uuidPath}$`, "i").test(
+      path,
+    );
+  return false;
+}
+
+function withPublicSeminarCors(response: Response, origin: string) {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", origin);
+  headers.set("access-control-allow-credentials", "true");
+  headers.set(
+    "vary",
+    headers.has("vary") ? `${headers.get("vary")}, Origin` : "Origin",
+  );
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
 
 const parseProfile = (body: Record<string, unknown>) =>
   Object.fromEntries(
@@ -64,7 +109,6 @@ function publicSeminar(seminar: Seminar) {
     details: JSON.parse(seminar.details) as Record<string, string>,
     recruitment: seminar.recruitment,
     phase: seminar.phase,
-    sourceUrl: seminar.source_url,
     acceptingApplications:
       seminar.recruitment === "open" &&
       seminar.phase !== "ended" &&
@@ -400,7 +444,7 @@ async function seminarOperations(db: D1Database) {
   });
 }
 
-export async function handleSeminarApi(
+async function handleSeminarApiRequest(
   request: Request,
   db: D1Database,
   access: SeminarAccess,
@@ -408,8 +452,6 @@ export async function handleSeminarApi(
   const url = new URL(request.url);
   const method = request.method;
   const path = url.pathname.replace(/\/$/, "").slice("/api/seminars".length);
-  if (method !== "GET" && request.headers.get("origin") !== url.origin)
-    return seminarError("この送信元からは受け付けられません。", 403);
 
   if (method === "GET" && path === "") {
     const result = await db
@@ -515,4 +557,57 @@ export async function handleSeminarApi(
     seminar: publicSeminar(seminar),
     maxFileBytes: maxSeminarFileBytes,
   });
+}
+
+export async function handleSeminarApi(
+  request: Request,
+  db: D1Database,
+  access: SeminarAccess,
+) {
+  const url = new URL(request.url);
+  const origin = request.headers.get("origin");
+  const publicRequest = origin === publicSeminarOrigin;
+
+  if (request.method === "OPTIONS") {
+    const requestedMethod = request.headers
+      .get("access-control-request-method")
+      ?.toUpperCase();
+    const requestedHeaders = (
+      request.headers.get("access-control-request-headers") ?? ""
+    )
+      .split(",")
+      .map((header) => header.trim().toLowerCase())
+      .filter(Boolean);
+    if (
+      !publicRequest ||
+      !publicSeminarRequestAllowed(requestedMethod ?? "", url.pathname) ||
+      requestedHeaders.some(
+        (header) => !["content-type", "x-seminar-filename"].includes(header),
+      )
+    )
+      return seminarError("この送信元からは受け付けられません。", 403);
+    return withPublicSeminarCors(
+      new Response(null, {
+        status: 204,
+        headers: {
+          "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
+          "access-control-allow-headers": "content-type, x-seminar-filename",
+          "access-control-max-age": "600",
+        },
+      }),
+      origin!,
+    );
+  }
+
+  if (
+    publicRequest &&
+    !publicSeminarRequestAllowed(request.method, url.pathname)
+  )
+    return seminarError("この送信元からは受け付けられません。", 403);
+
+  if (request.method !== "GET" && origin !== url.origin && !publicRequest)
+    return seminarError("この送信元からは受け付けられません。", 403);
+
+  const response = await handleSeminarApiRequest(request, db, access);
+  return publicRequest ? withPublicSeminarCors(response, origin!) : response;
 }

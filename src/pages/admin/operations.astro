@@ -1,6 +1,7 @@
 ---
 import AdminLayout from "../../layouts/AdminLayout.astro";
 import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
+import TaskCreateFields from "../../components/admin/TaskCreateFields.astro";
 import { getCollection } from "astro:content";
 import { getTimeZoneOptions } from "../../lib/timezones";
 const { memberMode = false, progressOnly = false, progressOverview = false } = Astro.props;
@@ -22,8 +23,8 @@ const projectLabel = projectSlug === "secretariat"
       : projectSlug === "thinking-cafe"
         ? "考えるカフェ"
         : "アトラス";
-const pageLabel = calendarPage ? "カレンダー" : progressOnly ? "進捗報告" : "タスク管理";
-const initialPageTitle = memberMode ? "カレンダー" : `${projectLabel}：${pageLabel}`;
+const pageLabel = calendarPage ? "運営カレンダー" : progressOnly ? "進捗報告" : "運営タスク";
+const initialPageTitle = memberMode ? "自分の予定" : `${projectLabel}：${pageLabel}`;
 ---
 
 <AdminLayout title={initialPageTitle} description="運営作業を共有する場所">
@@ -113,26 +114,7 @@ const initialPageTitle = memberMode ? "カレンダー" : `${projectLabel}：${p
               <h2 id="task-create-heading">タスク作成・依頼</h2>
               <button type="button" class="task-create-close" data-close-task-create aria-label="タスク作成画面を閉じる">×</button>
             </div>
-        <input data-task-title placeholder="タスク名" /><label
-          class="field-label"
-          >対象分野<select data-task-subject>
-            <option value="">全体</option>
-            {subjects.map((subject) => <option value={subject.slug}>{subject.name}</option>)}
-          </select></label
-        ><label class="field-label"
-          >担当者<select data-task-assignee multiple size="6" aria-describedby="task-assignee-help">
-            <option value="" disabled>担当者を選択</option>
-          </select><small id="task-assignee-help">チェックを入れて複数人を選択できます。</small></label
-        >
-        <div class="task-deadline">
-          <label class="field-label"
-            >期限日時<input data-task-due type="datetime-local" /></label
-          ><label class="field-label"
-            >期限のタイムゾーン<select data-task-due-timezone>
-              {timezones.map(({ value, label }) => <option value={value} selected={value === "Asia/Tokyo"}>{label}</option>)}
-            </select></label
-          >
-        </div>
+        <TaskCreateFields context="project" timezones={timezones} subjects={subjects} />
         <div class="task-reminder-settings">
           <h3>自分用リマインダー</h3>
           <p>
@@ -190,12 +172,7 @@ const initialPageTitle = memberMode ? "カレンダー" : `${projectLabel}：${p
               placeholder="自分のメールアドレス"
           /></label>
         </div>
-        <textarea
-          data-task-details
-          placeholder="補足・依頼内容（任意）"
-        ></textarea
-        ><label class="field-label" data-test-task-create-label><input type="checkbox" data-task-create-test />テスト用タスク（通知を送らない）</label
-        ><button type="button" data-create-task>タスクを追加</button
+        <button type="button" data-create-task>タスクを追加</button
         ><output
           class="operation-feedback"
           data-task-feedback
@@ -1817,7 +1794,7 @@ const initialPageTitle = memberMode ? "カレンダー" : `${projectLabel}：${p
       }
       const assignmentMembers = [...assignmentMembersByEmail.values()];
       const members = new Map(assignmentMembers.map((member) => [member.email, member.display_name || '表示名未設定']));
-      projectTitle.textContent = memberPage ? 'カレンダー' : `${data.project?.name || 'プロジェクト'}：${calendarPage ? 'カレンダー' : progressOnly ? '進捗報告' : 'タスク管理'}`;
+      projectTitle.textContent = memberPage ? '自分の予定' : `${data.project?.name || 'プロジェクト'}：${calendarPage ? '運営カレンダー' : progressOnly ? '進捗報告' : '運営タスク'}`;
       get<HTMLElement>('[data-event-create]').hidden = memberPage || !scope.isManager;
       const canManageCurrentProject = Boolean(scope.isManager || scope.projectRole === 'manager');
       taskCreateTestLabel.hidden = !canManageCurrentProject;

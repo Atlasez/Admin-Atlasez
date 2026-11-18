@@ -1,34 +1,70 @@
 ---
 import SeminarLayout from "../../layouts/SeminarLayout.astro";
-import { recruitmentLabels } from "../../lib/seminar-fields";
 ---
-<SeminarLayout title="ゼミプラットフォーム" page="catalog">
-  <section class="seminar-lead" aria-labelledby="seminar-heading">
-    <h1 id="seminar-heading">ゼミプラットフォーム</h1>
-    <p>教科書を輪読したり、調べたことを発表し合ったりする自主ゼミを掲載しています。参加を希望する方は、各ゼミの詳細から主催者に申請できます。</p>
+
+<SeminarLayout title="ゼミ一覧" page="catalog">
+  <section class="seminar-lead" aria-labelledby="seminar-title">
+    <p class="seminar-kicker">ATLASEZ / SEMINAR PLATFORM</p>
+    <h1 id="seminar-title">ゼミ一覧</h1>
+    <p>興味から、学び合うゼミを見つける。</p>
+    <p class="seminar-muted">
+      ゼミプラットフォームは、自主的な勉強会を企画し、参加し、学びを蓄積するための場所です。
+      人と学ぶことで続けやすくなり、自分の関心の外にあるテーマにも出会えます。
+    </p>
     <div class="seminar-actions">
-      <a class="button" href="#catalog">ゼミを探す</a>
-      <a href="/seminars/propose/">ゼミを企画する</a>
-      <a href="/seminars/join/">参加申請</a>
+      <a class="button" href="#directory">ゼミを探す</a>
+      <a class="button button-secondary" href="/seminars/propose/">ゼミを企画する</a>
     </div>
   </section>
-  <section id="catalog" class="seminar-directory" aria-labelledby="catalog-heading">
-    <div class="seminar-section-head">
-      <h2 id="catalog-heading">ゼミ一覧</h2>
-      <p data-count role="status"></p>
-    </div>
-    <div class="seminar-filter">
-      <div class="seminar-section-head"><h3>検索条件</h3></div>
-      <label>キーワード <input type="search" data-query placeholder="ゼミ名・番号・テーマ・教材" /></label>
-      <label>募集状況
-        <select data-recruitment>
+
+  <section class="seminar-directory" id="directory" aria-labelledby="directory-heading">
+    <header class="seminar-section-head">
+      <div>
+        <h2 id="directory-heading">募集状況・キーワードから探す</h2>
+        <p>ゼミ名、テーマ、教材、内容から検索できます。</p>
+      </div>
+    </header>
+    <div class="seminar-filter seminar-catalog-search">
+      <label for="seminar-catalog-query">
+        ゼミ名・テーマ・教材で検索
+        <input
+          id="seminar-catalog-query"
+          type="search"
+          data-catalog-search
+          data-seminar-catalog-query
+          placeholder="例：解析力学、0000032"
+          autocomplete="off"
+        />
+      </label>
+      <label for="seminar-catalog-status">
+        募集状況
+        <select id="seminar-catalog-status" data-catalog-status>
           <option value="">すべて</option>
-          {Object.entries(recruitmentLabels).map(([value, label]) => <option value={value}>{label}</option>)}
+          <option value="open">募集中</option>
+          <option value="paused">募集停止</option>
+          <option value="closed">募集終了</option>
         </select>
       </label>
     </div>
-    <div class="seminar-directory-results" data-page-content aria-busy="true">
+    <div
+      class="seminar-catalog-groups"
+      data-page-content
+      data-seminar-catalog-results
+      aria-busy="true"
+    >
       <p role="status">ゼミ一覧を読み込んでいます。</p>
+    </div>
+  </section>
+
+  <section class="seminar-block seminar-callout" aria-labelledby="seminar-start-heading">
+    <h2 id="seminar-start-heading">学びたいテーマを、一緒に形にしませんか</h2>
+    <p>
+      参加したいゼミが見つかったら詳細ページから申請できます。新しい勉強会の企画も受け付けています。
+      企画は運営が確認し、承認後にこの一覧へ公開します。
+    </p>
+    <div class="seminar-actions">
+      <a class="button" href="/seminars/propose/">ゼミ企画フォームへ</a>
+      <a class="button button-secondary" href="/seminars/member/">参加者ページを見る</a>
     </div>
   </section>
 </SeminarLayout>

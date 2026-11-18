@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../helpers/verification-test";
 import * as Y from "yjs";
 
 const editorDocumentListRoute = /\/api\/admin\/editor\/documents(?:\?.*)?$/;
@@ -698,6 +698,9 @@ test("公開前テスト機能は入力を確認し、保存・公開APIを呼�
 }) => {
   await mockAdminApi(page);
   await page.goto("./admin/editor/?document=doc-1");
+  const testTools = page.locator(".editor-test-tools");
+  await expect(testTools).not.toHaveAttribute("open", "");
+  await testTools.locator(":scope > summary").click();
   await expect(page.locator("[data-run-editorial-preflight]")).toBeVisible();
   await expect(page.locator("[data-preview]")).toHaveAttribute(
     "data-preview-status",
@@ -717,7 +720,7 @@ test("公開前テスト機能は入力を確認し、保存・公開APIを呼�
 
   const dialog = page.locator("[data-editorial-preflight]");
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("公開前チェック（テスト機能）");
+  await expect(dialog).toContainText("入力内容の確認（試験）");
   await expect(dialog).toContainText("保存・公開・通信を行いません");
   await expect(
     dialog.locator("[data-editorial-preflight-summary]"),
@@ -1672,21 +1675,18 @@ test("E-6b: ダークモードで編集ツールバーの状態UIを読み分け
       const statusText = getComputedStyle(
         element.querySelector(".document-status-pill strong")!,
       );
-      const engine = getComputedStyle(element.querySelector("select")!);
       return {
         toolbarBackground: toolbar.backgroundColor,
         statusBackground: statusPill.backgroundColor,
         statusText: statusText.color,
-        engineBackground: engine.backgroundColor,
-        engineText: engine.color,
       };
     });
 
+  await expect(page.locator(".engine-control")).toHaveText("プレビュー：KaTeX");
+  await expect(page.locator(".engine-control select")).toHaveCount(0);
   expect(toolbarColors.toolbarBackground).not.toBe("rgb(255, 255, 255)");
   expect(toolbarColors.statusBackground).toBe("rgb(25, 25, 25)");
   expect(toolbarColors.statusText).toBe("rgba(255, 255, 255, 0.92)");
-  expect(toolbarColors.engineBackground).toBe("rgb(21, 21, 21)");
-  expect(toolbarColors.engineText).toBe("rgba(255, 255, 255, 0.92)");
 });
 
 test("E-6c: ダークモード解除時に公開連携の状態UIをライト配色へ戻す", async ({
@@ -1835,7 +1835,7 @@ test("戻るの離脱確認前に別窓を閉じない", async ({ page }) => {
   await page.goto("./admin/editor/?new=1");
   const popupPromise = page.waitForEvent("popup");
   await page
-    .locator('[data-editor-pane="writing"] [data-pane-popout="writing"]')
+    .locator('.pane-layout-controls [data-pane-popout="writing"]')
     .click();
   const popup = await popupPromise;
   await page.locator('[name="title"]').fill("未保存のタイトル");
@@ -1886,7 +1886,7 @@ test("インライン数式・表示数式を本文と別窓へ挿入できる",
 
   const popupPromise = page.waitForEvent("popup");
   await page
-    .locator('[data-editor-pane="writing"] [data-pane-popout="writing"]')
+    .locator('.pane-layout-controls [data-pane-popout="writing"]')
     .click();
   const popup = await popupPromise;
   const popupBody = popup.locator("[data-body]");
@@ -2006,7 +2006,7 @@ test("LaTeX構造スニペットを本文と別窓へ挿入できる", async ({ 
 
   const popupPromise = page.waitForEvent("popup");
   await page
-    .locator('[data-editor-pane="writing"] [data-pane-popout="writing"]')
+    .locator('.pane-layout-controls [data-pane-popout="writing"]')
     .click();
   const popup = await popupPromise;
   const popupBody = popup.locator("[data-body]");
@@ -2258,6 +2258,63 @@ test("E-8: 入力内容は自動保存され、手動保存UIを表示しない"
   await expect.poll(() => revisionLoads).toBe(1);
 });
 
+test("新規原稿の自動保存内容は再読み込み後も復元できる", async ({ page }) => {
+  await mockAdminApi(page);
+  let savedDocument: Record<string, unknown> | null = null;
+  await page.route("**/api/admin/editor/documents", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    savedDocument = {
+      ...documentItem,
+      ...(route.request().postDataJSON() as Record<string, unknown>),
+      id: "doc-durable",
+      status: "draft",
+    };
+    await route.fulfill({
+      status: 201,
+      json: { ok: true, id: "doc-durable" },
+    });
+  });
+  await page.route(
+    "**/api/admin/editor/documents/doc-durable",
+    async (route) => {
+      if (route.request().method() === "PATCH") {
+        savedDocument = {
+          ...savedDocument,
+          ...(route.request().postDataJSON() as Record<string, unknown>),
+          updated_at: "2026-11-16T00:00:00.000Z",
+        };
+        await route.fulfill({
+          json: { ok: true, updatedAt: "2026-11-16T00:00:00.000Z" },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: { document: savedDocument, comments: [] },
+      });
+    },
+  );
+  await page.route(
+    "**/api/admin/editor/documents/doc-durable/revisions",
+    (route) => route.fulfill({ json: { revisions: [] } }),
+  );
+
+  await page.goto("./admin/editor/?new=1");
+  await page.locator('[name="title"]').fill("再読み込み確認用の記事");
+  const body = "保存後にもう一度読み込みます。";
+  await page.locator("[data-body]").fill(body);
+  await expect(page).toHaveURL(/\?document=doc-durable$/);
+  await expect.poll(() => savedDocument?.body).toBe(body);
+  await expect(page.locator("[data-save-message]")).toContainText(
+    "入力内容を自動保存しました",
+  );
+
+  await page.reload();
+  await expect(page.locator('[name="title"]')).toHaveValue(
+    "再読み込み確認用の記事",
+  );
+  await expect(page.locator("[data-body]")).toHaveValue(body);
+});
+
 test("新規原稿の自動保存中に別の記事へ切り替えても入力先を混同しない", async ({
   page,
 }) => {
@@ -2293,6 +2350,9 @@ test("新規原稿の自動保存中に別の記事へ切り替えても入力�
   await page.goto("./admin/editor/?new=1");
   await page.locator("[data-body]").fill("最初の新規原稿");
   await firstPostStartedPromise;
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.getByRole("link", { name: "編集・フィードバックへ戻る" }).click();
+  await expect(page).toHaveURL(/\/admin\/articles\/?$/);
   await expect(page.locator('[data-document-id="doc-1"]')).toHaveCount(1);
   await page
     .locator('[data-document-id="doc-1"]')
@@ -3472,7 +3532,7 @@ test("IM-3: 認証切れ等でHTMLが返った場合は画像として扱わず�
   ).not.toHaveAttribute("src", /api\/admin/);
 });
 
-test("E-1〜E-5/E-13: 全4枠をボタンで切り替え、四辺移動とライブ別窓同期が使える", async ({
+test("E-1〜E-5/E-13: 全4枠を切り替え、四辺移動とライブ別窓同期が使える", async ({
   page,
 }) => {
   await mockAdminApi(page);
@@ -3537,7 +3597,9 @@ test("E-1〜E-5/E-13: 全4枠をボタンで切り替え、四辺移動とライ
   await expect(preview).toHaveCSS("grid-column-start", "1");
 
   const popupPromise = page.waitForEvent("popup");
-  await writing.locator('[data-pane-popout="writing"]').click();
+  await page
+    .locator('.pane-layout-controls [data-pane-popout="writing"]')
+    .click();
   const popup = await popupPromise;
   await expect(writing).toBeHidden();
   await expect(popup.locator("[data-body]")).toBeVisible();
@@ -3613,7 +3675,7 @@ for (const resized of [false, true]) {
   });
 }
 
-test("コメント枠をスクロールしても見出しと別窓ボタンは動かない", async ({
+test("コメント枠をスクロールしても見出しは動かない", async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 1600, height: 1100 });
@@ -3639,7 +3701,6 @@ test("コメント枠をスクロールしても見出しと別窓ボタンは�
   await page.screenshot({ path: testInfo.outputPath("comments-scrolled.png") });
   const after = await heading.boundingBox();
   expect(Math.abs((after?.y ?? 0) - before.y)).toBeLessThan(1);
-  await expect(heading.locator('[data-pane-popout="review"]')).toBeInViewport();
 });
 
 for (const returnVia of ["popup", "close", "toggle", "tab"] as const) {
@@ -3650,7 +3711,9 @@ for (const returnVia of ["popup", "close", "toggle", "tab"] as const) {
     await mockAdminApi(page);
     await page.goto("./admin/editor/?document=doc-1");
     const panel = page.locator('[data-editor-pane="writing"]');
-    const button = panel.locator('[data-pane-popout="writing"]');
+    const button = page.locator(
+      '.pane-layout-controls [data-pane-popout="writing"]',
+    );
     const popupPromise = page.waitForEvent("popup");
     await button.click();
     const popup = await popupPromise;
@@ -3673,7 +3736,7 @@ for (const returnVia of ["popup", "close", "toggle", "tab"] as const) {
     else await page.locator('[data-pane-tab="writing"]').click();
     await expect(panel).toBeVisible();
     await expect(button).toBeEnabled();
-    await expect(button).toHaveText("別窓");
+    await expect(button).toHaveAttribute("aria-label", "本文を別窓で表示");
     await expect.poll(() => popup.isClosed()).toBe(true);
     await expect(
       page.locator('.pane-layout-controls [data-pane-popout="writing"]'),
@@ -3685,7 +3748,7 @@ for (const returnVia of ["popup", "close", "toggle", "tab"] as const) {
     const secondPopup = await secondPopupPromise;
     await secondPopup.close();
     await expect(panel).toBeVisible();
-    await expect(button).toHaveText("別窓");
+    await expect(button).toHaveAttribute("aria-label", "本文を別窓で表示");
   });
 }
 
@@ -3898,7 +3961,9 @@ test("コメント別窓から新規コメントを追加し、閉じた後も�
 
   const panel = page.locator('[data-editor-pane="review"]');
   const popupPromise = page.waitForEvent("popup");
-  await panel.locator('[data-pane-popout="review"]').click();
+  await page
+    .locator('.pane-layout-controls [data-pane-popout="review"]')
+    .click();
   const popup = await popupPromise;
   const commentTag = popup.locator(
     '.review-pane-content > .comment-tags [data-comment-tag="定義不足"]',

@@ -1,0 +1,678 @@
+---
+import ProfileImagePicker from "./ProfileImagePicker.astro";
+import { getTimeZoneOptions } from "../../lib/timezones";
+
+interface Props {
+  autoOpen?: boolean;
+  returnTo?: string;
+}
+
+const { autoOpen = false, returnTo = "" } = Astro.props;
+const timezones = getTimeZoneOptions(new Date());
+const memberYears = [
+  "中1",
+  "中2",
+  "中3",
+  "高1",
+  "高2",
+  "高3",
+  "高専1",
+  "高専2",
+  "高専3",
+  "高専4",
+  "高専5",
+  "B1",
+  "B2",
+  "B3",
+  "B4",
+  "M1",
+  "M2",
+  "D1",
+  "D2",
+  "D3",
+  "教職員・研究者",
+  "社会人",
+  "その他",
+];
+---
+
+<dialog
+  class="profile-edit-dialog"
+  data-profile-edit-dialog
+  data-auto-open={autoOpen ? "true" : "false"}
+  data-return-to={returnTo}
+  aria-labelledby="profile-edit-heading"
+>
+  <section class="profile-edit" data-profile-edit>
+    <header class="profile-edit-header">
+      <div>
+        <h2 id="profile-edit-heading">プロフィールを編集</h2>
+        <p>プロフィール画像はすぐに反映されます。氏名などの基本情報は承認後に反映されます。</p>
+      </div>
+      <button
+        class="profile-edit-close"
+        type="button"
+        data-close-profile-edit
+        aria-label="プロフィール編集を閉じる"
+      >×</button>
+    </header>
+    <div class="edit-card">
+      <div class="avatar-row">
+        <div class="avatar-preview" data-avatar-preview data-profile-avatar aria-hidden="true">
+          <span data-profile-avatar-fallback>A</span>
+        </div>
+        <ProfileImagePicker id="member-profile-avatar" label="プロフィール画像を選択" />
+      </div>
+      <div class="form-grid">
+        <label>氏名<input data-display-name maxlength="120" required /></label>
+        <label>学校・所属<input data-university maxlength="200" /></label>
+        <label>
+          学年等
+          <select data-year>
+            <option value="">選択してください</option>
+            {memberYears.map((year) => <option value={year}>{year}</option>)}
+          </select>
+        </label>
+        <label>
+          所属区分
+          <select data-affiliation-type>
+            <option value="">選択してください</option>
+            <option value="student">学生</option>
+            <option value="faculty">教職員</option>
+            <option value="worker">社会人</option>
+            <option value="other">その他</option>
+          </select>
+        </label>
+        <label>国・地域<input data-country maxlength="120" /></label>
+        <label>
+          タイムゾーン
+          <input data-timezone list="profile-edit-timezones" value="Asia/Tokyo" />
+          <small data-timezone-offset></small>
+        </label>
+      </div>
+      <datalist id="profile-edit-timezones">
+        {timezones.map(({ value, label }) => (
+          <option value={value} label={label}></option>
+        ))}
+      </datalist>
+      <label class="bio-field">
+        運営内自己紹介
+        <textarea data-bio maxlength="4000"></textarea>
+      </label>
+      <div class="actions">
+        <output data-message aria-live="polite"></output>
+        <button type="button" class="retry-button" data-retry hidden>
+          プロフィールの状態を再読み込み
+        </button>
+        <div class="action-buttons">
+          <button type="button" class="secondary-button" data-close-profile-edit>
+            閉じる
+          </button>
+          <button type="button" data-save disabled>変更を承認申請</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</dialog>
+
+<style>
+  .profile-edit-dialog {
+    background: var(--background-primary);
+    border: 1px solid var(--border-default);
+    border-radius: 0.75rem;
+    color: var(--text-primary);
+    margin: auto;
+    max-height: min(92dvh, 920px);
+    max-width: min(900px, calc(100vw - 1.5rem));
+    overflow: auto;
+    padding: 0;
+    width: 100%;
+  }
+
+  .profile-edit-dialog::backdrop {
+    background: rgb(12 18 26 / 55%);
+    backdrop-filter: blur(2px);
+  }
+
+  .profile-edit {
+    display: grid;
+    gap: 1rem;
+    padding: clamp(1rem, 3vw, 1.75rem);
+  }
+
+  .profile-edit-header {
+    align-items: start;
+    border-bottom: 1px solid var(--border-default);
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+    padding-bottom: 0.9rem;
+  }
+
+  .profile-edit-header h2 {
+    font-size: 1.35rem;
+    margin: 0;
+  }
+
+  .profile-edit-header p {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    margin: 0.4rem 0 0;
+  }
+
+  .profile-edit-close {
+    background: transparent;
+    border: 1px solid var(--border-default);
+    border-radius: 50%;
+    color: var(--text-primary);
+    cursor: pointer;
+    flex: 0 0 2.25rem;
+    font: inherit;
+    font-size: 1.35rem;
+    height: 2.25rem;
+    line-height: 1;
+    width: 2.25rem;
+  }
+
+  .edit-card {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .avatar-row {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+
+  .avatar-preview {
+    align-items: center;
+    background: var(--accent-primary);
+    border: 1px solid var(--border-default);
+    border-radius: 50%;
+    color: var(--on-accent);
+    display: flex;
+    flex: 0 0 9rem;
+    font-size: 2.4rem;
+    font-weight: 800;
+    height: 9rem;
+    justify-content: center;
+    overflow: hidden;
+    width: 9rem;
+  }
+
+  .form-grid {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .profile-edit label {
+    display: grid;
+    font-weight: 700;
+    gap: 0.35rem;
+  }
+
+  .profile-edit input,
+  .profile-edit select,
+  .profile-edit textarea {
+    background: var(--background-primary);
+    border: 1px solid var(--border-default);
+    box-sizing: border-box;
+    color: var(--text-primary);
+    font: inherit;
+    padding: 0.6rem;
+    width: 100%;
+  }
+
+  .profile-edit textarea {
+    min-height: 8rem;
+    resize: vertical;
+  }
+
+  .profile-edit small,
+  .profile-edit output {
+    color: var(--text-secondary);
+  }
+
+  .actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1rem;
+    justify-content: space-between;
+  }
+
+  .actions button {
+    background: var(--accent-primary);
+    border: 1px solid var(--accent-primary);
+    color: #fff;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 800;
+    padding: 0.65rem 0.85rem;
+  }
+
+  .actions button:disabled {
+    cursor: wait;
+    opacity: 0.6;
+  }
+
+  .action-buttons {
+    display: flex;
+    gap: 0.6rem;
+  }
+
+  .actions .secondary-button,
+  .actions .retry-button {
+    background: var(--background-primary);
+    color: var(--accent-primary);
+  }
+
+  @media (max-width: 650px) {
+    .profile-edit-dialog {
+      max-height: 94dvh;
+      max-width: calc(100vw - 1rem);
+    }
+
+    .form-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .avatar-preview {
+      flex-basis: 8rem;
+      height: 8rem;
+      width: 8rem;
+    }
+
+    .actions,
+    .action-buttons {
+      align-items: stretch;
+      flex-direction: column;
+      width: 100%;
+    }
+
+    .actions button {
+      width: 100%;
+    }
+  }
+</style>
+
+<script>
+  import { readAdminApiJson } from "../../lib/admin-api";
+  import { formatUtcOffset, isValidTimeZone, timeZoneOffsetMinutes } from "../../lib/timezones";
+  import { setProfileAvatar } from "../../scripts/profile-avatar";
+
+  type Profile = {
+    display_name?: string;
+    university?: string;
+    year?: string;
+    affiliation_type?: string;
+    country?: string;
+    timezone?: string;
+    bio?: string;
+    avatar_url?: string;
+  };
+  type ProfileChangeRequest = {
+    status?: string;
+    proposed_display_name?: string;
+    proposed_university?: string;
+    proposed_year?: string;
+    proposed_affiliation_type?: string;
+    proposed_country?: string;
+    proposed_timezone?: string;
+    proposed_bio?: string;
+  };
+  type ResponseData = {
+    email?: string;
+    profile?: Profile;
+    profileChangeRequest?: ProfileChangeRequest;
+    error?: string;
+  };
+  type ProfileFields = {
+    displayName: string;
+    university: string;
+    year: string;
+    affiliationType: string;
+    country: string;
+    timezone: string;
+    bio: string;
+  };
+
+  const initialize = () => {
+    const dialog = document.querySelector<HTMLDialogElement>("[data-profile-edit-dialog]");
+    const root = dialog?.querySelector<HTMLElement>("[data-profile-edit]");
+    if (!dialog || !root || root.dataset.ready) return;
+    root.dataset.ready = "true";
+
+    const get = <T extends Element>(selector: string) => root.querySelector<T>(selector)!;
+    const message = get<HTMLOutputElement>("[data-message]");
+    const retry = get<HTMLButtonElement>("[data-retry]");
+    const save = get<HTMLButtonElement>("[data-save]");
+    const timezone = get<HTMLInputElement>("[data-timezone]");
+    const avatar = get<HTMLElement>("[data-avatar-preview]");
+    const avatarPicker = get<HTMLElement>("[data-profile-image-picker]");
+    const returnTo = dialog.dataset.returnTo;
+    let avatarUrl = "";
+    let initialAvatarUrl = "";
+    let selectedAvatarName = "";
+    let profileEmail = "";
+    let initialFields: ProfileFields | null = null;
+    let profileLoaded = false;
+
+    const set = (selector: string, value: string) => {
+      get<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(selector).value = value;
+    };
+    const readFields = (): ProfileFields => ({
+      displayName: get<HTMLInputElement>("[data-display-name]").value.trim(),
+      university: get<HTMLInputElement>("[data-university]").value.trim(),
+      year: get<HTMLSelectElement>("[data-year]").value.trim(),
+      affiliationType: get<HTMLSelectElement>("[data-affiliation-type]").value.trim(),
+      country: get<HTMLInputElement>("[data-country]").value.trim(),
+      timezone: timezone.value.trim(),
+      bio: get<HTMLTextAreaElement>("[data-bio]").value.trim(),
+    });
+    const hasProfileChanges = () => {
+      if (!initialFields) return false;
+      const current = readFields();
+      return Object.keys(current).some((key) =>
+        current[key as keyof ProfileFields] !== initialFields?.[key as keyof ProfileFields]
+      );
+    };
+    const syncImagePreview = (value: string) => {
+      avatarUrl = value;
+      setProfileAvatar(avatar, value);
+    };
+    const updateAvatarDisplays = (value: string) => {
+      syncImagePreview(value);
+      document.querySelectorAll<HTMLElement>("[data-profile-avatar]")
+        .forEach((container) => setProfileAvatar(container, value));
+      const navAvatar = document.querySelector<HTMLImageElement>("[data-admin-account-image]");
+      if (navAvatar) {
+        navAvatar.hidden = !value;
+        if (value) navAvatar.src = value;
+        else navAvatar.removeAttribute("src");
+      }
+      const fallback = document.querySelector<HTMLElement>("[data-admin-account-fallback]");
+      if (fallback) fallback.hidden = Boolean(value);
+      try {
+        const key = "atlasez-admin-profile-cache";
+        const cached = sessionStorage.getItem(key);
+        const profile = cached ? JSON.parse(cached) as Record<string, unknown> : {};
+        if (profileEmail) {
+          profile.email = profileEmail;
+          profile.avatar_url = value;
+          sessionStorage.setItem(key, JSON.stringify(profile));
+        }
+      } catch {
+        // Storage may be disabled; the current page preview is already updated.
+      }
+      document.dispatchEvent(new Event("atlasez-profile-updated"));
+    };
+    const updateSaveLabel = () => {
+      const imageChanged = avatarUrl !== initialAvatarUrl;
+      const fieldsChanged = hasProfileChanges();
+      save.textContent = imageChanged
+        ? fieldsChanged
+          ? "画像を保存・基本情報を申請"
+          : "画像を保存（承認不要）"
+        : "変更を承認申請";
+    };
+    const setFormLocked = (locked: boolean) => {
+      for (const control of root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input,select,textarea")) {
+        control.disabled = locked;
+      }
+      save.disabled = locked;
+    };
+    const updateTimezone = () => {
+      const value = timezone.value.trim();
+      get<HTMLElement>("[data-timezone-offset]").textContent = isValidTimeZone(value)
+        ? `現在のオフセット: ${formatUtcOffset(timeZoneOffsetMinutes(value))}`
+        : "IANAタイムゾーンを入力してください。";
+    };
+    const apply = (profile: Profile) => {
+      set("[data-display-name]", profile.display_name ?? "");
+      set("[data-university]", profile.university ?? "");
+      set("[data-year]", profile.year ?? "");
+      set("[data-affiliation-type]", profile.affiliation_type ?? "");
+      set("[data-country]", profile.country ?? "");
+      set("[data-timezone]", profile.timezone || "Asia/Tokyo");
+      set("[data-bio]", profile.bio ?? "");
+      avatarUrl = profile.avatar_url ?? "";
+      initialAvatarUrl = avatarUrl;
+      selectedAvatarName = "";
+      syncImagePreview(avatarUrl);
+      const imageStatus = avatarPicker.querySelector<HTMLOutputElement>("[data-profile-image-status]");
+      if (imageStatus) {
+        imageStatus.value = "画像を選択してください。";
+        imageStatus.dataset.state = "idle";
+      }
+      initialFields = readFields();
+      updateTimezone();
+      updateSaveLabel();
+    };
+    const loadProfile = async () => {
+      profileLoaded = false;
+      setFormLocked(true);
+      retry.hidden = true;
+      retry.disabled = true;
+      message.value = "プロフィールを読み込み中…";
+      try {
+        const response = await fetch("/api/admin/profile", {
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+        const data = await readAdminApiJson<ResponseData>(
+          response,
+          "プロフィール情報を読み込めませんでした。",
+        );
+        if (!response.ok) {
+          throw new Error(data.error ?? "プロフィール情報を読み込めませんでした。");
+        }
+        profileEmail = data.email?.trim() ?? "";
+        const request = data.profileChangeRequest;
+        initialFields = null;
+        if (request?.status === "pending") {
+          apply({
+            display_name: request.proposed_display_name,
+            university: request.proposed_university,
+            year: request.proposed_year,
+            affiliation_type: request.proposed_affiliation_type,
+            country: request.proposed_country,
+            timezone: request.proposed_timezone,
+            bio: request.proposed_bio,
+            avatar_url: data.profile?.avatar_url,
+          });
+          message.value = "変更申請は承認待ちです。再申請すると内容を更新します。";
+        } else {
+          apply(data.profile ?? {});
+          message.value = "";
+        }
+        profileLoaded = true;
+        setFormLocked(false);
+        updateSaveLabel();
+      } catch (error) {
+        message.value = error instanceof Error
+          ? `${error.message} 読込に成功するまで保存できません。`
+          : "プロフィールを読み込めませんでした。読込に成功するまで保存できません。";
+        retry.hidden = false;
+      } finally {
+        retry.disabled = false;
+      }
+    };
+    const openEditor = () => {
+      if (!dialog.open) dialog.showModal();
+      void loadProfile();
+    };
+    const closeEditor = () => {
+      if (dialog.open) dialog.close();
+    };
+
+    document.querySelector<HTMLButtonElement>("[data-open-profile-edit]")
+      ?.addEventListener("click", openEditor);
+    root.querySelectorAll<HTMLButtonElement>("[data-close-profile-edit]")
+      .forEach((button) => button.addEventListener("click", closeEditor));
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) closeEditor();
+    });
+    dialog.addEventListener("close", () => {
+      if (returnTo) location.replace(returnTo);
+    });
+    retry.addEventListener("click", () => void loadProfile());
+    root.addEventListener("profile-image-cropped", (event) => {
+      const detail = (event as CustomEvent<{ avatarUrl?: string; fileName?: string }>).detail;
+      if (!detail?.avatarUrl) return;
+      selectedAvatarName = detail.fileName ?? "プロフィール画像";
+      syncImagePreview(detail.avatarUrl);
+      message.value = `${selectedAvatarName}を選択中です。画像は保存後すぐに反映されます。`;
+      updateSaveLabel();
+    });
+    timezone.addEventListener("input", updateTimezone);
+    timezone.addEventListener("change", updateTimezone);
+    root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input,select,textarea")
+      .forEach((control) => {
+        control.addEventListener("input", updateSaveLabel);
+        control.addEventListener("change", updateSaveLabel);
+      });
+    save.addEventListener("click", async () => {
+      if (!profileLoaded) {
+        message.value = "プロフィールの読み込みに成功してから保存してください。";
+        return;
+      }
+      const fields = readFields();
+      const fieldsChanged = hasProfileChanges();
+      const imageChanged = avatarUrl !== initialAvatarUrl;
+      const canSubmitProfile = fieldsChanged && Boolean(fields.displayName);
+      if (!fieldsChanged && !imageChanged) {
+        message.value = "保存する変更はありません。";
+        return;
+      }
+      if (fieldsChanged && !fields.displayName && !imageChanged) {
+        message.value = "氏名を入力してください。";
+        return;
+      }
+      setFormLocked(true);
+      retry.hidden = true;
+      let imageSaved = false;
+      let profileSubmitted = false;
+      let profileResultUncertain = false;
+      const errors: string[] = [];
+      if (fieldsChanged && !fields.displayName) {
+        errors.push("氏名を入力していないため、基本情報は申請しませんでした。");
+      }
+
+      if (imageChanged) {
+        message.value = "プロフィール画像を保存中…（承認不要）";
+        try {
+          const response = await fetch("/api/admin/profile", {
+            method: "PUT",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ avatarUrl }),
+          });
+          const data = await readAdminApiJson<{ error?: string }>(
+            response,
+            "プロフィール画像を保存できませんでした。",
+          );
+          if (!response.ok) throw new Error(data.error ?? "プロフィール画像を保存できませんでした。");
+          imageSaved = true;
+          initialAvatarUrl = avatarUrl;
+          avatarPicker.dispatchEvent(new CustomEvent("profile-image-saved", {
+            bubbles: true,
+            detail: { fileName: selectedAvatarName },
+          }));
+          updateAvatarDisplays(avatarUrl);
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : "プロフィール画像を保存できませんでした。");
+        }
+      }
+
+      if (canSubmitProfile) {
+        message.value = imageSaved
+          ? "画像を反映しました。基本情報を運営事務局へ申請中…"
+          : "基本情報を運営事務局へ申請中…";
+        try {
+          const response = await fetch("/api/admin/profile", {
+            method: "PUT",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(fields),
+          });
+          const data = await readAdminApiJson<{ error?: string }>(
+            response,
+            "変更申請を送信できませんでした。",
+          );
+          if (!response.ok) {
+            if (response.status >= 500) profileResultUncertain = true;
+            throw new Error(data.error ?? "変更申請を送信できませんでした。");
+          }
+          profileSubmitted = true;
+        } catch (error) {
+          errors.push(
+            error instanceof TypeError
+              ? "通信に失敗しました。"
+              : error instanceof Error
+                ? error.message
+                : "変更申請を送信できませんでした。",
+          );
+          profileResultUncertain = profileResultUncertain || error instanceof TypeError;
+        }
+      }
+
+      if (profileResultUncertain) {
+        profileLoaded = false;
+        setFormLocked(true);
+        retry.hidden = false;
+        message.value = `${errors.join(" ")}申請が受け付けられたか確認できません。プロフィールを再読み込みして確認してください。`;
+        return;
+      }
+
+      if (imageSaved && profileSubmitted) {
+        message.value = "画像はすぐに反映されました。基本情報の変更は承認後に反映されます。";
+      } else if (imageSaved) {
+        message.value = errors.length
+          ? `画像はすぐに反映されました。${errors.join(" ")}`
+          : "画像を更新しました。画像の変更に承認は不要です。";
+      } else if (profileSubmitted) {
+        message.value = errors.length
+          ? `基本情報を申請しました。${errors.join(" ")}`
+          : "基本情報の変更を運営事務局へ申請しました。承認後に反映されます。";
+      } else {
+        message.value = errors.join(" ") || "変更を保存できませんでした。";
+      }
+      if (profileSubmitted) {
+        const pendingNotice = document.querySelector<HTMLElement>("[data-member-profile] [data-approval-state]");
+        if (pendingNotice) {
+          pendingNotice.hidden = false;
+          const pendingMessage = pendingNotice.querySelector<HTMLElement>("[data-approval-state-message]");
+          const dismissButton = pendingNotice.querySelector<HTMLButtonElement>("[data-dismiss-approval-state]");
+          if (pendingMessage) {
+            pendingMessage.textContent = "基本情報の変更申請は承認待ちです。プロフィール画像はすぐに反映されます。";
+          } else {
+            pendingNotice.textContent = "基本情報の変更申請は承認待ちです。プロフィール画像はすぐに反映されます。";
+          }
+          if (dismissButton) dismissButton.hidden = true;
+        }
+      }
+      profileLoaded = true;
+      setFormLocked(false);
+      if (profileSubmitted) initialFields = fields;
+      updateSaveLabel();
+    });
+
+    setFormLocked(true);
+    if (
+      dialog.dataset.autoOpen === "true" ||
+      new URLSearchParams(location.search).get("edit") === "1"
+    ) {
+      openEditor();
+      if (!returnTo && new URLSearchParams(location.search).has("edit")) {
+        history.replaceState({}, "", location.pathname);
+      }
+    }
+  };
+
+  document.addEventListener("astro:page-load", initialize);
+  initialize();
+</script>

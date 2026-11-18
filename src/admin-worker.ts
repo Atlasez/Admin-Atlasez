@@ -29,6 +29,7 @@ import {
   isSeminarReviewPath,
   SEMINAR_REVIEW_PATH,
 } from "./lib/admin-routes";
+import { getAdminApiAccessPolicy } from "./lib/admin-api-access-policy";
 import { applicationAcceptanceEmail } from "./lib/application-acceptance-email";
 import {
   canAccess,
@@ -56,6 +57,10 @@ import { tikzPackageHelp } from "./lib/tikz-policy.mjs";
 import { parse as parseYaml } from "yaml";
 import { githubToken } from "./editorial-publication-github";
 import { EDITORIAL_STATIC_CATEGORIES } from "./lib/editorial-static-taxonomy";
+import {
+  isProfileImageDataUrl,
+  profileImageMaxStoredUrlLength,
+} from "./lib/profile-image";
 // ローカルWrangler開発時だけ同一Workerのexportをフォールバックとして使う。
 // Preview/本番は外部の専用Worker bindingを必ず経由する。
 export { EditorialCollaborationRoom } from "./editorial-collaboration-worker";
@@ -1437,6 +1442,22 @@ async function getMemberOperationScope(
   request: Request,
   env: Env,
 ): Promise<AdminScope | Response> {
+  const cached = memberOperationScopeCache.get(request);
+  if (cached) return cached;
+  const pending = resolveMemberOperationScope(request, env);
+  memberOperationScopeCache.set(request, pending);
+  return pending;
+}
+
+const memberOperationScopeCache = new WeakMap<
+  Request,
+  Promise<AdminScope | Response>
+>();
+
+async function resolveMemberOperationScope(
+  request: Request,
+  env: Env,
+): Promise<AdminScope | Response> {
   const current = await getCurrentUserStage(request, env);
   if (isResponse(current)) return current;
   if (current.stage === "ADMIN") return getAdminScope(request, env);
@@ -1454,6 +1475,22 @@ async function getMemberOperationScope(
 }
 
 async function getMemberProfileScope(
+  request: Request,
+  env: Env,
+): Promise<AdminScope | Response> {
+  const cached = memberProfileScopeCache.get(request);
+  if (cached) return cached;
+  const pending = resolveMemberProfileScope(request, env);
+  memberProfileScopeCache.set(request, pending);
+  return pending;
+}
+
+const memberProfileScopeCache = new WeakMap<
+  Request,
+  Promise<AdminScope | Response>
+>();
+
+async function resolveMemberProfileScope(
   request: Request,
   env: Env,
 ): Promise<AdminScope | Response> {
@@ -1745,11 +1782,50 @@ async function getPrototypeDeveloperScope(
   request: Request,
   env: Env,
 ): Promise<AdminScope | Response> {
+  const cached = prototypeDeveloperScopeCache.get(request);
+  if (cached) return cached;
+  const pending = resolvePrototypeDeveloperScope(request, env);
+  prototypeDeveloperScopeCache.set(request, pending);
+  return pending;
+}
+
+const prototypeDeveloperScopeCache = new WeakMap<
+  Request,
+  Promise<AdminScope | Response>
+>();
+
+async function resolvePrototypeDeveloperScope(
+  request: Request,
+  env: Env,
+): Promise<AdminScope | Response> {
   const identity = await getAuthenticatedEmail(request, env);
   if (isResponse(identity)) return identity;
   if (identity.toLowerCase() !== primaryAdminEmail(env))
     return json({ error: "この試作ページは開発者のみ利用できます。" }, 403);
   return getGlobalAdminScope(request, env);
+}
+
+async function enforceAdminApiAccessPolicy(
+  request: Request,
+  env: Env,
+  policy: ReturnType<typeof getAdminApiAccessPolicy>,
+): Promise<Response | null> {
+  let scope: AdminScope | Response | null = null;
+  switch (policy) {
+    case "admin":
+      scope = await getAdminScope(request, env);
+      break;
+    case "member":
+      scope = await getMemberOperationScope(request, env);
+      break;
+    case "profile":
+      scope = await getMemberProfileScope(request, env);
+      break;
+    case "none":
+    case "dedicated":
+      return null;
+  }
+  return scope && isResponse(scope) ? scope : null;
 }
 
 const isSameOrigin = (request: Request) => {
@@ -4821,8 +4897,17 @@ async function updateAtlasMemberProfile(
   if (fields.some(([key, maximum]) =>
     typeof payload[key] !== "string" || (payload[key] as string).length > maximum))
     return json({ error: "プロフィールの入力内容を確認してください。" }, 400);
-  if (typeof payload.avatarUrl !== "string" || payload.avatarUrl.length > 3_000_000)
+  if (typeof payload.avatarUrl !== "string")
     return json({ error: "プロフィール画像を確認してください。" }, 400);
+  const submittedAvatarUrl = payload.avatarUrl.trim();
+  if (submittedAvatarUrl.length > profileImageMaxStoredUrlLength)
+    return json(
+      {
+        error:
+          "画像の保存容量を超えています。切り抜きや縮小を調整してから保存してください。",
+      },
+      413,
+    );
 
   const profile = {
     displayName: normalizedText(payload.displayName, 120),
@@ -4833,7 +4918,7 @@ async function updateAtlasMemberProfile(
     country: normalizedText(payload.country, 120),
     timezone: normalizedText(payload.timezone, 80) || "Asia/Tokyo",
     bio: text(payload.bio, 4_000),
-    avatarUrl: text(payload.avatarUrl, 3_000_000),
+    avatarUrl: submittedAvatarUrl,
   };
   if (!profile.displayName)
     return json({ error: "表示名を入力してください。" }, 400);
@@ -4841,9 +4926,9 @@ async function updateAtlasMemberProfile(
     return json({ error: "タイムゾーンを確認してください。" }, 400);
   if (profile.avatarUrl &&
     ((!/^https:\/\//i.test(profile.avatarUrl) &&
-      !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(profile.avatarUrl)) ||
+      !isProfileImageDataUrl(profile.avatarUrl)) ||
       /["'<>]/.test(profile.avatarUrl)))
-    return json({ error: "プロフィール画像はPNG・JPEG・WebP、またはhttps://画像URLを指定してください。" }, 400);
+    return json({ error: "プロフィール画像はPNG・JPEG・WebP・GIF、またはhttps://画像URLを指定してください。" }, 400);
 
   const archivedError = await archivedMemberError(env, email);
   if (archivedError) return archivedError;
@@ -11532,6 +11617,21 @@ async function saveMyProfile(request: Request, env: Env): Promise<Response> {
   } catch {
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
+  if (payload.avatarUrl !== undefined && typeof payload.avatarUrl !== "string")
+    return json({ error: "プロフィール画像を確認してください。" }, 400);
+  const suppliedAvatarUrl =
+    typeof payload.avatarUrl === "string" ? payload.avatarUrl.trim() : undefined;
+  if (
+    suppliedAvatarUrl !== undefined &&
+    suppliedAvatarUrl.length > profileImageMaxStoredUrlLength
+  )
+    return json(
+      {
+        error:
+          "画像の保存容量を超えています。切り抜きや縮小を調整してから保存してください。",
+      },
+      413,
+    );
   const currentProfile = await env.REPORTS.prepare(
     `SELECT display_name,bio,avatar_url,university,year,affiliation_type,country,timezone
      FROM editorial_member_profiles WHERE lower(email)=lower(?)`,
@@ -11550,7 +11650,7 @@ async function saveMyProfile(request: Request, env: Env): Promise<Response> {
   const avatarUrl =
     payload.avatarUrl === undefined
       ? (currentProfile?.avatar_url ?? "")
-      : text(payload.avatarUrl, 3_000_000);
+      : (suppliedAvatarUrl ?? "");
   const displayName =
     payload.displayName === undefined ? null : text(payload.displayName, 120);
   const university =
@@ -11576,15 +11676,13 @@ async function saveMyProfile(request: Request, env: Env): Promise<Response> {
   if (
     avatarUrl &&
     ((!/^https:\/\//i.test(avatarUrl) &&
-      !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(
-        avatarUrl,
-      )) ||
+      !isProfileImageDataUrl(avatarUrl)) ||
       /["'<>]/.test(avatarUrl))
   )
     return json(
       {
         error:
-          "プロフィール画像はPNG・JPEG・WebPの画像ファイル、またはhttps://画像URLを指定してください。",
+          "プロフィール画像はPNG・JPEG・WebP・GIFの画像ファイル、またはhttps://画像URLを指定してください。",
       },
       400,
     );
@@ -12436,6 +12534,11 @@ async function listApplications(request: Request, env: Env): Promise<Response> {
     : 50;
   const filters = ["a.project_slug = ?"];
   const bindings: unknown[] = [projectSlug];
+  const requestedApplicationId = searchParams.get("applicationId")?.trim() ?? "";
+  if (requestedApplicationId) {
+    filters.push("a.id = ?");
+    bindings.push(requestedApplicationId);
+  }
   const rawCursor = searchParams.get("cursor") ?? "";
   const separator = rawCursor.lastIndexOf("|");
   const cursorCreatedAt = separator > 0 ? rawCursor.slice(0, separator) : "";
@@ -12460,12 +12563,14 @@ async function listApplications(request: Request, env: Env): Promise<Response> {
       i.mode AS interview_mode,i.zoom_url AS interview_zoom_url,i.location AS interview_location,
       i.status AS interview_status,i.notified_at AS interview_notified_at,
       i.notification_count AS interview_notification_count,i.completed_at AS interview_completed_at,
+      r.decision AS interview_decision,r.finalized_at AS interview_finalized_at,
       COALESCE(d.discord_user_id, '') AS verified_discord_user_id,
       COALESCE(d.oauth_connected_at, '') AS discord_oauth_connected_at,
       COALESCE(d.oauth_scope, '') AS discord_oauth_scope
      FROM atlasez_member_applications a
      LEFT JOIN atlasez_member_discord_accounts d ON d.email = a.email
      LEFT JOIN atlasez_application_interviews i ON i.application_id = a.id
+     LEFT JOIN atlasez_application_interview_reviews r ON r.application_id = a.id
      WHERE ${where}
      ORDER BY a.created_at DESC,a.id DESC LIMIT ?`,
     )
@@ -12622,6 +12727,15 @@ async function memberIntakeTracking(
 
   if (request.method === "GET") {
     const projectSlug = canonicalApplicationProjectSlug(access.project.slug);
+    const requestedApplicationId = url.searchParams.get("applicationId")?.trim() ?? "";
+    let filterEmail = "";
+    if (requestedApplicationId) {
+      const application = await env.REPORTS.prepare(
+        "SELECT email FROM atlasez_member_applications WHERE id=? AND project_slug=?",
+      ).bind(requestedApplicationId, projectSlug).first<{ email: string }>();
+      if (!application) return json({ error: "応募が見つかりません。" }, 404);
+      filterEmail = application.email.toLowerCase();
+    }
     const [rows, responsibleRows] = await Promise.all([
       env.REPORTS.prepare(
         `WITH latest_applications AS (
@@ -12630,11 +12744,11 @@ async function memberIntakeTracking(
             ROW_NUMBER() OVER(PARTITION BY lower(a.email) ORDER BY a.created_at DESC,a.id DESC) AS row_number
           FROM atlasez_member_applications a
           LEFT JOIN editorial_member_profiles p ON lower(p.email)=lower(a.email)
-          WHERE a.project_slug=?
+          WHERE a.project_slug=? AND (?='' OR lower(a.email)=?)
         ), candidates AS (
           SELECT lower(m.email) AS email,MAX(m.email) AS original_email,MAX(m.role) AS role
           FROM atlasez_project_memberships m
-          WHERE m.project_id=? AND (m.project_id!='atlas' OR NOT EXISTS (
+          WHERE m.project_id=? AND (?='' OR lower(m.email)=?) AND (m.project_id!='atlas' OR NOT EXISTS (
             SELECT 1 FROM admin_member_lifecycle l
             WHERE lower(l.email)=lower(m.email) AND l.status='archived'
           )) AND NOT EXISTS (
@@ -12645,7 +12759,7 @@ async function memberIntakeTracking(
           SELECT email,email,'applicant' FROM latest_applications WHERE row_number=1
           UNION
           SELECT lower(email),MAX(email),'tracked' FROM editorial_member_intake_tracking
-          WHERE project_id=? GROUP BY lower(email)
+          WHERE project_id=? AND (?='' OR lower(email)=?) GROUP BY lower(email)
         )
         SELECT c.email,COALESCE(NULLIF(TRIM(p.display_name),''),MAX(a.display_name),MAX(c.original_email)) AS display_name,
           MAX(COALESCE(c.role,'')) AS role,MAX(CASE WHEN c.role IN ('member','manager') THEN 1 ELSE 0 END) AS is_member,
@@ -12665,7 +12779,12 @@ async function memberIntakeTracking(
         GROUP BY c.email
         ORDER BY CASE WHEN MAX(t.follow_up_completed_at) IS NULL AND MAX(t.follow_up_at) IS NOT NULL THEN 0 ELSE 1 END,
           MAX(t.follow_up_at),display_name,c.email LIMIT 500`,
-      ).bind(projectSlug, access.project.id, access.project.id, access.project.id).all<Record<string, unknown>>(),
+      ).bind(
+        projectSlug, filterEmail, filterEmail,
+        access.project.id, filterEmail, filterEmail,
+        access.project.id, filterEmail, filterEmail,
+        access.project.id,
+      ).all<Record<string, unknown>>(),
       env.REPORTS.prepare(
         `SELECT lower(membership.email) AS email,COALESCE(NULLIF(TRIM(profile.display_name),''),membership.email) AS display_name
          FROM atlasez_project_memberships membership
@@ -16106,7 +16225,7 @@ async function completeOnboarding(
   const bio = text(payload.bio, 4_000);
   const internalBio = text(payload.internalBio, 4_000).trim();
   if (!displayName || !bio)
-    return json({ error: "表示名と運営外自己紹介を入力してください。" }, 400);
+    return json({ error: "表示名と運営内自己紹介を入力してください。" }, 400);
   if (!current.projectId)
     return json({ error: "参加先プロジェクトを確認できません。" }, 409);
   const now = new Date().toISOString();
@@ -22326,66 +22445,6 @@ const memberPagePaths = new Set([
   "/admin/member-calendar",
   "/admin/member-calendar/",
 ]);
-// These exact methods use getMemberOperationScope in their handlers instead of
-// the generic admin-only API gate; no other /api/admin endpoint is exempt.
-const memberScopedApiMethods = new Map<string, ReadonlySet<string>>([
-  ["/api/admin/project-profile", new Set(["GET", "PUT"])],
-  ["/api/admin/project-introductions", new Set(["GET"])],
-  ["/api/admin/project-profile-change-requests", new Set(["GET"])],
-  ["/api/admin/profile-change-requests", new Set(["GET"])],
-  ["/api/admin/applications", new Set(["GET"])],
-  ["/api/admin/member-intake", new Set(["GET", "PUT"])],
-  ["/api/admin/my-intake", new Set(["GET"])],
-  ["/api/admin/portal", new Set(["GET"])],
-  ["/api/admin/task-templates", new Set(["GET","POST"])],
-  ["/api/admin/member-tasks", new Set(["GET"])],
-  ["/api/admin/my-access", new Set(["GET"])],
-  ["/api/admin/member-calendar", new Set(["GET"])],
-  ["/api/admin/notifications/preferences", new Set(["GET","PUT"])],
-  ["/api/admin/notifications/snooze", new Set(["POST"])],
-  ["/api/admin/notifications", new Set(["GET"])],
-  ["/api/admin/notifications/read", new Set(["POST"])],
-  ["/api/admin/operations/tasks", new Set(["POST"])],
-  ["/api/admin/operations/availability-blocks", new Set(["POST"])],
-  ["/api/admin/operations/availability-rules", new Set(["POST"])],
-]);
-const memberScopedApiDynamicMethods: Array<{
-  path: RegExp;
-  methods: ReadonlySet<string>;
-}> = [
-  { path: /^\/api\/admin\/project-profile-change-requests\/[0-9a-f-]{36}$/i, methods: new Set(["PATCH"]) },
-  { path: /^\/api\/admin\/profile-change-requests\/[0-9a-f-]{36}$/i, methods: new Set(["PATCH"]) },
-  { path: /^\/api\/admin\/applications\/[0-9a-f-]{36}$/i, methods: new Set(["PATCH"]) },
-  { path: /^\/api\/admin\/applications\/[0-9a-f-]{36}\/(?:interview|interview-review)$/i, methods: new Set(["GET", "PUT"]) },
-  { path: /^\/api\/admin\/applications\/[0-9a-f-]{36}\/(?:interview\/notify|interview\/complete|discord-retry)$/i, methods: new Set(["POST"]) },
-  { path: /^\/api\/admin\/task-workspaces\/[0-9a-f-]{36}$/i, methods: new Set(["GET", "PUT"]) },
-  { path: /^\/api\/admin\/task-templates\/[0-9a-f-]{36}$/i, methods: new Set(["PATCH"]) },
-  { path: /^\/api\/admin\/task-templates\/[0-9a-f-]{36}\/create$/i, methods: new Set(["POST"]) },
-  {
-    path: /^\/api\/admin\/operations\/tasks\/[0-9a-f-]{36}$/i,
-    methods: new Set(["PATCH"]),
-  },
-  {
-    path: /^\/api\/admin\/operations\/events\/[0-9a-f-]{36}\/availability$/i,
-    methods: new Set(["PUT"]),
-  },
-  {
-    path: /^\/api\/admin\/operations\/availability-blocks\/[0-9a-f-]{36}$/i,
-    methods: new Set(["DELETE"]),
-  },
-  {
-    path: /^\/api\/admin\/operations\/availability-rules\/[0-9a-f-]{36}$/i,
-    methods: new Set(["DELETE"]),
-  },
-];
-const isMemberScopedApiMethod = (pathname: string, method: string) =>
-  Boolean(
-    memberScopedApiMethods.get(pathname)?.has(method) ||
-      memberScopedApiDynamicMethods.some(
-        (route) => route.path.test(pathname) && route.methods.has(method),
-      ),
-  );
-
 const projectHomeForPath = (pathname: string): string | null => ({
   "/admin/atlas": "atlas",
   "/admin/secretariat": "secretariat",
@@ -22410,11 +22469,58 @@ const legacySeminarReviewPage = (pathname: string) =>
 
 const seminarPage = (pathname: string) =>
   /^\/seminars(?:\/(?:detail|propose|join|member|workspace))?\/?$/.test(pathname);
+const publicSeminarPage = (pathname: string) =>
+  /^\/seminars(?:\/(?:detail|propose|join|member|workspace))?\/?$/.test(
+    pathname,
+  );
+
+const safePublicSeminarReturnTarget = (candidate: string) => {
+  let target: URL;
+  try {
+    target = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (
+    target.origin !== "https://atlasez.org" ||
+    target.username ||
+    target.password ||
+    target.hash
+  )
+    return null;
+
+  if (
+    [
+      "/seminars/",
+      "/seminars/propose/",
+      "/seminars/member/",
+    ].includes(target.pathname)
+  )
+    return target.search ? null : target.href;
+
+  if (
+    target.pathname !== "/seminars/join/" &&
+    target.pathname !== "/seminars/detail/" &&
+    target.pathname !== "/seminars/workspace/"
+  )
+    return null;
+  if (!target.search) return null;
+  const numbers = target.searchParams.getAll("number");
+  if (
+    [...target.searchParams.keys()].some((key) => key !== "number") ||
+    numbers.length !== 1 ||
+    !/^\d{1,10}$/.test(numbers[0])
+  )
+    return null;
+  return `${target.origin}${target.pathname}?number=${numbers[0]}`;
+};
 
 /** Safe OAuth return target for every authenticated user area. */
 const userReturnPath = (value: string | null) => {
   if (!value) return "/apply/";
   const candidate = value.trim();
+  if (/^https?:\/\//i.test(candidate))
+    return safePublicSeminarReturnTarget(candidate) ?? "/apply/";
   if (
     !candidate.startsWith("/") ||
     candidate.startsWith("//") ||
@@ -24442,6 +24548,14 @@ async function handleAdminRequest(
   ctx?: WorkerExecutionContext,
 ): Promise<Response> {
   const url = new URL(request.url);
+  const adminApiAccess = getAdminApiAccessPolicy(url.pathname, request.method);
+  const adminApiAccessFailure = await enforceAdminApiAccessPolicy(
+    request,
+    env,
+    adminApiAccess,
+  );
+  if (adminApiAccessFailure) return adminApiAccessFailure;
+
   if (url.pathname === "/api/seminars" || url.pathname.startsWith("/api/seminars/"))
     return handleSeminarApi(request, env.REPORTS, {
       account: () => getAuthenticatedAtlasezAccount(request, env),
@@ -24455,6 +24569,13 @@ async function handleAdminRequest(
   if (request.method === "GET" || request.method === "HEAD") {
     if (legacySeminarReviewPage(url.pathname))
       return new Response(null, { status: 302, headers: { location: SEMINAR_REVIEW_PATH } });
+    if (publicSeminarPage(url.pathname)) {
+      const pathname = url.pathname.endsWith("/") ? url.pathname : `${url.pathname}/`;
+      return Response.redirect(
+        new URL(`${pathname}${url.search}`, "https://atlasez.org").href,
+        302,
+      );
+    }
     if (seminarPage(url.pathname)) return fetchAdminAsset(request, env);
   }
   if (url.pathname === "/api/internal/github-publication-webhook")
@@ -24597,20 +24718,6 @@ async function handleAdminRequest(
   if (url.pathname === "/api/admin/member-procedures")
     return memberProcedureRequests(request, env);
 
-  // すべての管理APIは、個別ハンドラの処理へ入る前に共通の管理スコープを
-  // 解決する。各ハンドラはプロジェクト・分野・操作種別に応じた追加境界を
-  // 引き続き検証するが、ここで認証・基本的な管理権限のチェック漏れを防ぐ。
-  // auth-status/profile と、メンバー用の取得・本人通知APIは専用スコープを
-  // 各ハンドラで検証するため、この管理者ゲートの対象外とする。
-  if (
-    url.pathname.startsWith("/api/admin/") &&
-    url.pathname !== "/api/admin/profile" &&
-    url.pathname !== "/api/admin/developer/diagnostics" &&
-    !isMemberScopedApiMethod(url.pathname, request.method)
-  ) {
-    const baselineScope = await getAdminScope(request, env);
-    if (isResponse(baselineScope)) return baselineScope;
-  }
   if (url.pathname === "/api/admin/notifications/preferences" || url.pathname === "/api/admin/notifications/snooze") {
     const scope=await getMemberOperationScope(request,env);
     if(isResponse(scope))return scope;
@@ -25269,8 +25376,6 @@ async function handleAdminRequest(
       "/admin/workflow/",
       "/admin/ui-prototype",
       "/admin/ui-prototype/",
-      "/admin/ui-prototype/learning-content",
-      "/admin/ui-prototype/learning-content/",
       "/admin/portal-prototype",
       "/admin/portal-prototype/",
       ...globalAdminPrototypePaths,
@@ -25309,8 +25414,7 @@ async function handleAdminRequest(
     url.pathname === "/build-info.json" ||
     url.pathname === "/admin-manifest.webmanifest" ||
     url.pathname === "/admin-sw.js" ||
-    url.pathname === "/favicon.svg" ||
-    url.pathname === "/admin-codemirror.js"
+    url.pathname === "/favicon.svg"
   ) {
     return env.ASSETS.fetch(request);
   }

@@ -94,7 +94,10 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
     let undoEntries: UndoEntry[] = [];
     // アクションセンターは、日常の作業に直結する未対応項目を初期表示する。
     // 完了済みを確認する場合は「完了・履歴」を明示的に選択する。
-    let filter = "action";
+    const requestedFilter = new URLSearchParams(window.location.search).get("filter") ?? "action";
+    let filter = ["all", "action", "urgent", "approvals", "history"].includes(requestedFilter)
+      ? requestedFilter
+      : "action";
     let controller: AbortController | null = null;
     let retryController: ReturnType<typeof createAdminLoadRetry> | null = null;
 
@@ -195,6 +198,10 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       filter = next;
       selected.clear();
       listHeading.textContent = filter === "history" ? "完了・アーカイブ済み" : filter === "approvals" ? "承認待ち" : "対応が必要な項目";
+      const url = new URL(window.location.href);
+      if (filter === "action") url.searchParams.delete("filter");
+      else url.searchParams.set("filter", filter);
+      window.history.replaceState({}, "", url);
       root.querySelectorAll<HTMLButtonElement>("[data-action-filter]").forEach((button) => { const active = button.dataset.actionFilter === filter; button.classList.toggle("is-active", active); button.setAttribute("aria-pressed", String(active)); });
       renderItems();
       if (changedView) void load(next === "history" ? "history" : "action");
@@ -227,6 +234,8 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       renderSavedViews();
     });
     renderSavedViews();
+    listHeading.textContent = filter === "history" ? "完了・アーカイブ済み" : filter === "approvals" ? "承認待ち" : "対応が必要な項目";
+    root.querySelectorAll<HTMLButtonElement>("[data-action-filter]").forEach((button) => { const active = button.dataset.actionFilter === filter; button.classList.toggle("is-active", active); button.setAttribute("aria-pressed", String(active)); });
     const load = async (requestedView: "action" | "history" = filter === "history" ? "history" : "action") => {
       controller?.abort(); controller = new AbortController();
       retryController?.begin(); refresh.disabled = true; updated.value = "読み込み中…";
@@ -319,7 +328,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
     refresh.addEventListener("click", () => void load());
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") void load(); });
     window.setInterval(() => { if (document.visibilityState === "visible") void load(); }, 45_000);
-    void load();
+    void load(filter === "history" ? "history" : "action");
   };
   document.addEventListener("astro:page-load", initActionCenter); initActionCenter();
 </script>

@@ -7,16 +7,21 @@ import "../styles/seminars.css";
 interface Props {
   title: string;
   page: string;
+  catalogHref?: string;
+  noindex?: boolean;
 }
-const { title, page } = Astro.props;
+const {
+  title,
+  page,
+  catalogHref = "https://atlasez.org/seminars/",
+  noindex = page !== "catalog",
+} = Astro.props;
 const nav = [
-  { label: "ゼミ一覧", href: "/seminars/", page: "catalog" },
-  { label: "企画する", href: "/seminars/propose/", page: "propose" },
-  { label: "参加申請", href: "/seminars/join/", page: "join" },
-  { label: "参加者ページ", href: "/seminars/member/", page: "member" },
-  { label: "運営ページ", href: SEMINAR_REVIEW_PATH, page: "operations" },
+  { label: "ゼミ一覧", href: catalogHref, page: "catalog" },
+  { label: "参加者ページ", href: "https://atlasez.org/seminars/member/", page: "member" },
+  { label: "運営ページ", href: `https://admin.atlasez.org${SEMINAR_REVIEW_PATH}`, page: "operations" },
 ];
-const login = `/auth/google/login?returnTo=${encodeURIComponent(Astro.url.pathname)}`;
+const login = "https://admin.atlasez.org/auth/google/login";
 ---
 <!doctype html>
 <html lang="ja" data-site="org">
@@ -24,7 +29,7 @@ const login = `/auth/google/login?returnTo=${encodeURIComponent(Astro.url.pathna
     <BaseHead
       title={page === "catalog" ? `${title} | Atlasez` : `${title} | ゼミプラットフォーム`}
       description="Atlasezの自主ゼミの一覧と、企画・参加申請。"
-      noindex={page !== "catalog"}
+      noindex={noindex}
       enableArticleEnhancements={false}
     />
   </head>
@@ -46,7 +51,7 @@ const login = `/auth/google/login?returnTo=${encodeURIComponent(Astro.url.pathna
           </ul>
         </nav>
         <div class="seminar-header-tools">
-          <a href={login} data-seminar-login>ログイン</a>
+          <a href={login} data-seminar-login>Googleでログイン</a>
           <span class="seminar-muted" data-seminar-account hidden>ログイン中</span>
           <SettingsMenu locale="ja" showLanguage={false} />
         </div>

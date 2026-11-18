@@ -18,7 +18,12 @@ test.describe("A/D 原稿一覧の作業導線", () => {
       groups.nth(0).getByRole("link", { name: "編集・フィードバックを開く" }),
     ).toHaveAttribute("href", "/admin/articles/");
     await expect(groups.nth(0).locator(".project-links small")).toHaveCount(0);
-    await expect(groups.nth(1).locator(".project-links > a")).toHaveCount(4);
+    await expect(groups.nth(1).locator(".project-links > a")).toHaveCount(3);
+    await expect(
+      groups
+        .nth(1)
+        .locator('.project-links a[href="/admin/calendar/?project=atlas"]'),
+    ).toHaveCount(1);
     await expect(groups.nth(2).locator(".project-links > a")).toHaveCount(4);
     await expect(
       groups.nth(2).getByRole("link", { name: /諸手続きを開く/ }),
@@ -250,7 +255,7 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(page.getByRole("link", { name: /^査読/ })).toHaveCount(0);
   });
 
-  test("D-1: 原稿一覧に3つの作業入口を表示し、カード内の旧ボタンは表示しない", async ({
+  test("D-1: 原稿一覧に作業内容ごとの入口を表示し、カード内の旧ボタンは表示しない", async ({
     page,
   }) => {
     await page.goto("admin/articles/");
@@ -265,7 +270,11 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(
       page.getByRole("button", { name: /フィードバック/ }),
     ).toBeVisible();
-    await expect(page.locator("[data-workflow-action]")).toHaveCount(2);
+    await expect(page.locator("[data-workflow-action]")).toHaveCount(4);
+    await expect(page.getByRole("button", { name: "すべて" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "依頼できる記事" }),
+    ).toBeVisible();
     await expect(page.locator("[data-workflow-filter]")).toHaveValue("all");
     await expect(page.locator(".article-view-tabs")).toHaveCount(0);
     await expect(page.locator(".header-actions")).toHaveCount(0);

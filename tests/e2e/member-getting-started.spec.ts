@@ -34,7 +34,7 @@ for (const width of [1280, 390, 375, 360]) {
     );
     await expect(page.locator("[data-admin-account-profile]")).toHaveAttribute(
       "aria-label",
-      "マイページを開く",
+      "プロフィールを開く",
     );
     await expect(
       page.getByRole("link", { name: "タスクテンプレート", exact: true }),
