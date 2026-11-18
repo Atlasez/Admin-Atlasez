@@ -2,18 +2,18 @@
 
 対象は監査P0の4〜7。仮利用者は `@atlasez.test`、隔離D1はメモリ内SQLiteで全migrationを適用する。本番の認証方式・権限表・Google認証を検証用に変更しない。プロバイダーを模擬した試験と実到達・本番受入を区別する。
 
-## 2026-11-12 最新確認
+## 2026-11-18 最新確認
 
-- GitHub mainは `3e63e96e9e71ae870ed5600a7da8f35fc3f49091`。main CI [run 43146803323](https://github.com/Atlasez/Admin-Atlesez/actions/runs/43146803323) と読み取り専用ADMIN build検証 [run 43147483989](https://github.com/Atlasez/Admin-Atlesez/actions/runs/43147483989) は成功。
-- Workers Builds check for this exact main SHA completed successfully: Build ID `d022e6af-de08-49ae-bd20-7a08b34a291c`, fixed Worker `atlasez-admin`, Version `06e247ee-26ba-4442-aaf2-f85cba3d3681`. Read-only deployment sync [run 43147510991](https://github.com/Atlasez/Admin-Atlesez/actions/runs/43147510991) recorded that Version at 100% under Deployment `66e2f939-74b4-4fd6-af6a-1d72821add1c` at 2026-11-12 03:18:40 UTC; public `build-info.json` returned the same main SHA. Wrangler's Source label alone is `Unknown`, but the Build check, Version, 100% deployment, and build-info correlate.
-- 固定ADMIN D1 ledgerのread-only照会では `0134_seminar_platform.sql`、`0135_seminar_public_catalog.sql`、`0136_seminar_operations_project.sql` が記録済み。応募処理migrationは番号を `0137_application_intake_reconciliation.sql` に変更した。0137は未適用であり、適用・export・restoreは行っていない。
-- PR #546 merged as `a68580307ded9ee808db6962b72c932ca3b764cc`; PR #547 merged as `3e63e96e9e71ae870ed5600a7da8f35fc3f49091`. PR #545 remains blocked pending separate approved backup, migration 0137, and read-only post-apply confirmation. No D1 write/apply or staging write occurred.
-- stagingのrole別ライブ受入とOPSD判断は未完了。Google OAuth、Resend、Discordの実サービス受入は未実施です。ライブのrole判定はNOT TESTED。
-- [新規メンバー受入stagingチェックリスト](ADMIN_MEMBER_INTAKE_STAGING_CHECKLIST.md)に最新のmigration・deployment証跡と未達ゲートを記録しています。限定受入GOは引き続きBLOCKED / NO-GOです。
+- GitHub `main` は `e50425afaba026671a0c265fca69a38b6cf81090`。公開 `https://admin.atlasez.org/build-info.json` は同じcommit、`ref=main`、`target=admin`、builtAt `2026-11-16T02:16:23.102Z` を返す。
+- 同じmain SHAのCloudflare Workers Builds checkはsuccess。Build ID [`d1f41a16-0f94-4721-8f0a-cf52f8be4812`](https://dash.cloudflare.com/812021e62fa20465950b61be55dfe064/workers/services/view/atlasez-admin/production/builds/d1f41a16-0f94-4721-8f0a-cf52f8be4812)、固定Worker `atlasez-admin`、Version `554d3968-513c-4a49-8eba-69cf0a060fcf`。固定Workerのread-only `deployments list`でも同Versionが100%配信され、作成時刻は `2026-11-16T02:17:01.212Z`。WranglerのSource表記は `Unknown (version_upload)` だが、Cloudflareのexact-main Build check、Version、100%配信、公開build-infoが一致する。
+- 固定ADMIN D1 `atlasez-reports` のAccount IDを明示したread-only migration照会では `0137_application_intake_reconciliation.sql` が未適用。migration apply、データ書込み、export/restoreは行っていない。
+- PR #545 の応募処理コードhead `4c5d1a03ee630b61ffff0d4c32e3f3dfb4c94336` はrequired `verify` [run 44298863004](https://github.com/Atlasez/Admin-Atlasez/actions/runs/44298863004) がsuccess（79 files / 641 unit tests、E2E/axe 428 passed / 14 live-only skipped）。非同期初期化を待たず記事slugを読むE2Eの競合を修正して再実行した。このrunは当該コードheadの証拠で、後続変更のCIを代替しない。PRはOPEN・未merge、GitHub reviewは未記録。0137適用前にmainへ入れると本番WorkerとD1 schemaが不整合になるためmergeしない。
+- PR #546と#547はmainに統合済み。stagingのrole別ライブ受入、実Google OAuth、Resend test sink、Discord test guild、運営・Privacy等のOPSD-01〜09承認は未完了。認証済みChromeでの本番画面確認、backup/restore・alert・rollback演習も未実施。
+- [新規メンバー受入stagingチェックリスト](ADMIN_MEMBER_INTAKE_STAGING_CHECKLIST.md)に必要証拠と未達ゲートを記録しています。限定受入GOは引き続きBLOCKED / NO-GOです。
 
 ## 以前の確認記録
 
-以下の2026-11-03節は当時の記録であり、migration番号と最新状態は上の2026-11-12確認を正とする。
+以下の2026-11-03節は当時の記録であり、migration番号と最新状態は上の2026-11-18確認を正とする。
 
 専用stagingの実サービス受入、OPSD-01〜09の運営承認、synthetic account台帳、証拠形式は[新規メンバー受入stagingチェックリスト](ADMIN_MEMBER_INTAKE_STAGING_CHECKLIST.md)を使う。staging手順が未実施の場合、以下の隔離自動試験を実サービスの受入完了として扱わない。
 
