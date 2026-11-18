@@ -154,17 +154,17 @@ ResendとDiscordを無効のままでも、STG-01〜06のWeb/API側検証は実�
 
 したがって、現時点ではSTG-01から開始できません。Worker/D1作成は不要で、再作成や初期化をしてはいけません。次に必要なのはGoogle Cloud adminによる既存OAuth設定のread-backと、別identityの合成applicant/member・project reviewerの準備、およびrelease ownerによる対象staging build配信の個別承認です。これらが完了するまで実OAuth・staging write・deployは行いません。
 
-| STG                 | 開始前に必要なもの                                                    | 合格証拠                                                                                                     |
-| ------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| 01 Google OAuth     | 専用OAuth client、staging callback URI、管理下synthetic accounts      | state/nonce replay拒否、callback/logout/session失効の結果、Cookie属性。secret/codeなし。                     |
+| STG                 | 開始前に必要なもの                                                                   | 合格証拠                                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| 01 Google OAuth     | 専用OAuth client、staging callback URI、管理下synthetic accounts                     | state/nonce replay拒否、callback/logout/session失効の結果、Cookie属性。secret/codeなし。                     |
 | 02 応募             | staging D1 0138のread-only ledger確認、synthetic applicant accounts、Resend disabled | 応募/task/queue row counts、保存後応答喪失/409本人status、multi-project結果、provider呼出し0。宛先は匿名化。 |
-| 03 審査             | applicant/manager/global synthetic roles                              | 対象project GET/decisionのHTTP matrix、監査履歴・revision。別projectの403/404。                              |
-| 04 複数所属         | 2 projectのsynthetic memberships                                      | project A保持、project Bだけ追加、各scopeのdirect API拒否証跡。                                              |
-| 05 初期設定/task    | accepted-incomplete/member fixtures、synthetic calendar/task rows     | profile/portal/calendar/task状態、他人task拒否、375px/keyboard/axe証跡。                                     |
-| 06 休止・退会・復帰 | suspended/withdrawn/returned fixtures、Discord disabled               | 失効前後同一sessionのAPI結果、他project membership不変、許可scopeの復帰。Discord外部操作なし。               |
-| 07 Resend           | test-sink API key、verified staging sender、synthetic inbox allowlist | queue→provider accepted→sink receivedを別記録。allowlist外recipient fetch 0、retry/idempotency。             |
-| 08 Discord          | test guild、test bot/user、明示承認済みrole policy                    | guild/user/role pseudonym、grant/revokeのprovider read-back、サイト権限との同期。                            |
-| 09 障害/運用        | intake-only Cron、D1 operator、alert/primary+backup on-call           | failure injection、marker recovery、pending queue/alerts、stop/ack/drill記録。                               |
+| 03 審査             | applicant/manager/global synthetic roles                                             | 対象project GET/decisionのHTTP matrix、監査履歴・revision。別projectの403/404。                              |
+| 04 複数所属         | 2 projectのsynthetic memberships                                                     | project A保持、project Bだけ追加、各scopeのdirect API拒否証跡。                                              |
+| 05 初期設定/task    | accepted-incomplete/member fixtures、synthetic calendar/task rows                    | profile/portal/calendar/task状態、他人task拒否、375px/keyboard/axe証跡。                                     |
+| 06 休止・退会・復帰 | suspended/withdrawn/returned fixtures、Discord disabled                              | 失効前後同一sessionのAPI結果、他project membership不変、許可scopeの復帰。Discord外部操作なし。               |
+| 07 Resend           | test-sink API key、verified staging sender、synthetic inbox allowlist                | queue→provider accepted→sink receivedを別記録。allowlist外recipient fetch 0、retry/idempotency。             |
+| 08 Discord          | test guild、test bot/user、明示承認済みrole policy                                   | guild/user/role pseudonym、grant/revokeのprovider read-back、サイト権限との同期。                            |
+| 09 障害/運用        | intake-only Cron、D1 operator、alert/primary+backup on-call                          | failure injection、marker recovery、pending queue/alerts、stop/ack/drill記録。                               |
 
 Resendの実送信を有効化する場合は、staging configの `ATLASEZ_STAGING_EMAIL_DELIVERY` を `test-sink` に変え、静的確認を `ATLASEZ_STAGING_RESEND_SINK_CONFIRMED=1 node scripts/verify-admin-staging-config.mjs --config wrangler.admin.staging.jsonc --allow-resend-test-sink` で通してから、Cloudflare Secret `ATLASEZ_STAGING_EMAIL_ALLOWLIST` にtest inboxだけを設定します。allowlistを登録できない、synthetic Google accountの送信先がsinkでない、Resend account/key scopeが確かめられない場合は試験を止めます。
 
