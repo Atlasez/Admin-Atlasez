@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
@@ -6,6 +6,27 @@ const migration = (name: string) =>
   readFileSync(new URL(`../../migrations/${name}`, import.meta.url), "utf8");
 
 describe("ADMIN D1 migration history", () => {
+  it("keeps every migration sequence number unique", () => {
+    // These prefixes already have multiple deployed filenames. D1 records the
+    // full filename, so preserve that history but reject new collisions.
+    const legacySharedSequences = new Set(["0055", "0081", "0082", "0088"]);
+    const files = readdirSync(new URL("../../migrations/", import.meta.url))
+      .filter((name) => name.endsWith(".sql"))
+      .sort();
+    const sequences = files.map((name) => name.match(/^(\d{4})_/)?.[1]);
+    const counts = new Map<string, number>();
+    for (const sequence of sequences) {
+      expect(sequence).toBeDefined();
+      if (sequence) counts.set(sequence, (counts.get(sequence) ?? 0) + 1);
+    }
+    expect(
+      [...counts.entries()].filter(
+        ([sequence, count]) =>
+          count > 1 && !legacySharedSequences.has(sequence),
+      ),
+    ).toEqual([]);
+  });
+
   it("keeps source for migrations already recorded in production", () => {
     expect(migration("0111_editorial_progress_reactions.sql")).toContain(
       "CREATE TABLE IF NOT EXISTS editorial_progress_reactions",
