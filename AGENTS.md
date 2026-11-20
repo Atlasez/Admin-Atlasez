@@ -27,6 +27,7 @@
 - デプロイ後はWorkers Buildsのrun・checkout SHA、Cloudflare Version/DeploymentのWorker名・100%配信・時刻を照合し、公開`build-info.json`のSHA一致と認証済みChromeで主要ADMIN画面を確認する。同期PRだけのSHA差分を許容する場合は、公開build-infoのSHAがmainの祖先で、差分が`docs/deployments/cloudflare-latest.json`だけであることを読み取り専用検証で確認する。Workers Buildsが監査PRを配信しても対象main SHAの一致を確認する。
 - 同期記録以外のSHA不一致、Worker名不一致、想定外のVersion、古い画面、CI失敗を見つけたら停止する。rollback、promote、cache purge、Route変更を推測で実行しない。
 - 既存の未コミット変更を破棄、reset、上書きしない。
+- `src/pages/admin/articles.astro` の記事一覧上部にある3つの主要ボタン（「新規記事作成」「加筆・修正」「フィードバック」）は固定UIとする。ユーザーからこれらのボタンを変更する明示依頼がない限り、個数・文言・順序・配置・見た目・リンク先・動作を変更せず、別の修正でこのファイルに触れる場合も3ボタンの領域をそのまま保つ。
 
 ## 通常の変更フロー
 

@@ -270,11 +270,34 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(
       page.getByRole("button", { name: /フィードバック/ }),
     ).toBeVisible();
-    await expect(page.locator("[data-workflow-action]")).toHaveCount(4);
-    await expect(page.getByRole("button", { name: "すべて" })).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "依頼できる記事" }),
-    ).toBeVisible();
+      page.locator(".workflow-actions > a, .workflow-actions > button"),
+    ).toHaveCount(3);
+    await expect(page.locator("[data-workflow-action]")).toHaveCount(2);
+    await expect(page.locator(".workflow-actions")).toContainText(
+      "新規記事作成",
+    );
+    await expect(page.locator(".workflow-actions")).toContainText("加筆・修正");
+    await expect(page.locator(".workflow-actions")).toContainText(
+      "フィードバック",
+    );
+    await expect(page.locator("[data-workflow-filter]")).toHaveValue("all");
+    await expect(page.locator("[data-workflow-filter]")).toBeHidden();
+    await page.locator(".advanced-filters > summary").click();
+    await expect(page.locator("[data-workflow-filter]")).toBeVisible();
+    await expect(
+      page.locator("[data-workflow-filter] option[value=request]"),
+    ).toHaveText("依頼できる記事");
+    await page.getByRole("button", { name: /フィードバック/ }).click();
+    await expect(page).toHaveURL(/mode=review/);
+    await page.locator("[data-workflow-filter]").selectOption("request");
+    await expect(page).toHaveURL(/mode=request/);
+    await page.reload();
+    await expect(page.locator("[data-workflow-filter]")).toHaveValue("request");
+    await page.locator(".advanced-filters > summary").click();
+    await page.locator("[data-workflow-filter]").selectOption("all");
+    expect(new URL(page.url()).searchParams.has("mode")).toBe(false);
+    await page.reload();
     await expect(page.locator("[data-workflow-filter]")).toHaveValue("all");
     await expect(page.locator(".article-view-tabs")).toHaveCount(0);
     await expect(page.locator(".header-actions")).toHaveCount(0);
