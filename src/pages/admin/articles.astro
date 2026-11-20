@@ -50,12 +50,10 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
         <h1>編集・フィードバック</h1>
       </div>
     </header>
-    <nav class="workflow-actions" aria-label="記事の表示">
+    <nav class="workflow-actions" aria-label="記事の作業を選ぶ">
       <a href="/admin/editor/?new=1&from=articles"><strong>新規記事作成</strong></a>
-      <button type="button" data-workflow-action="all"><strong>すべて</strong></button>
       <button type="button" data-workflow-action="revise"><strong>加筆・修正</strong></button>
       <button type="button" data-workflow-action="review"><strong>フィードバック</strong></button>
-      <button type="button" data-workflow-action="request"><strong>依頼できる記事</strong></button>
     </nav>
     <section class="filters" id="article-list" aria-label="原稿一覧の絞り込み">
       <div class="filters__primary">
@@ -112,12 +110,15 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
                 <option value="only">テスト原稿のみ</option>
               </select>
             </label>
-            <select data-workflow-filter aria-label="記事の表示条件" hidden tabindex="-1" aria-hidden="true">
-              <option value="all">すべて</option>
-              <option value="revise">加筆・修正</option>
-              <option value="review">フィードバック</option>
-              <option value="request">依頼できる記事</option>
-            </select>
+            <label class="filter-control">
+              <span>記事の表示条件</span>
+              <select data-workflow-filter>
+                <option value="all">すべて</option>
+                <option value="revise">加筆・修正</option>
+                <option value="review">フィードバック</option>
+                <option value="request">依頼できる記事</option>
+              </select>
+            </label>
             <label class="filter-control">
               <span>アーカイブ</span>
               <select data-archive aria-label="アーカイブ表示">
@@ -206,7 +207,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
   .workflow-actions {
     display: grid;
     gap: 0.65rem;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     margin: 1.25rem auto;
     max-width: 72rem;
   }
@@ -1150,6 +1151,13 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       return `編集中：${labels.join("、")}`;
     };
     const currentWorkflow = () => workflow.value as "all" | "revise" | "review" | "request";
+    const syncWorkflowLocation = () => {
+      const url = new URL(location.href);
+      if (workflow.value === "all") url.searchParams.delete("mode");
+      else url.searchParams.set("mode", workflow.value);
+      url.hash = "article-list";
+      history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    };
     const isArchived = (article: Article) => Boolean(article.archived_at);
     const archiveExpired = (article: Article) => Boolean(article.archive_expires_at && Date.parse(article.archive_expires_at) <= Date.now());
     const updateCategoryOptions = () => {
@@ -1623,7 +1631,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     loadingFallbackTimer = window.setTimeout(() => { if (list.textContent?.includes("取得しています")) list.textContent = "原稿一覧を取得できませんでした。ページを再読み込みしてください。"; }, 6_000);
     subject.addEventListener("change", () => { updateCategoryOptions(); saveFilterState(); void reloadForSelection(); });
     query.addEventListener("input", render);
-    [category, status, publication, test, workflow].forEach((element) => element.addEventListener("change", render));
+    [category, status, publication, test].forEach((element) => element.addEventListener("change", render));
+    workflow.addEventListener("change", () => { syncWorkflowLocation(); render(); });
     archive.addEventListener("change", () => { saveFilterState(); void reloadForSelection(); });
     loadMoreButton.addEventListener("click", () => { if (!hasMore || loadMoreButton.disabled) return; loadMoreButton.disabled = true; paginationStatus.textContent = "次の原稿を読み込んでいます…"; void load(true); });
     list.addEventListener("click", async (event) => {
@@ -1661,7 +1670,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     });
     root.querySelectorAll<HTMLButtonElement>("[data-workflow-action]").forEach((button) => button.addEventListener("click", () => {
       workflow.value = button.dataset.workflowAction ?? "all";
-      history.replaceState({}, "", `${location.pathname}?mode=${encodeURIComponent(workflow.value)}#article-list`);
+      syncWorkflowLocation();
       render();
       root.querySelector("#article-list")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }));
