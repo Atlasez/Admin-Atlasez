@@ -21044,30 +21044,152 @@ async function scheduleEditorialPublication(request: Request, env: Env, document
   return json({ ok: true, scheduledPublishAt });
 }
 
-async function dispatchScheduledEditorialPublications(env: Env) {
-  const now = new Date().toISOString();
+// Cron runs every five minutes; three intervals give a live claim room to finish.
+const scheduledPublicationClaimStaleAfterMs = 15 * 60 * 1000;
+
+export async function recoverStaleScheduledEditorialPublicationClaims(
+  env: Env,
+  now = new Date(),
+) {
+  const nowIso = now.toISOString();
+  const staleBefore = new Date(
+    now.getTime() - scheduledPublicationClaimStaleAfterMs,
+  ).toISOString();
+  const staleClaims = await env.REPORTS.prepare(
+    `SELECT id, scheduled_publish_at, scheduled_publish_claimed_at,
+            publication_pr_number
+       FROM editorial_documents
+      WHERE status='approved' AND published_at IS NULL
+        AND scheduled_publish_at IS NOT NULL AND scheduled_publish_at <= ?
+        AND scheduled_publish_claimed_at IS NOT NULL
+        AND scheduled_publish_claimed_at < ?
+      ORDER BY scheduled_publish_claimed_at
+      LIMIT 20`,
+  )
+    .bind(nowIso, staleBefore)
+    .all<
+      Pick<
+        EditorialDocument,
+        | "id"
+        | "scheduled_publish_at"
+        | "scheduled_publish_claimed_at"
+        | "publication_pr_number"
+      >
+    >();
+  let released = 0;
+  let consumed = 0;
+
+  for (const claim of staleClaims.results ?? []) {
+    const scheduledAt = claim.scheduled_publish_at;
+    const claimedAt = claim.scheduled_publish_claimed_at;
+    if (!scheduledAt || !claimedAt) continue;
+
+    // A run created after this claim owns the publication attempt. Clear the
+    // reservation even if the Worker stopped before it could clear it itself.
+    const run = await env.REPORTS.prepare(
+      `SELECT id FROM editorial_publication_runs
+        WHERE document_id=? AND action='publish' AND created_at >= ?
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+      .bind(claim.id, claimedAt)
+      .first<{ id: string }>();
+    const consumeSchedule = Boolean(run || claim.publication_pr_number);
+    const update = consumeSchedule
+      ? env.REPORTS.prepare(
+          `UPDATE editorial_documents
+              SET scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL
+            WHERE id=? AND scheduled_publish_at=?
+              AND scheduled_publish_claimed_at=?`,
+        )
+      : env.REPORTS.prepare(
+          `UPDATE editorial_documents
+              SET scheduled_publish_claimed_at=NULL
+            WHERE id=? AND status='approved' AND published_at IS NULL
+              AND publication_pr_number IS NULL
+              AND scheduled_publish_at=? AND scheduled_publish_claimed_at=?`,
+        );
+    const result = (await update
+      .bind(claim.id, scheduledAt, claimedAt)
+      .run()) as { meta?: { changes?: number } };
+    if (Number(result.meta?.changes ?? 0) !== 1) continue;
+    if (consumeSchedule) consumed += 1;
+    else released += 1;
+  }
+
+  return {
+    examined: staleClaims.results?.length ?? 0,
+    released,
+    consumed,
+  };
+}
+
+const updateScheduledPublicationClaim = (
+  env: Env,
+  document: Pick<EditorialDocument, "id" | "scheduled_publish_at">,
+  claimedAt: string,
+  consumeSchedule: boolean,
+) => {
+  if (!document.scheduled_publish_at)
+    return Promise.resolve({ meta: { changes: 0 } });
+  const query = consumeSchedule
+    ? `UPDATE editorial_documents
+          SET scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL
+        WHERE id=? AND scheduled_publish_at=?
+          AND scheduled_publish_claimed_at=?`
+    : `UPDATE editorial_documents
+          SET scheduled_publish_claimed_at=NULL
+        WHERE id=? AND status='approved' AND published_at IS NULL
+          AND publication_pr_number IS NULL
+          AND scheduled_publish_at=? AND scheduled_publish_claimed_at=?`;
+  return env.REPORTS.prepare(query)
+    .bind(document.id, document.scheduled_publish_at, claimedAt)
+    .run();
+};
+
+export async function dispatchScheduledEditorialPublications(env: Env) {
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  const recovery = await recoverStaleScheduledEditorialPublicationClaims(
+    env,
+    nowDate,
+  );
+  if (recovery.released || recovery.consumed)
+    console.info(
+      JSON.stringify({
+        event: "scheduled_editorial_publication_claim_recovery",
+        ...recovery,
+      }),
+    );
   const due = await env.REPORTS.prepare(
     `${editorialDocumentSelect} WHERE status='approved' AND published_at IS NULL AND publication_pr_number IS NULL AND scheduled_publish_at IS NOT NULL AND scheduled_publish_at <= ? AND scheduled_publish_claimed_at IS NULL LIMIT 20`,
   ).bind(now).all<EditorialDocument>();
   let requested = 0;
   for (const document of due.results ?? []) {
+    if (!document.scheduled_publish_at) continue;
     const claim = (await env.REPORTS.prepare(
-      "UPDATE editorial_documents SET scheduled_publish_claimed_at=? WHERE id=? AND published_at IS NULL AND scheduled_publish_claimed_at IS NULL",
+      `UPDATE editorial_documents SET scheduled_publish_claimed_at=?
+        WHERE id=? AND status='approved' AND published_at IS NULL
+          AND publication_pr_number IS NULL AND scheduled_publish_at=?
+          AND scheduled_publish_at <= ? AND scheduled_publish_claimed_at IS NULL`,
     )
-      .bind(now, document.id)
+      .bind(now, document.id, document.scheduled_publish_at, now)
       .run()) as { meta?: { changes?: number } };
     if (!claim.meta?.changes) continue;
     let runClaim: Awaited<ReturnType<typeof claimEditorialPublicationRun>> | null = null;
     try {
       runClaim = await claimEditorialPublicationRun(env, document.id, "publish", "scheduled-publisher", document);
-      if (!runClaim.run || !runClaim.created) {
-        await env.REPORTS.prepare("UPDATE editorial_documents SET scheduled_publish_claimed_at = NULL WHERE id = ?").bind(document.id).run();
+      if (!runClaim.run) {
+        await updateScheduledPublicationClaim(env, document, now, false);
+        continue;
+      }
+      if (!runClaim.created) {
+        // An existing publication run now owns this due item. Do not keep
+        // reclaiming the same reservation on every Cron invocation.
+        await updateScheduledPublicationClaim(env, document, now, true);
         continue;
       }
       await startEditorialPublicationRun(env, document, runClaim.run);
-      await env.REPORTS.prepare(
-        "UPDATE editorial_documents SET scheduled_publish_at = NULL, scheduled_publish_claimed_at = NULL WHERE id = ?",
-      ).bind(document.id).run();
+      await updateScheduledPublicationClaim(env, document, now, true);
       requested += 1;
     } catch (error) {
       console.error("scheduled editorial publication failed", { documentId: document.id, error });
@@ -21086,7 +21208,12 @@ async function dispatchScheduledEditorialPublications(env: Env) {
           lease_until: null,
         });
       }
-      await env.REPORTS.prepare("UPDATE editorial_documents SET scheduled_publish_claimed_at=NULL WHERE id=?").bind(document.id).run();
+      await updateScheduledPublicationClaim(
+        env,
+        document,
+        now,
+        Boolean(runClaim?.run),
+      );
     }
   }
   return { requested, due: due.results?.length ?? 0 };

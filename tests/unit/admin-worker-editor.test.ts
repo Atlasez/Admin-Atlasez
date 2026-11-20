@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import prettier from "prettier";
 import worker, {
+  dispatchScheduledEditorialPublications,
   editorialOutlineAutoSlug,
   mergeEditorialTaxonomyYaml,
+  recoverStaleScheduledEditorialPublicationClaims,
   scheduledPublicationEpoch,
 } from "../../src/admin-worker";
 import { readFile } from "node:fs/promises";
@@ -1868,6 +1870,194 @@ describe("admin worker editor APIs", () => {
     expect(scheduledPublicationEpoch("2026-09-01T12:00+09:00")).toBe(
       Date.parse("2026-09-01T03:00:00.000Z"),
     );
+  });
+
+  it("releases an expired schedule claim when no publication run was created", async () => {
+    const now = new Date("2026-11-20T12:00:00.000Z");
+    const claims = [
+      {
+        id: "stale-document",
+        scheduled_publish_at: "2026-11-20T11:00:00.000Z",
+        scheduled_publish_claimed_at: "2026-11-20T11:30:00.000Z",
+      },
+      {
+        id: "fresh-document",
+        scheduled_publish_at: "2026-11-20T11:00:00.000Z",
+        scheduled_publish_claimed_at: "2026-11-20T11:59:00.000Z",
+      },
+    ];
+    const updates: { query: string; values: unknown[] }[] = [];
+    class RecoveryStatement extends EmptyStatement {
+      private values: unknown[] = [];
+
+      bind(...values: unknown[]) {
+        super.bind(...values);
+        this.values = values;
+        return this;
+      }
+
+      async all<T>() {
+        if (!this.query.includes("FROM editorial_documents"))
+          return { results: [] as T[] };
+        const [dueBefore, staleBefore] = this.values as [string, string];
+        return {
+          results: claims.filter(
+            (claim) =>
+              claim.scheduled_publish_at <= dueBefore &&
+              claim.scheduled_publish_claimed_at < staleBefore,
+          ) as T[],
+        };
+      }
+
+      async first<T>() {
+        return null as T | null;
+      }
+
+      async run() {
+        updates.push({ query: this.query, values: this.values });
+        return { meta: { changes: 1 } };
+      }
+    }
+    const env = {
+      REPORTS: {
+        prepare: (query: string) => new RecoveryStatement(query),
+      },
+    };
+
+    const result = await recoverStaleScheduledEditorialPublicationClaims(
+      env as never,
+      now,
+    );
+
+    expect(result).toEqual({ examined: 1, released: 1, consumed: 0 });
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.query).toContain(
+      "SET scheduled_publish_claimed_at=NULL",
+    );
+    expect(updates[0]?.query).not.toContain("SET scheduled_publish_at=NULL");
+    expect(updates[0]?.query).toContain("scheduled_publish_at=?");
+    expect(updates[0]?.query).toContain("scheduled_publish_claimed_at=?");
+    expect(updates[0]?.values).toEqual([
+      "stale-document",
+      claims[0]?.scheduled_publish_at,
+      claims[0]?.scheduled_publish_claimed_at,
+    ]);
+  });
+
+  it("consumes an expired reservation when its publication run already exists", async () => {
+    const claim = {
+      id: "run-document",
+      scheduled_publish_at: "2026-11-20T11:00:00.000Z",
+      scheduled_publish_claimed_at: "2026-11-20T11:30:00.000Z",
+    };
+    const updates: { query: string; values: unknown[] }[] = [];
+    const runLookups: unknown[][] = [];
+    class RecoveryStatement extends EmptyStatement {
+      private values: unknown[] = [];
+
+      bind(...values: unknown[]) {
+        super.bind(...values);
+        this.values = values;
+        return this;
+      }
+
+      async all<T>() {
+        return { results: [claim] as T[] };
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM editorial_publication_runs")) {
+          runLookups.push(this.values);
+          return { id: "run-1" } as T;
+        }
+        return null as T | null;
+      }
+
+      async run() {
+        updates.push({ query: this.query, values: this.values });
+        return { meta: { changes: 1 } };
+      }
+    }
+    const env = {
+      REPORTS: {
+        prepare: (query: string) => new RecoveryStatement(query),
+      },
+    };
+
+    const result = await recoverStaleScheduledEditorialPublicationClaims(
+      env as never,
+      new Date("2026-11-20T12:00:00.000Z"),
+    );
+
+    expect(result).toEqual({ examined: 1, released: 0, consumed: 1 });
+    expect(runLookups).toEqual([
+      [claim.id, claim.scheduled_publish_claimed_at],
+    ]);
+    expect(updates[0]?.query).toContain(
+      "SET scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL",
+    );
+    expect(updates[0]?.values).toEqual([
+      claim.id,
+      claim.scheduled_publish_at,
+      claim.scheduled_publish_claimed_at,
+    ]);
+  });
+
+  it("clears a due reservation when another publication run already owns it", async () => {
+    const document = {
+      id: "active-run-document",
+      status: "approved",
+      published_at: null,
+      publication_pr_number: null,
+      scheduled_publish_at: "2026-11-20T11:00:00.000Z",
+      scheduled_publish_claimed_at: null,
+    };
+    const activeRun = { id: "active-run", state: "queued" };
+    const updates: { query: string; values: unknown[] }[] = [];
+    class DispatchStatement extends EmptyStatement {
+      private values: unknown[] = [];
+
+      bind(...values: unknown[]) {
+        super.bind(...values);
+        this.values = values;
+        return this;
+      }
+
+      async all<T>() {
+        if (this.query.includes("scheduled_publish_claimed_at IS NOT NULL"))
+          return { results: [] as T[] };
+        if (this.query.includes("FROM editorial_documents"))
+          return { results: [document] as T[] };
+        return { results: [] as T[] };
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM editorial_publication_runs"))
+          return activeRun as T;
+        return null as T | null;
+      }
+
+      async run() {
+        updates.push({ query: this.query, values: this.values });
+        return { meta: { changes: 1 } };
+      }
+    }
+    const env = {
+      REPORTS: {
+        prepare: (query: string) => new DispatchStatement(query),
+      },
+    };
+
+    const result = await dispatchScheduledEditorialPublications(env as never);
+
+    expect(result).toEqual({ requested: 0, due: 1 });
+    expect(
+      updates.some((update) =>
+        update.query.includes(
+          "SET scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL",
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("syncs only the requested document when publication status is refreshed", async () => {
