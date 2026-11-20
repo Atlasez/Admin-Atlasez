@@ -1151,6 +1151,13 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       return `編集中：${labels.join("、")}`;
     };
     const currentWorkflow = () => workflow.value as "all" | "revise" | "review" | "request";
+    const syncWorkflowLocation = () => {
+      const url = new URL(location.href);
+      if (workflow.value === "all") url.searchParams.delete("mode");
+      else url.searchParams.set("mode", workflow.value);
+      url.hash = "article-list";
+      history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    };
     const isArchived = (article: Article) => Boolean(article.archived_at);
     const archiveExpired = (article: Article) => Boolean(article.archive_expires_at && Date.parse(article.archive_expires_at) <= Date.now());
     const updateCategoryOptions = () => {
@@ -1624,7 +1631,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     loadingFallbackTimer = window.setTimeout(() => { if (list.textContent?.includes("取得しています")) list.textContent = "原稿一覧を取得できませんでした。ページを再読み込みしてください。"; }, 6_000);
     subject.addEventListener("change", () => { updateCategoryOptions(); saveFilterState(); void reloadForSelection(); });
     query.addEventListener("input", render);
-    [category, status, publication, test, workflow].forEach((element) => element.addEventListener("change", render));
+    [category, status, publication, test].forEach((element) => element.addEventListener("change", render));
+    workflow.addEventListener("change", () => { syncWorkflowLocation(); render(); });
     archive.addEventListener("change", () => { saveFilterState(); void reloadForSelection(); });
     loadMoreButton.addEventListener("click", () => { if (!hasMore || loadMoreButton.disabled) return; loadMoreButton.disabled = true; paginationStatus.textContent = "次の原稿を読み込んでいます…"; void load(true); });
     list.addEventListener("click", async (event) => {
@@ -1662,7 +1670,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     });
     root.querySelectorAll<HTMLButtonElement>("[data-workflow-action]").forEach((button) => button.addEventListener("click", () => {
       workflow.value = button.dataset.workflowAction ?? "all";
-      history.replaceState({}, "", `${location.pathname}?mode=${encodeURIComponent(workflow.value)}#article-list`);
+      syncWorkflowLocation();
       render();
       root.querySelector("#article-list")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }));

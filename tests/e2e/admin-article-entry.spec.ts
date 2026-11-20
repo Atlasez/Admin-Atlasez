@@ -288,6 +288,17 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(
       page.locator("[data-workflow-filter] option[value=request]"),
     ).toHaveText("依頼できる記事");
+    await page.getByRole("button", { name: /フィードバック/ }).click();
+    await expect(page).toHaveURL(/mode=review/);
+    await page.locator("[data-workflow-filter]").selectOption("request");
+    await expect(page).toHaveURL(/mode=request/);
+    await page.reload();
+    await expect(page.locator("[data-workflow-filter]")).toHaveValue("request");
+    await page.locator(".advanced-filters > summary").click();
+    await page.locator("[data-workflow-filter]").selectOption("all");
+    expect(new URL(page.url()).searchParams.has("mode")).toBe(false);
+    await page.reload();
+    await expect(page.locator("[data-workflow-filter]")).toHaveValue("all");
     await expect(page.locator(".article-view-tabs")).toHaveCount(0);
     await expect(page.locator(".header-actions")).toHaveCount(0);
     const workflowCardStyle = await page
