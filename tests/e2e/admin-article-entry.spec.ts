@@ -524,7 +524,9 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(page.locator("[data-list] .article")).toHaveCount(1);
   });
 
-  test("分野を選ぶと追加操作なしですべての記事を表示する", async ({ page }) => {
+  test("最初に全件を自動で読み込み分野を選んでも全件を表示する", async ({
+    page,
+  }) => {
     const requestedUrls: string[] = [];
     const makeMathArticle = (index: number) => ({
       id: `math-doc-${index}`,
@@ -565,6 +567,26 @@ test.describe("A/D 原稿一覧の作業導線", () => {
         });
         return;
       }
+      if (url.searchParams.get("cursor") === "global-page-2") {
+        await route.fulfill({
+          json: {
+            scope: { email: "alice@example.com", allSubjects: true },
+            documents: [
+              {
+                id: "global-doc-101",
+                subject: "history",
+                category: "japan-history",
+                title: "全件読み込み確認用の記事",
+                status: "draft",
+                updated_at: "2026-08-02T00:00:00.000Z",
+                published_at: null,
+              },
+            ],
+            pagination: { limit: 100, hasMore: false, nextCursor: null },
+          },
+        });
+        return;
+      }
       await route.fulfill({
         json: {
           scope: { email: "alice@example.com", allSubjects: true },
@@ -580,13 +602,34 @@ test.describe("A/D 原稿一覧の作業導線", () => {
               published_at: null,
             },
           ],
-          pagination: { limit: 20, hasMore: true, nextCursor: "global-page-2" },
+          pagination: {
+            limit: 100,
+            hasMore: true,
+            nextCursor: "global-page-2",
+          },
         },
       });
     });
 
     await page.goto("admin/articles/?verify=subject-load-all");
-    await expect(page.locator("[data-article-load-more]")).toBeVisible();
+    await expect(
+      page.locator('[data-document-id="global-doc-101"]'),
+    ).toContainText("全件読み込み確認用の記事");
+    await expect(page.locator("[data-list] .article")).toHaveCount(3);
+    await expect(page.locator("[data-article-load-more]")).toHaveCount(0);
+    await page.locator("[data-query]").fill("全件読み込み確認用");
+    await expect(page.locator("[data-list] .article")).toHaveCount(1);
+    await expect(page.locator("[data-list]")).toContainText(
+      "全件読み込み確認用の記事",
+    );
+    await page.locator("[data-query]").fill("");
+    expect(
+      requestedUrls.some(
+        (url) =>
+          new URL(url).searchParams.get("cursor") === "global-page-2" &&
+          new URL(url).searchParams.get("limit") === "100",
+      ),
+    ).toBe(true);
     await page.locator('[data-subject-quick="mathematics"]').click();
 
     await expect(page.locator("[data-list] .article")).toHaveCount(101);
@@ -597,6 +640,7 @@ test.describe("A/D 原稿一覧の作業導線", () => {
       page.locator("[data-list] [data-expand-category]"),
     ).toHaveCount(0);
     await expect(page.locator("[data-article-pagination]")).toBeHidden();
+    await expect(page.locator("[data-article-load-more]")).toHaveCount(0);
     expect(
       requestedUrls.some(
         (url) => new URL(url).searchParams.get("subject") === "mathematics",

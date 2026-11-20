@@ -144,9 +144,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     <section class="list loading-state" data-list data-admin-load-surface aria-busy="true">原稿一覧を取得しています…</section>
     <p class="article-scope-note" data-scope-note data-state="loading" role="status" aria-live="polite">担当範囲を確認しています…</p>
     <AdminRetryNotice />
-    <div class="article-pagination" data-article-pagination hidden>
-      <span data-article-pagination-status aria-live="polite"></span>
-      <button type="button" class="article-action" data-article-load-more>次の原稿を読み込む</button>
+    <div class="article-pagination" data-article-pagination hidden aria-live="polite">
+      <span data-article-pagination-status></span>
     </div>
     <script is:inline type="application/json" data-public-articles set:html={publicArticlesPayload}></script>
   </main>
@@ -194,9 +193,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
   .article-scope-note[data-state="error"] { color: var(--danger); }
   .article-scope-note[data-state="error"]::before { content: none; }
   .article-scope-note::before { color: var(--accent-primary); content: "●"; font-size: .6rem; margin-right: .4rem; vertical-align: .08em; }
-  .article-pagination button { min-height: 2.25rem; }
-  .article-pagination button:disabled { cursor: wait; opacity: .65; }
-  @media (max-width: 640px) { .article-pagination { align-items: stretch; flex-direction: column; } .article-pagination button { width: 100%; } }
+  @media (max-width: 640px) { .article-pagination { align-items: stretch; flex-direction: column; } }
   .header-actions {
     align-items: center;
     display: flex;
@@ -1086,7 +1083,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     const subjectBrowserAll = root.querySelector<HTMLButtonElement>("[data-subject-browser-all]")!;
     const pagination = root.querySelector<HTMLElement>("[data-article-pagination]")!;
     const paginationStatus = root.querySelector<HTMLElement>("[data-article-pagination-status]")!;
-    const loadMoreButton = root.querySelector<HTMLButtonElement>("[data-article-load-more]")!;
     const subjectOptions = [...subject.options].map((option) => ({ value: option.value, label: option.textContent ?? "", subjects: option.dataset.subjects }));
     const subjectNameBySlug = new Map(subjectOptions.filter((option) => option.value !== "all").map((option) => [option.value, option.label]));
     const categoryNameBySlug = new Map([...category.options].filter((option) => option.value !== "all").map((option) => [option.value, option.textContent ?? option.value]));
@@ -1097,11 +1093,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     let items: Article[] = [];
     let subjectBrowserItems: Article[] = [];
     let scopeEmail = "";
-    let nextCursor: string | null = null;
-    let hasMore = false;
     let loadedPageCount = 0;
-    let loadedSubject: string | null = null;
-    let loadingAllSubject = false;
+    let loadingAllDocuments = false;
     let selectionLoadVersion = 0;
     const expandedArticleGroups = new Set<string>();
     const filterStorageKey = "atlasez-admin-article-filters";
@@ -1381,12 +1374,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       } else {
         list.innerHTML = `<header class="article-list__heading"><h2>${esc(activeScope)}</h2><span>0件</span><small>0カテゴリ</small></header><div class="article-empty"><strong>条件に一致する原稿はありません。</strong><span>条件をリセットするか、別の分野を選んでください。</span></div>`;
       }
-      pagination.hidden = !hasMore && !loadingAllSubject;
-      paginationStatus.textContent = loadingAllSubject
-        ? `${items.length}件を読み込み中…`
-        : loadedPageCount ? `${items.length}件を読み込み済み${hasMore ? "・続きがあります" : "・すべて読み込み済み"}` : "";
-      loadMoreButton.hidden = loadingAllSubject;
-      loadMoreButton.disabled = loadingAllSubject;
+      pagination.hidden = !loadingAllDocuments;
+      paginationStatus.textContent = loadingAllDocuments ? `${items.length}件を読み込み中…` : "";
       updateWorkflowButtons();
     };
     const normalizeCatalog = (raw: unknown): PublicArticle[] | null => {
@@ -1429,18 +1418,18 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     let activeLoadController: AbortController | null = null;
     let disposed = false;
     let loadingFallbackTimer: number | null = null;
-    type LoadOptions = { silent?: boolean; preserveLoadedPages?: boolean; loadAllForSelectedSubject?: boolean };
-    const load = (append = false, options: LoadOptions = {}) => {
+    type LoadOptions = { silent?: boolean; preserveLoadedPages?: boolean };
+    const load = (options: LoadOptions = {}) => {
       // pageshow and visibility events can arrive together on a cold load.
       // Share the in-flight request so the same list is not fetched twice.
       if (disposed || loadRequest) return loadRequest ?? Promise.resolve();
       const silent = Boolean(options.silent);
-      const preserveLoadedPages = Boolean(options.preserveLoadedPages && silent && !append && (loadedPageCount > 1 || loadedSubject === subject.value));
+      const preserveLoadedPages = Boolean(options.preserveLoadedPages && silent && loadedPageCount > 0);
       const selectedSubject = subject.value === "all" ? null : subject.value;
       let querySubject = selectedSubject;
-      let completeSubject = Boolean(options.loadAllForSelectedSubject && selectedSubject);
-      let pageCursor = append ? nextCursor : null;
+      let pageCursor: string | null = null;
       let pageIndex = 0;
+      let refreshedItems: Article[] = [];
       let scopeResolved = false;
       let catalogPromise: Promise<void> = Promise.resolve();
       const controller = new AbortController();
@@ -1448,29 +1437,30 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       const request = (async () => {
         try {
           if (!silent) retry?.begin();
-          if (!append && !silent) list.classList.add("loading-state");
-          if (!append && !silent) {
+          if (!silent) list.classList.add("loading-state");
+          if (!silent) {
             subject.disabled = true;
             subject.setAttribute("aria-busy", "true");
             scopeNote.dataset.state = "loading";
             scopeNote.textContent = "担当範囲を確認しています…";
           }
           const includeArchived = archive.value !== "active";
-          if (!append && !preserveLoadedPages) {
-            nextCursor = null;
-            hasMore = false;
+          loadingAllDocuments = !silent;
+          if (!preserveLoadedPages) {
             loadedPageCount = 0;
-            loadedSubject = null;
             if (!silent) items = [];
+            if (!querySubject) subjectBrowserItems = [];
           }
-          if (completeSubject) loadingAllSubject = true;
+          if (!silent) {
+            pagination.hidden = false;
+            paginationStatus.textContent = "原稿一覧を読み込んでいます…";
+          }
           while (true) {
             const params = new URLSearchParams();
             if (includeArchived) params.set("includeArchived", "1");
             if (querySubject) params.set("subject", querySubject);
             if (pageCursor) params.set("cursor", pageCursor);
-            if (append) params.set("limit", "50");
-            else if (completeSubject) params.set("limit", "100");
+            params.set("limit", "100");
             const queryString = params.toString();
             const endpoint = queryString ? `/api/admin/editor/documents?${queryString}` : "/api/admin/editor/documents";
             const response = await fetch(endpoint, { credentials: "same-origin", cache: "no-store", signal: controller.signal });
@@ -1486,75 +1476,63 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
               // change. Fall back to the ordinary first page in that case.
               if (querySubject && subject.value !== querySubject) {
                 querySubject = null;
-                completeSubject = false;
                 pageCursor = null;
                 pageIndex = 0;
-                nextCursor = null;
-                hasMore = false;
                 loadedPageCount = 0;
-                loadedSubject = null;
+                refreshedItems = [];
+                subjectBrowserItems = [];
                 items = [];
-                loadingAllSubject = false;
                 continue;
               }
             }
             const pageDocuments = data.documents ?? [];
-            if (!querySubject && !append && !preserveLoadedPages) {
-              subjectBrowserItems = pageDocuments;
-            } else {
-              const knownItems = new Map(subjectBrowserItems.map((article) => [article.id, article]));
-              for (const article of pageDocuments) knownItems.set(article.id, article);
-              subjectBrowserItems = [...knownItems.values()];
-            }
+            const knownDocuments = new Map(refreshedItems.map((article) => [article.id, article]));
+            for (const article of pageDocuments) knownDocuments.set(article.id, article);
+            refreshedItems = [...knownDocuments.values()];
             const pageHasMore = Boolean(data.pagination?.hasMore);
             const nextPageCursor = data.pagination?.nextCursor ?? null;
-            if (append) {
-              items = [...items, ...pageDocuments];
-              nextCursor = nextPageCursor;
-              hasMore = pageHasMore;
-              loadedPageCount += 1;
-            } else if (preserveLoadedPages && pageIndex === 0) {
-              const refreshedIds = new Set(pageDocuments.map((article) => article.id));
-              items = [...pageDocuments, ...items.filter((article) => !refreshedIds.has(article.id))];
-            } else if (pageIndex === 0) {
-              items = pageDocuments;
-              nextCursor = nextPageCursor;
-              hasMore = pageHasMore;
-              loadedPageCount = 1;
-            } else {
-              items = [...items, ...pageDocuments];
-              nextCursor = nextPageCursor;
-              hasMore = pageHasMore;
-              loadedPageCount += 1;
+            if (!preserveLoadedPages) items = refreshedItems;
+            if (!querySubject && !preserveLoadedPages) subjectBrowserItems = refreshedItems;
+            if (querySubject && !preserveLoadedPages) {
+              const knownSubjectItems = new Map(subjectBrowserItems.map((article) => [article.id, article]));
+              for (const article of refreshedItems) knownSubjectItems.set(article.id, article);
+              subjectBrowserItems = [...knownSubjectItems.values()];
             }
             // Render the editorial rows immediately; catalog enrichment must
             // not block the first useful screen or subsequent page requests.
-            render();
-            if (!completeSubject) break;
+            if (!preserveLoadedPages) render();
+            loadingAllDocuments = !silent && pageHasMore;
             if (!pageHasMore) break;
             if (!nextPageCursor || nextPageCursor === pageCursor) throw new Error("続きの原稿を読み込めませんでした。再試行してください。");
             pageCursor = nextPageCursor;
             pageIndex += 1;
           }
-          loadingAllSubject = false;
-          loadedSubject = completeSubject ? querySubject : null;
-          if (completeSubject) {
-            nextCursor = null;
-            hasMore = false;
+          if (preserveLoadedPages) {
+            items = refreshedItems;
+            if (!querySubject) subjectBrowserItems = refreshedItems;
+            else {
+              const knownSubjectItems = new Map(subjectBrowserItems.map((article) => [article.id, article]));
+              for (const article of refreshedItems) knownSubjectItems.set(article.id, article);
+              subjectBrowserItems = [...knownSubjectItems.values()];
+            }
           }
+          loadedPageCount = pageIndex + 1;
+          loadingAllDocuments = false;
           await catalogPromise;
           render();
           if (!silent) retry?.success();
         } catch (error) {
           if (disposed || controller.signal.aborted || silent) return;
-          loadingAllSubject = false;
+          loadingAllDocuments = false;
           list.classList.remove("loading-state");
-          list.classList.add("error-state");
-          list.textContent = error instanceof Error ? error.message : "原稿一覧を取得できませんでした。";
-          pagination.hidden = !hasMore;
-          loadMoreButton.hidden = false;
-          loadMoreButton.disabled = false;
-          if (!append && !scopeResolved) {
+          if (items.length) render();
+          else {
+            list.classList.add("error-state");
+            list.textContent = error instanceof Error ? error.message : "原稿一覧を取得できませんでした。";
+          }
+          pagination.hidden = false;
+          paginationStatus.textContent = "すべての原稿を読み込めませんでした。再試行してください。";
+          if (!scopeResolved) {
             subject.disabled = true;
             subject.removeAttribute("aria-busy");
             scopeNote.dataset.state = "error";
@@ -1573,24 +1551,18 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       const version = ++selectionLoadVersion;
       activeLoadController?.abort();
       const selectedSubject = subject.value;
-      const loadAllForSubject = selectedSubject !== "all";
-      loadingAllSubject = loadAllForSubject;
+      loadingAllDocuments = true;
       items = [];
-      nextCursor = null;
-      hasMore = false;
       loadedPageCount = 0;
-      loadedSubject = null;
       list.classList.remove("error-state");
       list.classList.add("loading-state");
-      list.textContent = loadAllForSubject ? "選択した分野の記事をすべて読み込んでいます…" : "原稿一覧を取得しています…";
-      pagination.hidden = !loadAllForSubject;
-      paginationStatus.textContent = loadAllForSubject ? "0件を読み込み中…" : "";
-      loadMoreButton.hidden = loadAllForSubject;
-      loadMoreButton.disabled = loadAllForSubject;
+      list.textContent = selectedSubject === "all" ? "原稿一覧を取得しています…" : "選択した分野の記事をすべて読み込んでいます…";
+      pagination.hidden = false;
+      paginationStatus.textContent = "原稿一覧を読み込んでいます…";
       const pendingRequest = loadRequest;
       if (pendingRequest) await pendingRequest;
       if (disposed || version !== selectionLoadVersion) return;
-      return load(false, { loadAllForSelectedSubject: subject.value !== "all" });
+      return load();
     };
     retry = createAdminLoadRetry(root, () => reloadForSelection(), "原稿一覧を読み込めませんでした。");
     resetFiltersButton.addEventListener("click", () => {
@@ -1634,7 +1606,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     [category, status, publication, test].forEach((element) => element.addEventListener("change", render));
     workflow.addEventListener("change", () => { syncWorkflowLocation(); render(); });
     archive.addEventListener("change", () => { saveFilterState(); void reloadForSelection(); });
-    loadMoreButton.addEventListener("click", () => { if (!hasMore || loadMoreButton.disabled) return; loadMoreButton.disabled = true; paginationStatus.textContent = "次の原稿を読み込んでいます…"; void load(true); });
     list.addEventListener("click", async (event) => {
       const target = event.target as HTMLElement;
       const expandButton = target.closest<HTMLButtonElement>("[data-expand-category]");
@@ -1675,9 +1646,9 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       root.querySelector("#article-list")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }));
     updateCategoryOptions();
-    void load(false, { loadAllForSelectedSubject: subject.value !== "all" });
-    const handlePageShow = () => { void load(false, { silent: true, preserveLoadedPages: true }); };
-    const refreshPresence = () => { if (document.visibilityState === "visible") void load(false, { silent: true, preserveLoadedPages: true }); };
+    void load();
+    const handlePageShow = () => { void load({ silent: true, preserveLoadedPages: true }); };
+    const refreshPresence = () => { if (document.visibilityState === "visible") void load({ silent: true, preserveLoadedPages: true }); };
     const presenceTimer = window.setInterval(refreshPresence, 15_000);
     window.addEventListener("pageshow", handlePageShow);
     document.addEventListener("visibilitychange", refreshPresence);
