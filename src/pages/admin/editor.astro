@@ -6105,6 +6105,14 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     white-space: nowrap;
   }
 
+  .editor-workspace .document-toolbar[data-compact] .save-status {
+    flex: 1 1 auto;
+    max-width: min(18rem, 100%);
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
   .editor-workspace .document-toolbar[data-compact] .document-version-switcher > span {
     display: none;
   }
