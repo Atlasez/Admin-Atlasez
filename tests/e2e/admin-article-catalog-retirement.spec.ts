@@ -41,6 +41,8 @@ test("公開記事との運営原稿連携を参照表示し、移行操作は�
               status: "draft",
               updated_at: "2026-08-30T00:00:00.000Z",
               published_at: "2026-08-30T00:00:00.000Z",
+              current_version_id: "version-1",
+              published_version_id: "version-1",
             },
           ],
           pagination: { hasMore: false, nextCursor: null },
@@ -91,8 +93,9 @@ test("公開記事との運営原稿連携を参照表示し、移行操作は�
     linkedArticle.locator(".article-status-group").nth(1),
   ).toContainText("公開中");
   await expect(
-    linkedArticle.locator('[data-update-proposal-state="available"]'),
-  ).toHaveText("更新案を作成");
+    linkedArticle.locator("[data-update-proposal-state]"),
+  ).toHaveCount(0);
+  await expect(linkedArticle).not.toContainText("更新案を作成");
 
   await expect(
     page.locator(

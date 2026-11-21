@@ -5,7 +5,7 @@ Google OAuthでログインし、既存の `report_admin_permissions` に設定�
 
 ## できること
 
-- 新規記事の下書き作成と、保存済み原稿の編集・更新案作成
+- 新規記事の下書き作成と、保存済み原稿の編集・版保存
 - Markdown本文を編集し、`$...$` / `$$...$$` の数式をKaTeXで即時プレビューする
 - 原稿を保存した後、画像をアップロードして本文へ挿入する
 - TikZ/LaTeXのソースブロックを挿入し、査読プレビューで確認する
@@ -15,17 +15,18 @@ Google OAuthでログインし、既存の `report_admin_permissions` に設定�
 原稿とコメントはD1の `editorial_documents` / `editorial_comments` に保存されます。画像素材はD1の `editorial_assets` に原稿単位で保存され、公開時にGitHubへ同期されます。詳細は [記事素材・LaTeX/TikZ運用](EDITORIAL_MEDIA_AND_LATEX.md) を参照してください。
 公開済み記事のMarkdownや公開サイトの表示は、この操作だけでは変更されません。
 
-既存の公開記事をADMIN原稿へ移すための個別／一括登録と連携診断は、2026-11-11に公開記事165件のうち非テスト記事164件すべてに対応する運営原稿があることを読み取り確認したため撤去しました。残る1件は既存ルールで取り込み対象外のテスト記事です。公開カタログの読み取りは公開状態表示、公開済み原稿の保護、記事IDの照合に継続使用します。既存記事の修正は対応する運営原稿を開いて「更新案を作成」から行い、新規公開記事はこの画面で新規原稿を作成して公開手順へ進めます。
+既存記事を開くと、最後に保存した版が編集画面に表示されます。編集を保存するたびにD1へ新しい版IDを作成し、現在の公開版IDは公開が完了するまで維持します。元原稿・更新案を切り替える操作はありません。公開カタログは公開状態と記事IDの照合に継続使用します。
 
 ## 現在の公開手順
 
 1. 執筆者がフィードバックを反映し、分野統括・プロジェクトリーダーが運営サイト内で担当段階の審査を完了する。これは原稿内容に対する人の承認である。
-2. 運営管理者が承認済み原稿の**公開する**を押す。
-3. Workerが公開用ブランチを作成し、`src/content/articles/ja/<分野>/<カテゴリ>/<slug>.md` と画像素材をCommitして、`Atlasez/Atlasez01`へPRを作成する。
+2. 運営管理者が承認済み原稿の**公開する**を押す。公開Runへ対象版IDを固定する。
+3. Workerが固定版の内容・版ID・画像素材から公開PRを作成する。PR本文は現在編集中の行ではなく、D1に保存された対象版スナップショットから生成する。
 4. GitHub連携が設定済みの場合、公開Workerは対象PRとCommitのCI状態を確認し、公開専用Appと別のレビュー用認証情報で技術処理を進める。CI失敗、認証/権限不足、対象SHAの不一致、`needs-operator`では自動処理を止め、運営画面に要確認状態を残す。公開PRのCI確認・自動レビューは運営サイトで完了する原稿審査の代替ではない。
-5. GitHub `main`への反映後、公開サイトのCloudflare Workers Buildsが配信し、公開処理がbuild-infoと記事URLを確認する。公開Workerの自動Mergeは公開サイトの配信完了を意味しない。
+5. GitHub `main`への反映後、Workers Buildsは未配信の候補Versionを作り、その候補に含む記事・D1版IDをD1へ記録します。記録成功後だけWorker `atlasez01`へ切り替えます。
+6. ADMIN WorkerがCloudflare最新DeploymentのVersion IDと配信率100%を確認してから、D1の公開版ポインターと公開履歴を更新します。切替後の履歴記録に失敗した場合は1分ごとにCloudflareの現行配信を照合し、候補記録からD1だけを補修します。
 
-公開ボタンを押した時点では学習サイトへ反映せず、PRのMerge後にだけ反映されます。PR作成後は編集画面からPRリンクを確認できます。公開状態は5分ごとの定期同期でGitHubの`main`を基準に更新されます。
+公開ボタンを押した時点では学習サイトへ反映せず、PRのMerge・候補内容のD1記録後にだけ反映されます。PR作成後は編集画面からPRリンクを確認できます。公開版はcanonical本文のコピーではなく記事版IDで管理し、公開履歴にはCloudflare Version ID・Deployment IDを記録します。
 
 人による原稿審査は運営サイトの担当段階と管理者権限で行い、GitHub PRは公開用データ・CI・自動配信の証跡として扱います。ADMINや公開リポジトリのbranch protection、required approving reviewsはこの手順から変更しません。GitHub Appの既存設定で処理できない場合、手動mergeやrule変更で回避せず`運営サイトで確認が必要`として止めます。詳細は[運営サイト完結型の記事公開](EDITORIAL_ADMIN_ONLY_PUBLICATION.md)を参照してください。
 
@@ -38,9 +39,11 @@ Google OAuthでログインし、既存の `report_admin_permissions` に設定�
 1. `GITHUB_APP_ID`、`GITHUB_APP_INSTALLATION_ID`、`GITHUB_APP_PRIVATE_KEY`（公開専用GitHub Appの設定）
 2. `GITHUB_WEBHOOK_SECRET`（公開リポジトリWebhook署名の検証）
 3. `GITHUB_REVIEW_TOKEN`（PR作成者と公開Appとは別のレビュー用認証情報。App設定と実装が認める既存フォールバック条件は[公開手順](EDITORIAL_ADMIN_ONLY_PUBLICATION.md)を確認）
-4. `PUBLIC_SITE_ORIGIN=https://atlasez.org` と `GITHUB_REPOSITORY=Atlasez/Atlasez01`
+4. `EDITORIAL_RELEASE_WEBHOOK_SECRET`（Workers Buildsと共有する候補通知の署名鍵）
+5. `CLOUDFLARE_WORKERS_READ_TOKEN`（Worker `atlasez01` のDeployment/Version照合用。Workers Scripts Readのみ）
+6. `PUBLIC_SITE_ORIGIN=https://atlasez.org` と `GITHUB_REPOSITORY=Atlasez/Atlasez01`
 
-設定の追加・変更はCloudflare本番設定の変更に当たるため、この監査では実施しません。設定状態は編集画面の連携診断で確認し、未設定・失敗は公開不可として扱います。Tokenや秘密鍵の値をログ・PR・Issueへ書き写さないでください。
+`migrations/0139_editorial_release_candidates.sql`の適用後に、新しい公開候補API・履歴記録を有効にします。ADMINのWorker設定と公開Workers Buildsの設定は、対象値・権限・適用順・復旧方法をPRでレビューしてから変更します。設定状態は編集画面の連携診断で確認し、未設定・失敗は公開不可として扱います。Tokenや秘密鍵の値をログ・PR・Issueへ書き写さないでください。
 
 ## ローカル確認
 

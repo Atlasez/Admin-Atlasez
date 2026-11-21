@@ -2422,181 +2422,167 @@ test("既存記事を承認へ自動保存すると公開操作と版履歴を�
   await expect.poll(() => revisionLoads).toBe(2);
 });
 
-test("公開済み記事の本文は更新案を作成するまでロックする", async ({ page }) => {
-  const publishedDocument = {
+test("公開済み記事を編集すると新しい版を保存し公開版を保持する", async ({
+  page,
+}) => {
+  let currentDocument: Omit<typeof documentItem, "published_at" | "status"> & {
+    status: "draft" | "approved";
+    published_at: string;
+    current_version_id: string;
+    published_version_id: string;
+  } = {
     ...documentItem,
     status: "approved" as const,
     published_at: "2026-08-30T01:34:00.000Z",
+    current_version_id: "version-public",
+    published_version_id: "version-public",
   };
-  await mockAdminApi(page, undefined, publishedDocument);
-  await page.route(
-    "**/api/admin/editor/documents/doc-1/update-proposal",
-    async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          ok: true,
-          id: "doc-1-update-proposal",
-          baseDocumentId: "doc-1",
-        }),
-      });
-    },
-  );
-  await page.route(
-    "**/api/admin/editor/documents/doc-1-update-proposal",
-    async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          document: {
-            ...publishedDocument,
-            id: "doc-1-update-proposal",
-            document_kind: "update-proposal",
-            base_document_id: "doc-1",
-            base_document_updated_at: publishedDocument.updated_at,
-            status: "draft",
-            published_at: null,
-          },
-          comments: [],
-        }),
-      });
-    },
-  );
-  await page.goto("./admin/editor/?document=doc-1");
-
-  const body = page.locator("[data-body]");
-  const bodySurface = page.locator("[data-body-surface]");
-  const bodyEditor = page.locator(".body-codemirror").first();
-  const bodyEditorContent = bodyEditor.locator(".cm-content");
-  await expect(page.locator("[data-create-update-proposal]")).toBeVisible();
-  await expect(body).toHaveAttribute("readonly", "");
-  if (await bodyEditorContent.count()) {
-    await expect(bodyEditor).toHaveAttribute("data-readonly", "true");
-    await expect(bodyEditorContent).toHaveAttribute("contenteditable", "false");
-    await bodyEditor.click({ position: { x: 180, y: 80 } });
-  } else await bodySurface.click({ position: { x: 180, y: 80 } });
-  await expect(page.locator("[data-save-message]")).toContainText(
-    "公開中の記事を編集するには「更新案を作成」を押してください",
-  );
-  await page.screenshot({
-    path: "test-results/editor-published-body-locked.png",
-    fullPage: true,
-  });
-
-  await page.locator("[data-create-update-proposal]").click();
-  await expect(body).not.toHaveAttribute("readonly");
-  if (await bodyEditorContent.count()) {
-    await expect(bodyEditor).toHaveAttribute("data-readonly", "false");
-    await expect(bodyEditorContent).toHaveAttribute("contenteditable", "true");
-    await page.screenshot({
-      path: "test-results/editor-published-update-proposal.png",
-      fullPage: true,
-    });
-  }
-});
-
-test("更新案の保存成功と現行版への切り替えを独立して扱う", async ({ page }) => {
-  const canonical = {
-    ...documentItem,
-    status: "approved" as const,
-    published_at: "2026-08-30T01:34:00.000Z",
-  };
-  const proposal = {
-    ...canonical,
-    id: "doc-1-update-proposal",
-    document_kind: "update-proposal",
-    base_document_id: "doc-1",
-    base_document_updated_at: canonical.updated_at,
-    status: "draft" as const,
-    published_at: null,
-    body: `${canonical.body}\n\n更新案の本文です。`,
-  };
-  await mockAdminApi(page, undefined, canonical);
-  let proposalCreated = false;
-  await page.route(/\/api\/admin\/editor\/documents\/doc-1$/, async (route) => {
-    await route.fulfill({
-      json: {
-        document: canonical,
-        comments: [],
-        ...(proposalCreated
-          ? { versions: { canonicalId: canonical.id, proposalId: proposal.id } }
-          : {}),
-      },
-    });
-  });
-  await page.route(
-    /\/api\/admin\/editor\/documents\/doc-1\/update-proposal$/,
-    async (route) => {
-      proposalCreated = true;
-      await route.fulfill({
-        json: { ok: true, id: proposal.id, baseDocumentId: canonical.id },
-      });
-    },
-  );
-  await page.route(
-    /\/api\/admin\/editor\/documents\/doc-1-update-proposal$/,
-    async (route) => {
-      if (route.request().method() === "PATCH")
-        return route.fulfill({
-          json: { ok: true, updatedAt: "2026-08-20T00:05:00.000Z" },
-        });
+  const savedPayloads: Record<string, unknown>[] = [];
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/admin/editor/documents") {
       await route.fulfill({
         json: {
-          document: proposal,
-          comments: [],
-          versions: { canonicalId: canonical.id, proposalId: proposal.id },
+          documents: [currentDocument],
+          mentionNames: ["Alice", "Bob"],
+          scope: {
+            email: "alice@example.com",
+            subjects: ["mathematics"],
+            isManager: true,
+          },
         },
       });
-    },
-  );
-  await page.route(
-    /\/api\/admin\/editor\/documents\/doc-1-update-proposal\/revisions$/,
-    async (route) => {
+      return;
+    }
+    if (url.pathname === "/api/admin/editor/documents/doc-1") {
+      if (request.method() === "PATCH") {
+        const payload = request.postDataJSON() as Record<string, unknown>;
+        savedPayloads.push(payload);
+        currentDocument = {
+          ...currentDocument,
+          body: String(payload.body ?? currentDocument.body),
+          status: "draft",
+          updated_at: "2026-08-31T01:34:00.000Z",
+          current_version_id: "version-next",
+        };
+        await route.fulfill({
+          json: {
+            ok: true,
+            status: "draft",
+            updatedAt: currentDocument.updated_at,
+            versionId: "version-next",
+            currentVersionId: "version-next",
+          },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: { document: currentDocument, comments: [] },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/editor/documents/doc-1/revisions") {
       await route.fulfill({
         json: {
           revisions: [
             {
-              id: "base-doc-1",
-              title: canonical.title,
-              summary: canonical.summary,
-              body: canonical.body,
-              status: "published",
-              saved_by: canonical.updated_by,
-              saved_at: canonical.updated_at,
+              id: "version-next",
+              title: currentDocument.title,
+              summary: currentDocument.summary,
+              body: currentDocument.body,
+              status: "draft",
+              saved_by: "alice@example.com",
+              saved_at: currentDocument.updated_at,
+              is_current_version: 1,
+              is_published_version: 0,
+            },
+            {
+              id: "version-public",
+              title: documentItem.title,
+              summary: documentItem.summary,
+              body: documentItem.body,
+              status: "approved",
+              saved_by: "alice@example.com",
+              saved_at: documentItem.updated_at,
+              is_current_version: 0,
+              is_published_version: 1,
             },
           ],
           feedbackRequests: [],
         },
       });
-    },
-  );
-  await page.route(
-    /\/api\/admin\/editor\/documents\/doc-1-update-proposal\/publication-review$/,
-    async (route) => {
+      return;
+    }
+    if (url.pathname.endsWith("/publication-review")) {
       await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "一時的に取得できません" }),
+        json: {
+          stage: null,
+          canCompleteWriting: false,
+          canDecide: false,
+          feedbackTaskTotal: 0,
+          feedbackTaskDone: 0,
+          feedbackComplete: false,
+        },
       });
-    },
-  );
+      return;
+    }
+    if (url.pathname.endsWith("/assets")) {
+      await route.fulfill({ json: { assets: [] } });
+      return;
+    }
+    if (url.pathname === "/api/admin/article-reports") {
+      await route.fulfill({
+        json: {
+          reports: [],
+          pagination: { limit: 200, hasMore: false, nextCursor: null },
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/editor/taxonomy") {
+      await route.fulfill({ json: { catalog: [] } });
+      return;
+    }
+    if (url.pathname === "/api/admin/editor/catalog") {
+      await route.fulfill({ json: { catalog: [] } });
+      return;
+    }
+    if (url.pathname === "/api/admin/personal-workspace") {
+      await route.fulfill({ json: { privateNote: "", updatedAt: null } });
+      return;
+    }
+    await route.fulfill({ json: {} });
+  });
+
   await page.goto("./admin/editor/?document=doc-1");
-  await page.locator("[data-create-update-proposal]").click();
-  await expect(page.locator("[data-document-version-switcher]")).toBeVisible();
-  const bodyEditor = page.locator(".body-codemirror .cm-content").first();
-  if (await bodyEditor.count())
-    await bodyEditor.fill(`${proposal.body}\n\n保存確認`);
-  else await page.locator("[data-body]").fill(`${proposal.body}\n\n保存確認`);
+  await expect(page.locator("[data-create-update-proposal]")).toHaveCount(0);
+  const body = page.locator("[data-body]");
+  await expect(body).not.toHaveAttribute("readonly", "");
+  const bodyEditorContent = page
+    .locator(".body-codemirror .cm-content")
+    .first();
+  const nextBody = `${documentItem.body}\n\n保存版への追記`;
+  if (await bodyEditorContent.count()) await bodyEditorContent.fill(nextBody);
+  else await body.fill(nextBody);
+
+  await expect.poll(() => savedPayloads.length).toBe(1);
+  await expect
+    .poll(() => currentDocument.current_version_id)
+    .toBe("version-next");
   await expect(page.locator("[data-save-message]")).toContainText(
     "入力内容を自動保存しました",
   );
-  await expect(page.locator("[data-open-current-version]")).toBeVisible();
-  await page.locator("[data-open-current-version]").click();
   await expect(page.locator("[data-document-version-label]")).toContainText(
-    "更新案あり",
+    "公開版のまま保持",
   );
+  await expect(page.locator('[name="status"]')).toHaveValue("draft");
+  await expect(page.locator("[data-revision-list]")).toContainText(
+    "最新保存版",
+  );
+  await expect(page.locator("[data-revision-list]")).toContainText("公開版");
+  expect(currentDocument.published_version_id).toBe("version-public");
+  expect(savedPayloads[0]?.body).toBe(nextBody);
 });
 
 test("連続入力中の自動保存は同じ原稿を重複更新しない", async ({ page }) => {

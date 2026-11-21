@@ -378,9 +378,7 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     expect(listLayout.gridTemplateColumns.split(" ")).toHaveLength(1);
   });
 
-  test("D-3c: 公開済み記事の更新案作成中を一覧のボタンで示す", async ({
-    page,
-  }) => {
+  test("D-3c: 公開中の未公開版を版IDで一覧に表示する", async ({ page }) => {
     await page.route("**/api/admin/editor/documents**", async (route) => {
       const requestUrl = new URL(route.request().url());
       if (requestUrl.pathname !== "/api/admin/editor/documents")
@@ -394,10 +392,12 @@ test.describe("A/D 原稿一覧の作業導線", () => {
               subject: "mathematics",
               category: "group-theory",
               slug: "group-definition",
-              title: "更新案作成中の記事",
+              title: "未公開版がある記事",
               status: "draft",
               published_at: "2026-08-30T01:34:00.000Z",
               updated_at: "2026-09-01T01:34:00.000Z",
+              current_version_id: "version-current",
+              published_version_id: "version-public",
             },
           ],
         },
@@ -410,18 +410,17 @@ test.describe("A/D 原稿一覧の作業導線", () => {
       "すべての分野（全権限）",
     );
     const card = page.locator('[data-document-id="update-progress-doc"]');
-    await expect(
-      card.locator('[data-update-proposal-state="in-progress"]'),
-    ).toHaveText("更新案作成中");
+    await expect(card.locator("[data-update-proposal-state]")).toHaveCount(0);
     await expect(card.locator(".article-status-group")).toContainText([
       "編集",
       "学習サイト",
     ]);
     await expect(card).not.toContainText("運営連携");
     await expect(card).toContainText("公開中");
-    await expect(card).toContainText("更新案作成中");
+    await expect(card).toContainText("公開中・未公開の版あり");
+    await expect(card).not.toContainText("更新案を作成");
     await page.screenshot({
-      path: "test-results/admin-articles-update-proposal-in-progress.png",
+      path: "test-results/admin-articles-unpublished-version.png",
       fullPage: true,
     });
   });

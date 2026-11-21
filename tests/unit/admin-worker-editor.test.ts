@@ -47,6 +47,43 @@ const emptyEnv = {
   },
 };
 
+const publicationVersionId = "d3aa94a0-fd78-4d4a-bf88-7284c5cebf57";
+const publicationRevision = (values: Record<string, unknown> = {}) => {
+  const document = {
+    id: "22222222-2222-4222-8222-222222222222",
+    source_article_id: null,
+    subject: "mathematics",
+    category: "overview",
+    locale: "ja",
+    slug: "test-article",
+    title: "テスト記事",
+    summary: "テスト用の要約",
+    concept_id: "mathematics.overview.test",
+    concept_name: null,
+    concept_name_en: null,
+    concept_is_new: 0,
+    body: "本文です。",
+    writing_memo: "",
+    latex_engine: "katex",
+    status: "approved",
+    updated_by: "local-editor@atlasez.test",
+    updated_at: "2026-08-30T00:00:00.000Z",
+    locked_ranges: "[]",
+    article_references: "[]",
+    ...values,
+  };
+  return {
+    title: String(document.title),
+    summary: String(document.summary),
+    body: String(document.body),
+    status: String(document.status),
+    saved_by: String(document.updated_by),
+    saved_at: String(document.updated_at),
+    document_updated_at: String(document.updated_at),
+    snapshot_json: JSON.stringify(document),
+  };
+};
+
 const githubWebhookSignature = async (secret: string, body: string) => {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -2060,18 +2097,9 @@ describe("admin worker editor APIs", () => {
     ).toBe(true);
   });
 
-  it("syncs only the requested document when publication status is refreshed", async () => {
+  it("uses the requested document's D1 version pointer for publication status", async () => {
     const queries: string[] = [];
     const bindings: unknown[][] = [];
-    const document = {
-      id: "document-1",
-      locale: "ja",
-      subject: "mathematics",
-      category: "group-theory",
-      slug: "cyclic-groups",
-      published_at: null,
-      publication_action: null,
-    };
     const publicationEnv = {
       ...emptyEnv,
       GITHUB_PUBLISH_TOKEN: "test-token",
@@ -2083,24 +2111,14 @@ describe("admin worker editor APIs", () => {
             bind: (...values: unknown[]) => {
               bindings.push(values);
               return {
-                all: async <T>() =>
-                  ({ results: [document] }) as { results: T[] },
-                run: async () => ({}),
+                first: async <T>() => ({ total: 1, published: 1 }) as T,
               };
             },
           };
         },
       },
     };
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      expect(new URL(input.toString()).pathname).toBe(
-        "/repos/Atlasez/Atlasez01/contents/src/content/articles/jpn/mathematics/group-theory/cyclic-groups.md",
-      );
-      return new Response(
-        JSON.stringify({ content: "LS0tCnN0YXR1czogcHVibGlzaGVkCi0tLQo=" }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    });
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
     try {
@@ -2118,9 +2136,10 @@ describe("admin worker editor APIs", () => {
         pending: 0,
         total: 1,
       });
+      expect(queries[0]).toContain("published_version_id IS NOT NULL");
       expect(queries[0]).toContain("WHERE id = ?");
-      expect(bindings[0]).toEqual(["document-1", 1]);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(bindings[0]).toEqual(["document-1"]);
+      expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }
@@ -2782,7 +2801,7 @@ describe("admin worker editor APIs", () => {
       }
     }
     const inserted = new CapturedStatement(
-      `INSERT INTO editorial_documents VALUES (${Array.from({ length: 27 }, () => "?").join(", ")})`,
+      `INSERT INTO editorial_documents VALUES (${Array.from({ length: 28 }, () => "?").join(", ")})`,
     );
     const env = {
       ...emptyEnv,
@@ -2983,7 +3002,12 @@ describe("admin worker editor APIs", () => {
         new Request(
           "http://localhost/api/admin/editor/publication-integration",
         ),
-        { ...emptyEnv, GITHUB_PUBLISH_TOKEN: "test-token" } as never,
+        {
+          ...emptyEnv,
+          GITHUB_PUBLISH_TOKEN: "test-token",
+          EDITORIAL_RELEASE_WEBHOOK_SECRET: "release-secret",
+          CLOUDFLARE_WORKERS_READ_TOKEN: "read-only-token",
+        } as never,
       );
 
       expect(response.status).toBe(200);
@@ -3053,6 +3077,8 @@ describe("admin worker editor APIs", () => {
           GITHUB_PUBLISH_TOKEN: "review-token",
           GITHUB_APP_PRIVATE_KEY:
             "-----BEGIN PRIVATE KEY-----\nAQ==\n-----END PRIVATE KEY-----",
+          EDITORIAL_RELEASE_WEBHOOK_SECRET: "release-secret",
+          CLOUDFLARE_WORKERS_READ_TOKEN: "read-only-token",
         } as never,
       );
 
@@ -3539,6 +3565,8 @@ describe("admin worker editor APIs", () => {
       updated_at: "2026-08-28T00:00:00.000Z",
       reviewed_at: "2026-08-28T00:00:00.000Z",
       published_at: null,
+      current_version_id: publicationVersionId,
+      published_version_id: null,
       scheduled_publish_at: null,
       scheduled_publish_claimed_at: null,
       publication_review_stage: null,
@@ -3588,6 +3616,8 @@ describe("admin worker editor APIs", () => {
       }
 
       async first<T>() {
+        if (this.query.includes("FROM editorial_document_revisions"))
+          return publicationRevision(document) as T;
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
         if (this.query.includes("FROM editorial_publication_runs"))
@@ -3775,6 +3805,7 @@ describe("admin worker editor APIs", () => {
       document_id: documentId,
       action: "publish" as const,
       state: "checks_pending" as const,
+      snapshot_version_id: publicationVersionId,
       attempt: 0,
       pull_request_number: 777,
       pull_request_url: "https://github.com/Atlasez/Atlasez01/pull/777",
@@ -3812,6 +3843,8 @@ describe("admin worker editor APIs", () => {
       }
 
       async first<T>() {
+        if (this.query.includes("FROM editorial_document_revisions"))
+          return publicationRevision() as T;
         if (this.query.includes("FROM editorial_documents"))
           return { id: documentId } as T;
         return null as T | null;
@@ -3920,6 +3953,7 @@ describe("admin worker editor APIs", () => {
       document_id: documentId,
       action: "publish" as const,
       state: "checks_pending" as const,
+      snapshot_version_id: publicationVersionId,
       attempt: 0,
       pull_request_number: 321,
       pull_request_url: "https://github.com/Atlasez/Atlasez01/pull/321",
@@ -3952,6 +3986,8 @@ describe("admin worker editor APIs", () => {
       }
 
       async first<T>() {
+        if (this.query.includes("FROM editorial_document_revisions"))
+          return publicationRevision() as T;
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
         return null as T | null;
@@ -4072,6 +4108,7 @@ describe("admin worker editor APIs", () => {
       document_id: documentId,
       action: "publish" as const,
       state: "checks_pending" as const,
+      snapshot_version_id: publicationVersionId,
       attempt: 0,
       pull_request_number: 654,
       pull_request_url: "https://github.com/Atlasez/Atlasez01/pull/654",
@@ -4109,6 +4146,8 @@ describe("admin worker editor APIs", () => {
       }
 
       async first<T>() {
+        if (this.query.includes("FROM editorial_document_revisions"))
+          return publicationRevision() as T;
         if (this.query.includes("FROM editorial_documents"))
           return { id: documentId } as T;
         return null as T | null;
@@ -4221,6 +4260,7 @@ describe("admin worker editor APIs", () => {
       document_id: documentId,
       action: "publish" as const,
       state: "checks_pending" as const,
+      snapshot_version_id: publicationVersionId,
       attempt: 0,
       pull_request_number: 321,
       pull_request_url: "https://github.com/Atlasez/Atlasez01/pull/321",
@@ -4277,6 +4317,13 @@ describe("admin worker editor APIs", () => {
       }
 
       async first<T>() {
+        if (this.query.includes("FROM editorial_document_revisions"))
+          return publicationRevision({
+            ...document,
+            updated_at: "2026-08-30T00:00:00.000Z",
+            title: "保存済みの古い版",
+            body: "古い本文",
+          }) as T;
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
         if (this.query.includes("FROM editorial_publication_runs"))
@@ -4311,7 +4358,7 @@ describe("admin worker editor APIs", () => {
       expect(requests).toHaveLength(0);
       expect(
         executed.some((entry) =>
-          entry.values.includes("publication_superseded"),
+          entry.values.includes("publication_version_unavailable"),
         ),
       ).toBe(true);
       expect(

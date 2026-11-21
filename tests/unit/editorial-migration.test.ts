@@ -36,6 +36,10 @@ class RecordingStatement {
     this.calls.push({ query: this.query, values: this.values });
     return {};
   }
+
+  recordCall() {
+    return { query: this.query, values: this.values };
+  }
 }
 
 const baseEnv = {
@@ -446,7 +450,10 @@ describe("公開記事との運営原稿連携契約", () => {
       ...baseEnv,
       REPORTS: {
         prepare: (query: string) => new RecordingStatement(query, calls),
-        batch: async () => [],
+        batch: async (statements: RecordingStatement[]) => {
+          calls.push(...statements.map((statement) => statement.recordCall()));
+          return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
+        },
       },
     };
 
@@ -502,7 +509,10 @@ describe("公開記事との運営原稿連携契約", () => {
       REPORTS: {
         prepare: (query: string) =>
           new RecordingStatement(query, calls, existing),
-        batch: async () => [],
+        batch: async (statements: RecordingStatement[]) => {
+          calls.push(...statements.map((statement) => statement.recordCall()));
+          return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
+        },
       },
     };
     const documentId = existing.id;
@@ -528,7 +538,7 @@ describe("公開記事との運営原稿連携契約", () => {
     expect(update?.values).toContain(importedArticle.category);
   });
 
-  it("公開済み記事の更新案でも同じ公開パスとarticleIdを維持する", async () => {
+  it("公開済み記事の編集は公開版を保ったまま新しい版を保存する", async () => {
     const calls: SqlCall[] = [];
     const existing = {
       id: "33333333-3333-4333-8333-333333333333",
@@ -551,13 +561,18 @@ describe("公開記事との運営原稿連携契約", () => {
       article_references: "[]",
       body: importedArticle.body,
       status: "approved",
+      current_version_id: "published-version",
+      published_version_id: "published-version",
     };
     const env = {
       ...baseEnv,
       REPORTS: {
         prepare: (query: string) =>
           new RecordingStatement(query, calls, existing),
-        batch: async () => [],
+        batch: async (statements: RecordingStatement[]) => {
+          calls.push(...statements.map((statement) => statement.recordCall()));
+          return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
+        },
       },
     };
 
@@ -567,7 +582,7 @@ describe("公開記事との運営原稿連携契約", () => {
         {
           ...importedArticle,
           status: "approved",
-          body: `${importedArticle.body}\n\n## 更新案\n\n公開済み記事への追記です。`,
+          body: `${importedArticle.body}\n\n## 追記\n\n公開版とは別の新しい版です。`,
         },
         "PATCH",
       ),
@@ -585,10 +600,22 @@ describe("公開記事との運営原稿連携契約", () => {
       importedArticle.locale,
       importedArticle.slug,
     ]);
-    expect(update?.values[11]).toContain("## 更新案");
-    // The update changes the existing file in place; it must not create a new
-    // path or replace the stable article identifier with the editorial UUID.
-    expect(update?.query).not.toContain("published_at = NULL");
+    expect(update?.values[11]).toContain("## 追記");
+    expect(update?.values[14]).toBe("draft");
+    expect(update?.values[18]).not.toBe("published-version");
+    expect(update?.query).toContain("current_version_id = ?");
+    expect(update?.query).not.toContain("published_version_id = ?");
+    const revisionInsert = calls.find((call) =>
+      call.query.includes("INSERT INTO editorial_document_revisions"),
+    );
+    expect(revisionInsert?.query).toContain("snapshot_json");
+    expect(revisionInsert?.values[0]).toBe(update?.values[18]);
+    const result = (await response.json()) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      status: "draft",
+      currentVersionId: update?.values[18],
+      versionId: update?.values[18],
+    });
     expect(
       calls.some((call) =>
         call.query.includes("INSERT INTO editorial_documents"),
@@ -596,137 +623,20 @@ describe("公開記事との運営原稿連携契約", () => {
     ).toBe(false);
   });
 
-  it("公開取消なしで公開記事から更新案を分離して作成できる", async () => {
-    const calls: SqlCall[] = [];
-    const canonical = {
-      id: "44444444-4444-4444-8444-444444444444",
-      document_kind: "canonical",
-      base_document_id: null,
-      base_document_updated_at: null,
-      ...importedArticle,
-      source_article_id: importedArticle.sourceArticleId,
-      concept_id: importedArticle.conceptId,
-      writing_memo: "",
-      latex_engine: importedArticle.latexEngine,
-      created_by: "author@example.com",
-      updated_by: "author@example.com",
-      created_at: "2026-08-30T00:00:00.000Z",
-      updated_at: "2026-08-31T00:00:00.000Z",
-      reviewed_at: "2026-08-31T00:00:00.000Z",
-      published_at: "2026-08-31T00:00:00.000Z",
-      archived_at: null,
-      archived_by: null,
-      archive_expires_at: null,
-      scheduled_publish_at: null,
-      scheduled_publish_claimed_at: null,
-      publication_review_stage: null,
-      publication_review_round: 0,
-      locked_ranges: "[]",
-      article_references: "[]",
-      body: importedArticle.body,
-      status: "approved",
-    };
-    class ProposalStatement extends RecordingStatement {
-      async first<T>() {
-        if (this.query.includes("base_document_id=?")) return null as T | null;
-        if (this.query.includes("FROM editorial_documents"))
-          return canonical as T;
-        return null as T | null;
-      }
-    }
-    const env = {
-      ...baseEnv,
-      REPORTS: {
-        prepare: (query: string) => new ProposalStatement(query, calls),
-        batch: async () => [],
-      },
-    };
-    const response = await worker.fetch(
-      sameOriginJsonRequest(
-        `/api/admin/editor/documents/${canonical.id}/update-proposal`,
-        {},
-        "POST",
-      ),
-      env as never,
+  it("旧更新案APIを公開せず編集対象を記事IDに統一する", async () => {
+    const workerSource = await readFile(
+      new URL("../../src/admin-worker.ts", import.meta.url),
+      "utf8",
     );
-    expect(response.status).toBe(201);
-    const data = (await response.json()) as {
-      id?: string;
-      baseDocumentId?: string;
-    };
-    expect(data.id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(data.baseDocumentId).toBe(canonical.id);
-    const insert = calls.find((call) =>
-      call.query.includes("document_kind, base_document_id"),
-    );
-    expect(insert?.query).toContain("'update-proposal'");
-    expect(insert?.query).not.toContain("'organization'");
-    expect(insert?.values).toContain(canonical.id);
-  });
-
-  it("別分野の担当者には既存の更新案本文を返さない", async () => {
-    const proposal = {
-      id: "55555555-5555-4555-8555-555555555555",
-      document_kind: "update-proposal",
-      subject: "mathematics",
-      title: "非公開の更新案",
-      body: "機密扱いの下書き本文",
-      writing_memo: "編集者だけのメモ",
-      status: "draft",
-    };
-    const calls: string[] = [];
-    const env = {
-      ADMIN_AUTH_MODE: "cloudflare-access",
-      ADMIN_PRIMARY_EMAIL: "global-admin@atlasez.test",
-      ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
-      REPORTS: {
-        prepare(query: string) {
-          calls.push(query);
-          return {
-            bind() {
-              return this;
-            },
-            async first<T>() {
-              return query.includes("FROM editorial_documents")
-                ? (proposal as T)
-                : null;
-            },
-            async all<T>() {
-              if (
-                query.includes("SELECT subject FROM report_admin_permissions")
-              )
-                return { results: [{ subject: "physics" }] as T[] };
-              return { results: [] as T[] };
-            },
-            async run() {
-              return {};
-            },
-          };
-        },
-      },
-    };
-    const request = new Request(
-      `https://admin.atlasez.org/api/admin/editor/documents/${proposal.id}/update-proposal`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          origin: "https://admin.atlasez.org",
-          "cf-access-authenticated-user-email": "physics-editor@atlasez.test",
-        },
-        body: "{}",
-      },
+    const editorSource = await readFile(
+      new URL("../../src/pages/admin/editor.astro", import.meta.url),
+      "utf8",
     );
 
-    const response = await worker.fetch(request, env as never);
-    const body = await response.text();
-
-    expect(response.status).toBe(403);
-    expect(body).not.toContain("機密扱いの下書き本文");
-    expect(body).not.toContain("編集者だけのメモ");
-    expect(
-      calls.some((query) => query.includes("INSERT INTO editorial_documents")),
-    ).toBe(false);
+    expect(workerSource).not.toContain("/update-proposal");
+    expect(editorSource).not.toContain("data-create-update-proposal");
+    expect(editorSource).not.toContain("mode=update");
+    expect(editorSource).toContain("data-document-version-label");
   });
 
   it("公開用Markdownでも既存記事のarticleIdを維持する", () => {
@@ -959,7 +869,11 @@ describe("公開記事との運営原稿連携契約", () => {
 
     expect(articlesSource).toContain('fetch("/api/admin/editor/catalog"');
     expect(articlesSource).toContain('class="badge public-live"');
-    expect(articlesSource).toContain("更新案を作成");
+    expect(articlesSource).toContain("published_version_id");
+    expect(articlesSource).toContain(
+      "current_version_id !== article.published_version_id",
+    );
+    expect(articlesSource).not.toContain("更新案を作成");
     expect(articlesSource).not.toContain("data-run-catalog-diagnostics");
     expect(articlesSource).not.toContain(
       "/api/admin/editor/catalog/diagnostics",
@@ -1016,7 +930,7 @@ describe("公開記事との運営原稿連携契約", () => {
     );
   });
 
-  it("更新案は現行版への切り替えと公開時点の比較元を表示する", async () => {
+  it("公開版と最新保存版を版IDで判定し、旧更新案操作を持たない", async () => {
     const editorSource = await readFile(
       new URL("../../src/pages/admin/editor.astro", import.meta.url),
       "utf8",
@@ -1026,29 +940,42 @@ describe("公開記事との運営原稿連携契約", () => {
       "utf8",
     );
 
-    expect(editorSource).toContain("data-open-current-version");
-    expect(editorSource).toContain("data-open-update-proposal");
-    expect(editorSource).toContain("現行版を開く");
-    expect(editorSource).toContain("更新案を開く");
-    expect(workerSource).toContain(
-      'document.document_kind === "update-proposal"',
+    expect(editorSource).toContain(
+      "current_version_id !== item.published_version_id",
     );
-    expect(workerSource).toContain("document.base_document_id");
-    expect(workerSource).toContain(
-      "COALESCE(d.document_kind, 'canonical') = 'canonical'",
-    );
-    expect(workerSource).toContain(
-      "versions: { canonicalId: canonicalId ?? null, proposalId }",
-    );
+    expect(editorSource).toContain("is_published_version");
+    expect(editorSource).toContain("is_current_version");
+    expect(editorSource).not.toContain("data-open-update-proposal");
+    expect(editorSource).not.toContain("data-create-update-proposal");
+    expect(workerSource).toContain("published_version_id");
+    expect(workerSource).toContain("snapshot_version_id");
+    expect(workerSource).not.toContain("/update-proposal");
     expect(editorSource).toContain(
       "PATCHの成功時点で本文と版履歴の保存は完了している",
     );
     expect(workerSource).toContain(
-      "競合や検証失敗で更新されなかったリクエストは版履歴へ記録しない",
+      "const saveResults = await env.REPORTS.batch([",
     );
-    expect(workerSource).toContain(
-      "editorial revision recording failed after document save",
-    );
+    expect(workerSource).toContain("INSERT INTO editorial_document_revisions");
+    expect(workerSource).toContain("snapshot_json");
     expect(workerSource).toContain("revisionWarning");
+  });
+
+  it("版管理migrationは更新案の履歴を記事IDへ統合し旧ID列を削除する", async () => {
+    const migration = await readFile(
+      new URL(
+        "../../migrations/0138_editorial_article_versions.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(migration).toContain("ADD COLUMN current_version_id");
+    expect(migration).toContain("ADD COLUMN published_version_id");
+    expect(migration).toContain("ADD COLUMN snapshot_version_id");
+    expect(migration).toContain("UPDATE editorial_comments");
+    expect(migration).toContain("UPDATE editorial_publication_runs");
+    expect(migration).toContain("DROP COLUMN base_document_id");
+    expect(migration).toContain("DROP COLUMN document_kind");
   });
 });
