@@ -2580,6 +2580,17 @@ type WorkflowTransition = {
 
 const FEEDBACK_REQUEST_WITHDRAWAL_ACTION = "feedback_request_withdrawn";
 
+const isFeedbackRequestWithdrawn = async (env: Env, taskId: string) =>
+  Boolean(
+    await env.REPORTS.prepare(
+      `SELECT 1 AS withdrawn FROM workflow_transition_events
+        WHERE entity_type='task' AND entity_id=?
+          AND json_extract(metadata_json, '$.action')=? LIMIT 1`,
+    )
+      .bind(taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION)
+      .first<{ withdrawn: number }>(),
+  );
+
 /**
  * 状態遷移の正本。画面ごとに許可状態を再定義せず、APIと管理画面が
  * 同じカタログを参照する。新しい状態はここへ追加し、UI側へ直接書かない。
@@ -2751,15 +2762,8 @@ async function transitionTaskState(
   if (isResponse(project)) return project;
   if (!scope.isManager && !canManageProject && !taskAssignedTo(task.assignee_email, scope.email, task.task_kind) && task.created_by.toLowerCase() !== scope.email.toLowerCase())
     return json({ error: workflowTransitionPolicyError("assignee"), code: "FORBIDDEN_TRANSITION" }, 403);
-  if (task.task_kind === "feedback") {
-    const withdrawal = await env.REPORTS.prepare(
-      `SELECT 1 AS withdrawn FROM workflow_transition_events
-        WHERE entity_type='task' AND entity_id=?
-          AND json_extract(metadata_json, '$.action')=? LIMIT 1`,
-    ).bind(taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION).first<{ withdrawn: number }>();
-    if (withdrawal)
-      return json({ error: "取り下げ済みのフィードバック依頼は再開できません。", code: "FEEDBACK_REQUEST_WITHDRAWN" }, 409);
-  }
+  if (task.task_kind === "feedback" && await isFeedbackRequestWithdrawn(env, taskId))
+    return json({ error: "取り下げ済みのフィードバック依頼は再開できません。", code: "FEEDBACK_REQUEST_WITHDRAWN" }, 409);
   if (replay)
     return json({ ok: true, replayed: true, transition: { entityType: "task", entityId: replay.entity_id, fromState: replay.from_state, toState: replay.to_state, createdAt: replay.created_at } });
   if (task.status !== fromState)
@@ -14508,6 +14512,8 @@ async function updateTask(
     task.created_by.toLowerCase() !== scope.email.toLowerCase()
   )
     return json({ error: "このタスクを更新する権限がありません。" }, 403);
+  if (task.task_kind === "feedback" && await isFeedbackRequestWithdrawn(env, taskId))
+    return json({ error: "取り下げ済みのフィードバック依頼は変更できません。", code: "FEEDBACK_REQUEST_WITHDRAWN" }, 409);
   // 状態変更だけは共通Workflow APIへ委譲する。既存のリマインダー・
   // アーカイブ更新は下の互換処理を維持し、段階的に移行できるようにする。
   if (requestedStatus !== null && requestedArchived === null && !reminderAction && requestedTestData === null)
