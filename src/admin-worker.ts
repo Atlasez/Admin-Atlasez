@@ -17195,6 +17195,19 @@ async function updateEditorialReviewAssignment(
       documentId,
       ...feedbackStageBindings,
     ),
+    // Reviewer display/visibility rows must be written before the new linked task
+    // makes the duplicate-assignee guard reject subsequent statements in this batch.
+    env.REPORTS.prepare(
+      `DELETE FROM editorial_review_assignment_recipients WHERE document_id = ? AND ${isFeedbackStage}`,
+    ).bind(documentId, documentId, ...feedbackStageBindings),
+    ...reviewerEmails
+      .filter((email) => email !== "*")
+      .map((email) =>
+        env.REPORTS.prepare(
+          `INSERT INTO editorial_review_assignment_recipients (document_id, reviewer_email, requested_at, updated_at)
+           SELECT ?, ?, ?, ? WHERE ${isFeedbackStage}`,
+        ).bind(documentId, email, now, now, documentId, ...feedbackStageBindings),
+      ),
     env.REPORTS.prepare(
       `INSERT INTO editorial_tasks (id,project_id,subject,assignee_email,title,details,status,created_by,created_at,updated_at,task_kind)
        SELECT ?, 'atlas', ?, ?, ?, ?, 'open', ?, ?, ?, 'feedback' WHERE ${isFeedbackStage}
@@ -17215,17 +17228,6 @@ async function updateEditorialReviewAssignment(
       `INSERT INTO editorial_feedback_task_links (task_id, document_id, created_at)
        SELECT ?, ?, ? WHERE ${isFeedbackStage}`,
     ).bind(taskId, documentId, now, documentId, ...feedbackStageBindings),
-    env.REPORTS.prepare(
-      `DELETE FROM editorial_review_assignment_recipients WHERE document_id = ? AND ${isFeedbackStage}`,
-    ).bind(documentId, documentId, ...feedbackStageBindings),
-    ...reviewerEmails
-      .filter((email) => email !== "*")
-      .map((email) =>
-        env.REPORTS.prepare(
-          `INSERT INTO editorial_review_assignment_recipients (document_id, reviewer_email, requested_at, updated_at)
-           SELECT ?, ?, ?, ? WHERE ${isFeedbackStage}`,
-        ).bind(documentId, email, now, now, documentId, ...feedbackStageBindings),
-      ),
   ]);
   if (Number(results[0]?.meta?.changes ?? 0) !== 1)
     return json({ error: "原稿の状態が変わりました。再読み込みしてから担当者を変更してください。" }, 409);

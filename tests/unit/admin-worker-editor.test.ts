@@ -3546,6 +3546,18 @@ describe("admin worker editor APIs", () => {
     expect(response.status).toBe(409);
     expect(batchQueries[0]).toContain("archived_at IS NULL");
     expect(batchQueries.slice(1)).toHaveLength(5);
+    const recipientDeleteIndex = batchQueries.findIndex((query) =>
+      query.includes("DELETE FROM editorial_review_assignment_recipients"),
+    );
+    const recipientInsertIndex = batchQueries.findIndex((query) =>
+      query.includes("INSERT INTO editorial_review_assignment_recipients"),
+    );
+    const taskLinkInsertIndex = batchQueries.findIndex((query) =>
+      query.includes("INSERT INTO editorial_feedback_task_links"),
+    );
+    expect(recipientDeleteIndex).toBeGreaterThan(0);
+    expect(recipientInsertIndex).toBeGreaterThan(recipientDeleteIndex);
+    expect(taskLinkInsertIndex).toBeGreaterThan(recipientInsertIndex);
     expect(
       batchQueries
         .slice(1)
