@@ -2449,6 +2449,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       const canUpdatePublishedArticle = Boolean(item.published_at && hasNewVersion);
       const canRetryUnpublication = Boolean(item.published_at && item.publication_run?.action === "unpublish" && ["failed", "needs_operator"].includes(item.publication_run.state));
       const publicationBusy = Boolean(item.publication_run && ["queued", "checks_pending", "merge_pending", "deploy_pending", "retry_wait"].includes(item.publication_run.state));
+      reviewButton.textContent = item.status === "in-review" ? "追加でフィードバックを依頼" : "フィードバックを依頼する";
       publishButton.hidden = !(isManager && Boolean(item.id) && item.status === "approved" && (!item.published_at || canUpdatePublishedArticle || canRetryPublication) && (!item.publication_pr_url || canRetryPublication));
       publishButton.disabled = publicationBusy || publicationActionInFlight;
       publishButton.textContent = canRetryPublication ? canUpdatePublishedArticle ? "更新公開を再試行" : "公開を再試行" : canUpdatePublishedArticle ? "公開内容を更新" : "公開する";

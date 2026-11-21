@@ -1075,6 +1075,9 @@ test("未完了の依頼から状態操作へ移動し、完了後に審査ボ�
   await page.goto("./admin/editor/?document=doc-1");
   const completeButton = page.locator("[data-complete-writing]");
   const feedbackLink = page.locator("[data-feedback-task-link]");
+  await expect(
+    page.getByRole("button", { name: "追加でフィードバックを依頼" }),
+  ).toBeVisible();
   await expect(completeButton).toBeDisabled();
   await expect(feedbackLink).toBeVisible();
   await feedbackLink.click();
