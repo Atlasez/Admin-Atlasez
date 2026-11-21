@@ -7,6 +7,7 @@
 3. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 4. [`docs/ADMIN_KNOWLEDGE_BASE.md`](docs/ADMIN_KNOWLEDGE_BASE.md)
 5. [`docs/ADMIN_CHANGE_WORKFLOW.md`](docs/ADMIN_CHANGE_WORKFLOW.md)
+6. [`docs/ADMIN_DESIGN_HARNESS.md`](docs/ADMIN_DESIGN_HARNESS.md)（複数画面・状態遷移・保存先・外部連携をまたぐ変更）
 
 ## 本番の固定事項
 
@@ -34,10 +35,11 @@
 1. `main`を最新化し、作業開始時の`git status`を記録する。
 2. `codex/`または目的が分かるfeature branchを`main`から作る。既存の作業ツリーを流用しない。
 3. 変更対象に対応するテストを先に確認し、実装後にCI相当の検証を実行する。
-4. PR本文に、変更内容、対象URL、データ／Worker影響、検証結果、ロールバック方法を記載する。
-5. CI成功とレビュー完了後にだけ`main`へマージする。マージ前のbranch、ローカル`dist/`、Dashboard Editorの成果物を本番へ出さない。
-6. Cloudflare Workers Buildsが正常接続されている場合だけ、レビュー・CI成功後の`main`へのマージをトリガーに本番ビルドする。
-7. デプロイ後に`build-info.json`のSHA、Cloudflare Version、100%配信、Chromeの主要画面を確認する。
+4. 複数画面や状態遷移を含む変更では`docs/ADMIN_DESIGN_HARNESS.md`の設計・回帰チェックリストを使う。
+5. PR本文に、変更内容、対象URL、データ／Worker影響、検証結果、ロールバック方法を記載する。
+6. CI成功とレビュー完了後にだけ`main`へマージする。マージ前のbranch、ローカル`dist/`、Dashboard Editorの成果物を本番へ出さない。
+7. Cloudflare Workers Buildsが正常接続されている場合だけ、レビュー・CI成功後の`main`へのマージをトリガーに本番ビルドする。
+8. デプロイ後に`build-info.json`のSHA、Cloudflare Version、100%配信、Chromeの主要画面を確認する。
 
 ## Cloudflare展開監査
 
