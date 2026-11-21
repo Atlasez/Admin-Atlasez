@@ -16418,6 +16418,44 @@ async function updateEditorialDocument(
       },
       409,
     );
+  const publishedIdentityChanged = Boolean(
+    existing.published_at &&
+      (values.subject !== existing.subject ||
+        values.category !== existing.category ||
+        values.locale !== existing.locale ||
+        values.slug !== existing.slug ||
+        values.conceptId !== existing.concept_id ||
+        values.conceptName !== existing.concept_name ||
+        values.conceptNameEn !== existing.concept_name_en ||
+        (values.registerConcept ? 1 : 0) !== existing.concept_is_new),
+  );
+  if (publishedIdentityChanged)
+    return json(
+      {
+        error: "公開済み記事の分野・カテゴリ・URL名・概念IDは変更できません。",
+        code: "PUBLISHED_ARTICLE_IDENTITY_LOCKED",
+      },
+      409,
+    );
+  const existingReferences = storedArticleReferences(
+    existing.article_references,
+  );
+  const existingLockedRanges = storedEditorialLockedRanges(
+    existing.locked_ranges,
+    existing.body,
+  );
+  const publishedContentChanged = Boolean(
+    existing.published_at &&
+      (values.title !== existing.title ||
+        values.summary !== existing.summary ||
+        values.body !== existing.body ||
+        values.writingMemo !== existing.writing_memo ||
+        values.latexEngine !== existing.latex_engine ||
+        JSON.stringify(values.references ?? existingReferences) !==
+          JSON.stringify(existingReferences) ||
+        JSON.stringify(values.lockedRanges ?? existingLockedRanges) !==
+          JSON.stringify(existingLockedRanges)),
+  );
   if (values.status === "approved" && existing.status !== "approved")
     return json(
       {
@@ -16634,7 +16672,7 @@ async function updateEditorialDocument(
       toState: nextStatus,
       actorEmail: scope.email,
       expectedUpdatedAt: values.baseUpdatedAt || null,
-      metadata: { via: "editor-save" },
+      metadata: { via: "editor-save", publishedEditReset: publishedContentChanged },
       createdAt: now,
     });
   await syncEditorialCollaborationDocument(env, documentId);
@@ -16648,7 +16686,7 @@ async function updateEditorialDocument(
     });
   }
   await notifyEditorialDocumentChange(env, documentId);
-  return json({ ok: true, updatedAt: now, status: nextStatus, versionId, currentVersionId: versionId, revisionWarning: false });
+  return json({ ok: true, updatedAt: now, status: nextStatus, versionId, currentVersionId: versionId, statusResetForPublishedEdit: publishedContentChanged, revisionWarning: false });
 }
 
 async function listEditorialRevisions(

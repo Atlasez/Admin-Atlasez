@@ -819,7 +819,7 @@ test("公開操作は処理中の二重送信を防ぐ", async ({ page }) => {
   await publishButton.click();
   const confirm = page
     .locator("[data-approval-dialog]")
-    .getByRole("button", { name: "はい（公開する）" });
+    .locator("[data-approval-confirm]");
   await expect(confirm).toBeVisible();
   await confirm.click();
   // 公開処理の開始直後に同じ確認イベントが届いても、二重送信を
@@ -972,6 +972,9 @@ test("概念名を選ぶと内部IDが自動設定され、利用者はIDを覚�
 test("新規記事には概念IDを初期値として設定する", async ({ page }) => {
   await mockAdminApi(page);
   await page.goto("./admin/editor/?new=1");
+  await expect(
+    page.locator('[data-editor-workspace][data-editor-initialized="true"]'),
+  ).toBeVisible();
 
   const slug = page.locator('[name="slug"]');
   const draftSlug = await slug.inputValue();
@@ -1088,6 +1091,39 @@ test("公開審査の競合エラーを審査ダイアログ内に表示する",
   await expect(dialog).toBeVisible();
 });
 
+test("連携エラーの詳細をポップアップで確認できる", async ({ page }) => {
+  await mockAdminApi(page);
+  await page.route(
+    "**/api/admin/editor/publication-integration",
+    async (route) => {
+      await route.fulfill({
+        json: {
+          ready: false,
+          automationReady: false,
+          repository: "Atlasez/Atlasez01",
+          automationError: "GitHub Appの接続を確認してください。",
+        },
+      });
+    },
+  );
+  await page.goto("./admin/editor/?document=doc-1");
+
+  const integrationTrigger = page.locator("[data-publication-integration]");
+  await expect(integrationTrigger).toHaveText("連携エラー");
+  const details = page.locator("[data-publication-details-dialog]");
+  await integrationTrigger.click();
+  await expect(details).toBeVisible();
+  await expect(
+    details.locator("[data-publication-integration-state]"),
+  ).toHaveText("要確認");
+  await expect(
+    details.locator("[data-publication-integration-message]"),
+  ).toContainText("GitHub Appの接続を確認してください。");
+  await expect(
+    details.locator("[data-publication-integration-repository]"),
+  ).toHaveText("Atlasez/Atlasez01");
+});
+
 test("公開Runの失敗原因・CIログ・再試行導線を表示する", async ({ page }) => {
   await page.setViewportSize({ width: 1367, height: 768 });
   const failedDocument = {
@@ -1122,82 +1158,39 @@ test("公開Runの失敗原因・CIログ・再試行導線を表示する", asy
   await page.goto("./admin/editor/?document=doc-1");
 
   const publicationRun = page.locator("[data-publication-run]");
-  await expect(publicationRun).toContainText(
-    "CIが失敗しました（content-check）。［原因：CI］（ci_failed）",
-  );
-  await expect(
-    publicationRun.locator("[data-publication-run-state]"),
-  ).toHaveText("自動公開失敗");
   await expect(publicationRun).toHaveAttribute(
     "aria-label",
-    /GitHub反映：自動公開失敗/,
+    /同期状態：自動公開失敗/,
   );
-  await expect(publicationRun).toHaveCSS("white-space", "normal");
-  await expect(publicationRun).toHaveCSS("overflow-wrap", "anywhere");
-  await expect(publicationRun).toHaveCSS("overflow", "visible");
-  await expect(page.locator("[data-publication-link] a")).toHaveCount(2);
-  await expect(page.locator("[data-publication-link] a").nth(0)).toHaveText(
+  await expect(publicationRun).toHaveText("同期エラー");
+  const details = page.locator("[data-publication-details-dialog]");
+  await expect(details).toBeHidden();
+  await publicationRun.click();
+  await expect(details).toBeVisible();
+  await expect(
+    details.locator("[data-publication-details-run-state]"),
+  ).toHaveText("自動公開失敗");
+  await expect(details.locator("[data-publication-run-label]")).toContainText(
+    "CIが失敗しました（content-check）。［原因：CI］（ci_failed）",
+  );
+  await expect(details.locator("[data-publication-link] a")).toHaveCount(2);
+  await expect(details.locator("[data-publication-link] a").nth(0)).toHaveText(
     "公開PRを確認",
   );
-  await expect(page.locator("[data-publication-link] a").nth(1)).toHaveText(
+  await expect(details.locator("[data-publication-link] a").nth(1)).toHaveText(
     "CIログ（content-check）",
   );
   await expect(
-    page.locator("[data-publication-link] a").nth(1),
+    details.locator("[data-publication-link] a").nth(1),
   ).toHaveAttribute(
     "href",
     "https://github.com/Atlasez/Atlasez01/actions/runs/123",
   );
-  const statusLayout = await page.evaluate(() => {
-    const statuses = document.querySelector<HTMLElement>(".document-statuses");
-    const link = document.querySelector<HTMLAnchorElement>(
-      "[data-publication-link] a",
-    );
-    return {
-      statusWidth: statuses?.clientWidth ?? 0,
-      statusScrollWidth: statuses?.scrollWidth ?? 0,
-      linkWidth: link?.getBoundingClientRect().width ?? 0,
-      linkHeight: link?.getBoundingClientRect().height ?? 0,
-      children: statuses
-        ? [...statuses.children].map((child) => ({
-            cls: child.className,
-            rect: child.getBoundingClientRect().toJSON(),
-            scrollWidth: (child as HTMLElement).scrollWidth,
-            cssWidth: getComputedStyle(child).width,
-            position: getComputedStyle(child).position,
-          }))
-        : [],
-    };
-  });
-  expect(statusLayout.statusScrollWidth).toBeLessThanOrEqual(
-    statusLayout.statusWidth,
+  const publicationDiagnostic = details.locator(
+    "[data-publication-diagnostic]",
   );
-  expect(statusLayout.linkWidth).toBeGreaterThan(60);
-  expect(statusLayout.linkHeight).toBeLessThan(44);
-  const publicationRunPseudo = await publicationRun.evaluate((element) => ({
-    before: getComputedStyle(element, "::before").display,
-    after: getComputedStyle(element, "::after").display,
-    beforeContent: getComputedStyle(element, "::before").content,
-    afterContent: getComputedStyle(element, "::after").content,
-  }));
-  expect(publicationRunPseudo.before).toBe("none");
-  expect(publicationRunPseudo.after).toBe("none");
-  expect(publicationRunPseudo.beforeContent).toBe("none");
-  expect(publicationRunPseudo.afterContent).toBe("none");
-  const publicationDiagnostic = page.locator("[data-publication-diagnostic]");
   await expect(publicationDiagnostic).toBeVisible();
-  // 診断欄は後続の「記事設定」と重ならないよう、状態表示の通常フローに置く。
-  await expect(publicationDiagnostic).toHaveCSS("position", "static");
-  const documentActions = page.locator(".document-actions");
-  const beforeOpen = await documentActions.boundingBox();
   await publicationDiagnostic.locator("summary").click();
-  const afterOpen = await documentActions.boundingBox();
-  expect(afterOpen?.x).toBe(beforeOpen?.x);
-  // 詳細欄は通常フローにあるため、開いたときは後続操作が下へ移動する。
-  expect(afterOpen?.y).toBeGreaterThanOrEqual(beforeOpen?.y ?? 0);
-  const diagnosticBox = await publicationDiagnostic.boundingBox();
-  expect(diagnosticBox?.width).toBeLessThanOrEqual(440);
-  expect(diagnosticBox?.height).toBeLessThanOrEqual(270);
   await expect(publicationDiagnostic).toContainText(
     "node scripts/validate-content.mjs",
   );
@@ -1209,7 +1202,7 @@ test("公開Runの失敗原因・CIログ・再試行導線を表示する", asy
   );
   await expect(publicationDiagnostic).toContainText("登録済みの概念IDへ修正");
   await expect(
-    page.getByRole("button", { name: "公開処理を再試行" }),
+    page.getByRole("button", { name: "公開を再試行" }),
   ).toBeVisible();
 });
 
@@ -1234,22 +1227,25 @@ test("公開PRのCI確認中を視覚表示し、最終更新時刻を示す", a
 
   const publicationRun = page.locator("[data-publication-run]");
   await expect(publicationRun).toHaveAttribute("aria-busy", "true");
-  await expect(
-    publicationRun.locator("[data-publication-run-label]"),
-  ).toContainText("CIを自動確認しています");
-  await expect(
-    publicationRun.locator("[data-publication-run-state]"),
-  ).toHaveText("自動検証中");
-  await expect(publicationRun).toHaveCSS("display", "grid");
-  await expect(
-    publicationRun.locator("[data-publication-run-updated]"),
-  ).toContainText("最終更新：");
+  await expect(publicationRun).toHaveAttribute(
+    "aria-label",
+    /同期状態：自動検証中/,
+  );
+  await expect(publicationRun).toHaveText("同期中");
   await expect(
     publicationRun.locator(".publication-run-indicator"),
   ).toBeVisible();
-  await expect(publicationRun.locator(".publication-run-indicator")).toHaveCSS(
-    "width",
-    "16px",
+  const details = page.locator("[data-publication-details-dialog]");
+  await publicationRun.click();
+  await expect(details).toBeVisible();
+  await expect(
+    details.locator("[data-publication-details-run-state]"),
+  ).toHaveText("自動検証中");
+  await expect(details.locator("[data-publication-run-label]")).toContainText(
+    "CIを自動確認しています",
+  );
+  await expect(details.locator("[data-publication-run-updated]")).toContainText(
+    "最終更新：",
   );
 });
 
@@ -1351,10 +1347,10 @@ test("公開済み記事の未反映変更は運営サイトから再公開で�
     "自動公開失敗",
   );
   await expect(page.locator("[data-workflow-help]")).toContainText(
-    "最新の変更は学習サイトに未反映",
+    "公開中の版は維持されています",
   );
   await expect(
-    page.getByRole("button", { name: "公開内容を更新して再試行" }),
+    page.getByRole("button", { name: "更新公開を再試行" }),
   ).toBeVisible();
 });
 
@@ -2087,7 +2083,7 @@ test("画像参照を含む未保存の変更を公開前に保存してからPR
   await page.getByRole("button", { name: "公開する" }).click();
   await page
     .locator("[data-approval-dialog]")
-    .getByRole("button", { name: "はい（公開する）" })
+    .locator("[data-approval-confirm]")
     .click();
 
   await expect
@@ -2181,7 +2177,7 @@ test("LaTeXの自動保存中に公開すると最新の数式を保存してか
   await page.getByRole("button", { name: "公開する" }).click();
   await page
     .locator("[data-approval-dialog]")
-    .getByRole("button", { name: "はい（公開する）" })
+    .locator("[data-approval-confirm]")
     .click();
 
   releaseFirstPatch();
@@ -2571,7 +2567,7 @@ test("公開済み記事を編集すると新しい版を保存し公開版を�
     .poll(() => currentDocument.current_version_id)
     .toBe("version-next");
   await expect(page.locator("[data-save-message]")).toContainText(
-    "入力内容を自動保存しました",
+    "修正を自動保存しました",
   );
   await expect(page.locator("[data-document-version-label]")).toContainText(
     "公開版のまま保持",
@@ -4443,12 +4439,20 @@ test("公開Runの状態・CI失敗詳細を再読込なしでリアルタイム
   await expect(page.locator("[data-publication-state]")).toHaveText(
     "自動公開失敗",
   );
-  await expect(page.locator("[data-publication-diagnostic]")).toBeVisible();
-  await expect(page.locator("[data-publication-diagnostic]")).toContainText(
+  const publicationRun = page.locator("[data-publication-run]");
+  await expect(publicationRun).toHaveText("同期エラー");
+  const details = page.locator("[data-publication-details-dialog]");
+  await publicationRun.click();
+  await expect(details).toBeVisible();
+  await expect(details.locator("[data-publication-run-label]")).toContainText(
+    "CIが失敗しました（verify）。",
+  );
+  await expect(details.locator("[data-publication-diagnostic]")).toBeVisible();
+  await expect(details.locator("[data-publication-diagnostic]")).toContainText(
     "npm run check:math-directives",
   );
   await expect(
-    page.getByRole("button", { name: "公開処理を再試行" }),
+    page.getByRole("button", { name: "公開を再試行" }),
   ).toBeVisible();
   expect(documentReads).toBe(readsAfterInitialLoad);
 });
