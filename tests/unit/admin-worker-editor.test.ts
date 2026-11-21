@@ -3151,6 +3151,125 @@ describe("admin worker editor APIs", () => {
     });
   });
 
+  it("does not change feedback assignments for archived articles", async () => {
+    const documentId = "55555555-5555-4555-8555-555555555555";
+    const document = {
+      subject: "mathematics",
+      status: "in-review",
+      publication_review_stage: null,
+      title: "アーカイブ済みの記事",
+      created_by: "local-editor@atlasez.test",
+      archived_at: "2026-08-30T00:00:00.000Z",
+    };
+    let batchCalled = false;
+    class ArchivedAssignmentStatement extends EmptyStatement {
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return document as T;
+        return null as T | null;
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new ArchivedAssignmentStatement(query),
+        batch: async () => {
+          batchCalled = true;
+          return [];
+        },
+      },
+    };
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/review-requests/${documentId}`,
+        {
+          method: "PATCH",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ reviewerEmails: ["*"] }),
+        },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error:
+        "アーカイブ中の記事のフィードバック担当者は変更できません。先に一覧から復元してください。",
+    });
+    expect(batchCalled).toBe(false);
+  });
+
+  it("guards feedback assignment writes if an article is archived after it is read", async () => {
+    const documentId = "66666666-6666-4666-8666-666666666666";
+    const document = {
+      subject: "mathematics",
+      status: "in-review",
+      publication_review_stage: null,
+      title: "フィードバック中の記事",
+      created_by: "local-editor@atlasez.test",
+      archived_at: null,
+    };
+    const batchQueries: string[] = [];
+    class ConcurrentAssignmentStatement extends EmptyStatement {
+      get queryText() {
+        return this.query;
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return document as T;
+        if (
+          this.query.includes("SELECT 1 AS found FROM report_admin_permissions")
+        )
+          return { found: 1 } as T;
+        return null as T | null;
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new ConcurrentAssignmentStatement(query),
+        batch: async (statements: ConcurrentAssignmentStatement[]) => {
+          batchQueries.push(
+            ...statements.map((statement) => statement.queryText),
+          );
+          return [
+            { meta: { changes: 0 } },
+            ...statements.slice(1).map(() => ({ meta: { changes: 0 } })),
+          ];
+        },
+      },
+    };
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/review-requests/${documentId}`,
+        {
+          method: "PATCH",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ reviewerEmails: ["reviewer@example.com"] }),
+        },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(409);
+    expect(batchQueries[0]).toContain("archived_at IS NULL");
+    expect(batchQueries.slice(1)).toHaveLength(5);
+    expect(
+      batchQueries
+        .slice(1)
+        .every((query) => query.includes("archived_at IS NULL")),
+    ).toBe(true);
+  });
+
   it("allows archiving a feedback-stage article but rejects publication-review stages", async () => {
     const documentId = "33333333-3333-4333-8333-333333333333";
     const executed: string[] = [];

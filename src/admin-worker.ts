@@ -16911,7 +16911,7 @@ async function updateEditorialReviewAssignment(
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
   const document = await env.REPORTS.prepare(
-    "SELECT subject, status, publication_review_stage, title, created_by FROM editorial_documents WHERE id = ?",
+    "SELECT subject, status, publication_review_stage, title, created_by, archived_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
     .first<{
@@ -16920,9 +16920,12 @@ async function updateEditorialReviewAssignment(
       publication_review_stage: EditorialPublicationReviewStage | null;
       title: string;
       created_by: string;
+      archived_at: string | null;
     }>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (document.status !== "in-review")
+  if (document.archived_at)
+    return json({ error: "アーカイブ中の記事のフィードバック担当者は変更できません。先に一覧から復元してください。" }, 409);
+  if (document.status !== "in-review" || document.publication_review_stage)
     return json(
       { error: "フィードバック中の原稿だけ担当者を設定できます。" },
       400,
@@ -16943,23 +16946,29 @@ async function updateEditorialReviewAssignment(
   )
     .bind(documentId)
     .first<{ task_id: string | null }>();
+  const feedbackStageGuard = env.REPORTS.prepare(
+    "UPDATE editorial_documents SET updated_at = updated_at WHERE id = ? AND status = 'in-review' AND publication_review_stage IS NULL AND archived_at IS NULL",
+  ).bind(documentId);
   if (!reviewerEmails.length) {
     const statements = [
+      feedbackStageGuard,
       ...(existingAssignment?.task_id
         ? [
             env.REPORTS.prepare(
-              "UPDATE editorial_tasks SET status='done',updated_at=? WHERE id=? AND task_kind='feedback'",
-            ).bind(new Date().toISOString(), existingAssignment.task_id),
+              "UPDATE editorial_tasks SET status='done',updated_at=? WHERE id=? AND task_kind='feedback' AND EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)",
+            ).bind(new Date().toISOString(), existingAssignment.task_id, documentId),
           ]
         : []),
       env.REPORTS.prepare(
-        "DELETE FROM editorial_review_assignment_recipients WHERE document_id = ?",
-      ).bind(documentId),
+        "DELETE FROM editorial_review_assignment_recipients WHERE document_id = ? AND EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)",
+      ).bind(documentId, documentId),
       env.REPORTS.prepare(
-        "DELETE FROM editorial_review_assignments WHERE document_id = ?",
-      ).bind(documentId),
+        "DELETE FROM editorial_review_assignments WHERE document_id = ? AND EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)",
+      ).bind(documentId, documentId),
     ];
-    await env.REPORTS.batch(statements);
+    const results = await env.REPORTS.batch(statements);
+    if (Number(results[0]?.meta?.changes ?? 0) !== 1)
+      return json({ error: "原稿の状態が変わりました。再読み込みしてから担当者を変更してください。" }, 409);
     return json({ ok: true, reviewerEmail: null, reviewerEmails: [] });
   }
   if (reviewerEmails.includes("*") && reviewerEmails.length > 1)
@@ -17003,10 +17012,12 @@ async function updateEditorialReviewAssignment(
   const taskDetails = requestNote
     ? `${requestNote}\n\n記事編集画面: /admin/editor/?document=${documentId}`
     : `記事のフィードバックをお願いします。\n\n記事編集画面: /admin/editor/?document=${documentId}`;
-  await env.REPORTS.batch([
+  const isFeedbackStage = `EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)`;
+  const results = await env.REPORTS.batch([
+    feedbackStageGuard,
     env.REPORTS.prepare(
       `INSERT INTO editorial_review_assignments (document_id, reviewer_email, requested_by, requested_at, updated_at, request_note, task_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+       SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${isFeedbackStage}
        ON CONFLICT(document_id) DO UPDATE SET reviewer_email = excluded.reviewer_email,
          requested_by = excluded.requested_by, updated_at = excluded.updated_at, request_note = excluded.request_note, task_id = excluded.task_id`,
     ).bind(
@@ -17017,10 +17028,11 @@ async function updateEditorialReviewAssignment(
       now,
       requestNote,
       taskId,
+      documentId,
     ),
     env.REPORTS.prepare(
       `INSERT INTO editorial_tasks (id,project_id,subject,assignee_email,title,details,status,created_by,created_at,updated_at,task_kind)
-       VALUES (?, 'atlas', ?, ?, ?, ?, 'open', ?, ?, ?, 'feedback')
+       SELECT ?, 'atlas', ?, ?, ?, ?, 'open', ?, ?, ?, 'feedback' WHERE ${isFeedbackStage}
       `,
     ).bind(
       taskId,
@@ -17031,21 +17043,26 @@ async function updateEditorialReviewAssignment(
       scope.email,
       now,
       now,
+      documentId,
     ),
     env.REPORTS.prepare(
-      "INSERT INTO editorial_feedback_task_links (task_id, document_id, created_at) VALUES (?, ?, ?)",
-    ).bind(taskId, documentId, now),
+      `INSERT INTO editorial_feedback_task_links (task_id, document_id, created_at)
+       SELECT ?, ?, ? WHERE ${isFeedbackStage}`,
+    ).bind(taskId, documentId, now, documentId),
     env.REPORTS.prepare(
-      "DELETE FROM editorial_review_assignment_recipients WHERE document_id = ?",
-    ).bind(documentId),
+      `DELETE FROM editorial_review_assignment_recipients WHERE document_id = ? AND ${isFeedbackStage}`,
+    ).bind(documentId, documentId),
     ...reviewerEmails
       .filter((email) => email !== "*")
       .map((email) =>
         env.REPORTS.prepare(
-          "INSERT INTO editorial_review_assignment_recipients (document_id, reviewer_email, requested_at, updated_at) VALUES (?, ?, ?, ?)",
-        ).bind(documentId, email, now, now),
+          `INSERT INTO editorial_review_assignment_recipients (document_id, reviewer_email, requested_at, updated_at)
+           SELECT ?, ?, ?, ? WHERE ${isFeedbackStage}`,
+        ).bind(documentId, email, now, now, documentId),
       ),
   ]);
+  if (Number(results[0]?.meta?.changes ?? 0) !== 1)
+    return json({ error: "原稿の状態が変わりました。再読み込みしてから担当者を変更してください。" }, 409);
   return json({
     ok: true,
     reviewerEmail: reviewerEmails[0],
