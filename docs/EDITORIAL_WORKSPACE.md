@@ -10,12 +10,15 @@ Google OAuthでログインし、既存の `report_admin_permissions` に設定�
 - 原稿を保存した後、画像をアップロードして本文へ挿入する
 - TikZ/LaTeXのソースブロックを挿入し、査読プレビューで確認する
 - 原稿単位でコメントを残し、`下書き → 査読中 → 承認済み` を共有する
+- 編集画面上部の依頼管理から、依頼者または運営管理者が未完了の依頼を取り下げる
 - 承認後、管理者が「公開する」を押して本文と画像を含むGitHub PRを作成する
 
 原稿とコメントはD1の `editorial_documents` / `editorial_comments` に保存されます。画像素材はD1の `editorial_assets` に原稿単位で保存され、公開時にGitHubへ同期されます。詳細は [記事素材・LaTeX/TikZ運用](EDITORIAL_MEDIA_AND_LATEX.md) を参照してください。
 公開済み記事のMarkdownや公開サイトの表示は、この操作だけでは変更されません。
 
 既存記事を開くと、最後に保存した版が編集画面に表示されます。公開済み記事の修正は、対応する運営原稿を直接編集します。保存のたびにD1へ新しい版IDを作成し、公開処理が完了するまで公開版IDを維持します。内容を変更すると承認状態は下書きへ戻り、再レビューと再承認が必要です。公開済み記事の分野・カテゴリ・URL名・概念IDは変更できません。更新案を作成・切替する操作はありません。公開カタログは公開状態と記事IDの照合に継続使用します。
+
+同じ担当者への未完了のフィードバック依頼は重複して作成できません。依頼ダイアログでは未完了依頼がある担当者を選べず、APIも同じ条件を検査します。既存の重複履歴は保持しますが、完了数は担当者ごとに一度だけ数え、同じ担当者の依頼がすべて完了したときに完了として扱います。担当者全員への依頼は一つの依頼単位として数えます。未完了依頼の管理リンクは編集画面上部にあり、依頼者または運営管理者がそこから履歴を開いて取り下げられます。取り下げた依頼は履歴に残り、完了数には含まれません。すべての依頼を取り下げると記事は下書きへ戻り、ほかに取り下げていない依頼がある場合はフィードバック中のままです。完了済みの依頼は取り下げられません。
 
 ## 現在の公開手順
 
@@ -40,10 +43,12 @@ Google OAuthでログインし、既存の `report_admin_permissions` に設定�
 2. `GITHUB_WEBHOOK_SECRET`（公開リポジトリWebhook署名の検証）
 3. `GITHUB_REVIEW_TOKEN`（PR作成者と公開Appとは別のレビュー用認証情報。App設定と実装が認める既存フォールバック条件は[公開手順](EDITORIAL_ADMIN_ONLY_PUBLICATION.md)を確認）
 4. `EDITORIAL_RELEASE_WEBHOOK_SECRET`（Workers Buildsと共有する候補通知の署名鍵）
-5. `CLOUDFLARE_WORKERS_READ_TOKEN`（Worker `atlasez01` のDeployment/Version照合用。Workers Scripts Readのみ）
+5. `CLOUDFLARE_WORKERS_READ_TOKEN`（Worker `atlasez01` のDeployment/Version照合用。`atlasez01`だけの`Individual Workers Metadata Read-Only`）
 6. `PUBLIC_SITE_ORIGIN=https://atlasez.org` と `GITHUB_REPOSITORY=Atlasez/Atlasez01`
 
 `migrations/0139_editorial_release_candidates.sql`の適用後に、新しい公開候補API・履歴記録を有効にします。ADMINのWorker設定と公開Workers Buildsの設定は、対象値・権限・適用順・復旧方法をPRでレビューしてから変更します。設定状態は編集画面の連携診断で確認し、未設定・失敗は公開不可として扱います。Tokenや秘密鍵の値をログ・PR・Issueへ書き写さないでください。
+
+本番の設定一覧、適用順、影響、復旧手順は[記事自動公開の本番設定と受入確認](EDITORIAL_PRODUCTION_READINESS.md)を参照してください。
 
 ## ローカル確認
 

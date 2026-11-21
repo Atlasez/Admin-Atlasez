@@ -1154,14 +1154,16 @@ test("公開審査の競合エラーを審査ダイアログ内に表示する",
   await expect(dialog).toBeVisible();
 });
 
-test("連携エラーの詳細をポップアップで確認できる", async ({ page }) => {
+test("公開連携の確認事項をポップアップで確認できる", async ({ page }) => {
   await mockAdminApi(page);
   await page.route(
     "**/api/admin/editor/publication-integration",
     async (route) => {
       await route.fulfill({
         json: {
-          ready: false,
+          ready: true,
+          configured: true,
+          canWrite: true,
           automationReady: false,
           repository: "Atlasez/Atlasez01",
           automationError: "GitHub Appの接続を確認してください。",
@@ -1172,7 +1174,7 @@ test("連携エラーの詳細をポップアップで確認できる", async ({
   await page.goto("./admin/editor/?document=doc-1");
 
   const integrationTrigger = page.locator("[data-publication-integration]");
-  await expect(integrationTrigger).toHaveText("連携エラー");
+  await expect(integrationTrigger).toHaveText("公開連携要確認");
   const details = page.locator("[data-publication-details-dialog]");
   await integrationTrigger.click();
   await expect(details).toBeVisible();
@@ -1386,10 +1388,13 @@ test("公開済み記事の未反映変更は運営サイトから再公開で�
     status: "approved" as const,
     updated_at: "2026-08-31T01:34:00.000Z",
     published_at: "2026-08-30T01:34:00.000Z",
+    current_version_id: "version-current",
+    published_version_id: "version-published",
     publication_run: {
       id: "run-published-1",
       state: "failed",
       action: "publish" as const,
+      snapshot_version_id: "version-current",
       attempt: 3,
       error_code: "ci_failed",
       error_message: "CIが失敗しました（verify）。",
@@ -2485,16 +2490,18 @@ test("公開済み記事を編集すると新しい版を保存し公開版を�
   page,
 }) => {
   let currentDocument: Omit<typeof documentItem, "published_at" | "status"> & {
-    status: "draft" | "approved";
+    status: "draft" | "in-review" | "approved";
     published_at: string;
     current_version_id: string;
     published_version_id: string;
+    publication_review_stage: string | null;
   } = {
     ...documentItem,
     status: "approved" as const,
     published_at: "2026-08-30T01:34:00.000Z",
     current_version_id: "version-public",
     published_version_id: "version-public",
+    publication_review_stage: null,
   };
   const savedPayloads: Record<string, unknown>[] = [];
   await page.route("**/api/admin/**", async (route) => {
@@ -2574,14 +2581,33 @@ test("公開済み記事を編集すると新しい版を保存し公開版を�
       return;
     }
     if (url.pathname.endsWith("/publication-review")) {
+      if (request.method() === "POST") {
+        currentDocument = {
+          ...currentDocument,
+          status: "in-review",
+          publication_review_stage: "project-leader",
+        };
+        await route.fulfill({
+          json: {
+            ok: true,
+            status: "in-review",
+            stage: "project-leader",
+          },
+        });
+        return;
+      }
+      const hasNewVersion =
+        currentDocument.current_version_id !==
+        currentDocument.published_version_id;
+      const reviewStage = currentDocument.publication_review_stage ?? null;
       await route.fulfill({
         json: {
-          stage: null,
-          canCompleteWriting: false,
-          canDecide: false,
-          feedbackTaskTotal: 0,
-          feedbackTaskDone: 0,
-          feedbackComplete: false,
+          stage: reviewStage,
+          canCompleteWriting: hasNewVersion && !reviewStage,
+          canDecide: Boolean(reviewStage),
+          feedbackTaskTotal: hasNewVersion ? 1 : 0,
+          feedbackTaskDone: hasNewVersion ? 1 : 0,
+          feedbackComplete: hasNewVersion,
         },
       });
       return;
@@ -2642,6 +2668,14 @@ test("公開済み記事を編集すると新しい版を保存し公開版を�
   await expect(page.locator("[data-revision-list]")).toContainText("公開版");
   expect(currentDocument.published_version_id).toBe("version-public");
   expect(savedPayloads[0]?.body).toBe(nextBody);
+  const completeButton = page.locator("[data-complete-writing]");
+  await expect(completeButton).toBeVisible();
+  await expect(completeButton).toBeEnabled();
+  page.once("dialog", (dialog) => dialog.accept());
+  await completeButton.click();
+  await expect(page.locator("[data-save-message]")).toContainText(
+    "フィードバック完了として公開審査を開始しました",
+  );
 });
 
 test("連続入力中の自動保存は同じ原稿を重複更新しない", async ({ page }) => {
@@ -2736,6 +2770,121 @@ test("V-2: フィードバック担当者と依頼内容を選んで保存でき
   await expect(page.locator("[data-save-message]")).toHaveText(
     "フィードバックを依頼しました。",
   );
+});
+
+test("既存の未完了依頼を重ねず、画面上部から取り下げられる", async ({
+  page,
+}) => {
+  const activeRequest = {
+    task_id: "feedback-task-1",
+    title: "フィードバック依頼：群の定義",
+    details: "確認してください。",
+    status: "open",
+    assignee_email: "bob@example.com",
+    created_at: "2026-08-20T00:00:00.000Z",
+    requester_display_name: "Alice",
+    created_by: "alice@example.com",
+    canUpdate: true,
+    canWithdraw: true,
+  };
+  await mockAdminApi(
+    page,
+    { email: "alice@example.com", subjects: ["mathematics"], isManager: true },
+    { ...documentItem, status: "in-review" },
+    [activeRequest],
+  );
+  await page.route(
+    "**/api/admin/editor/documents/doc-1/publication-review",
+    async (route) => {
+      await route.fulfill({
+        json: {
+          canCompleteWriting: true,
+          feedbackTaskTotal: 1,
+          feedbackTaskDone: 0,
+          feedbackComplete: false,
+        },
+      });
+    },
+  );
+  await page.route(
+    /\/api\/admin\/editor\/review-requests\?documentId=doc-1$/,
+    async (route) => {
+      await route.fulfill({
+        json: {
+          requests: [
+            {
+              id: "doc-1",
+              reviewer_email: "bob@example.com",
+              activeReviewerEmails: ["bob@example.com"],
+              hasActiveAllReviewerRequest: false,
+            },
+          ],
+          reviewers: [
+            {
+              email: "bob@example.com",
+              displayName: "Bob",
+              subjects: ["mathematics"],
+            },
+            {
+              email: "carol@example.com",
+              displayName: "Carol",
+              subjects: ["mathematics"],
+            },
+          ],
+        },
+      });
+    },
+  );
+  let withdrawalRequest = false;
+  await page.route(
+    "**/api/admin/editor/review-requests/doc-1/feedback-task-1/withdraw",
+    async (route) => {
+      withdrawalRequest = true;
+      await route.fulfill({
+        json: { ok: true, withdrawn: true, documentStatus: "draft" },
+      });
+    },
+  );
+
+  await page.goto("./admin/editor/?document=doc-1");
+  const manageRequests = page.getByRole("button", {
+    name: "未完了の依頼を管理・取り下げ",
+  });
+  await expect(manageRequests).toBeVisible();
+  await manageRequests.click();
+  const requestHistory = page.locator("[data-feedback-request-history-panel]");
+  await expect(requestHistory).toHaveAttribute("open", "");
+  const withdrawButton = requestHistory.getByRole("button", {
+    name: "依頼を取り下げる",
+  });
+  await expect(withdrawButton).toBeVisible();
+  page.on("dialog", (dialog) => dialog.accept());
+  await withdrawButton.click();
+  await expect.poll(() => withdrawalRequest).toBe(true);
+  await expect(page.locator("[data-save-message]")).toHaveText(
+    "依頼を取り下げ、記事を下書きに戻しました。",
+  );
+
+  await page
+    .getByRole("button", { name: "追加でフィードバックを依頼" })
+    .click();
+  const dialog = page.locator("[data-review-request-dialog]");
+  const reviewerSelect = dialog.locator("[data-review-request-assignee]");
+  expect(
+    await reviewerSelect
+      .locator('option[value="bob@example.com"]')
+      .evaluate((option: HTMLOptionElement) => option.disabled),
+  ).toBe(true);
+  expect(
+    await reviewerSelect
+      .locator('option[value="carol@example.com"]')
+      .evaluate((option: HTMLOptionElement) => option.disabled),
+  ).toBe(false);
+  expect(
+    await reviewerSelect
+      .locator('option[value="bob@example.com"]')
+      .evaluate((option: HTMLOptionElement) => option.selected),
+  ).toBe(false);
 });
 
 test("V-3: 依頼先未選択でもキャンセルできる", async ({ page }) => {

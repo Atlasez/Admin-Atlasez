@@ -84,6 +84,31 @@ const publicationRevision = (values: Record<string, unknown> = {}) => {
   };
 };
 
+const publicationSnapshotHash = async (snapshot: Record<string, unknown>) => {
+  const canonical = JSON.stringify([
+    snapshot.id,
+    snapshot.updated_at,
+    snapshot.subject,
+    snapshot.category,
+    snapshot.locale,
+    snapshot.slug,
+    snapshot.title,
+    snapshot.summary,
+    snapshot.concept_id,
+    snapshot.body,
+    snapshot.latex_engine,
+    snapshot.status,
+    snapshot.article_references,
+  ]);
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(canonical),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+};
+
 const githubWebhookSignature = async (secret: string, body: string) => {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -2375,6 +2400,8 @@ describe("admin worker editor APIs", () => {
     });
     expect(documentQuery).toContain("AND d.id = ?");
     expect(documentBindings).toEqual([
+      "feedback_request_withdrawn",
+      "feedback_request_withdrawn",
       "mathematics",
       "doc-1",
       "member@example.com",
@@ -2569,7 +2596,7 @@ describe("admin worker editor APIs", () => {
           )
         )
           return { results: [] as T[] };
-        if (this.query.includes("FROM editorial_documents d")) {
+        if (this.query.includes("SELECT d.id, d.creator_kind")) {
           documentQueries.push(this.query);
           return {
             results: [
@@ -3025,6 +3052,219 @@ describe("admin worker editor APIs", () => {
     }
   });
 
+  it("names the missing public release settings separately", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          default_branch: "main",
+          archived: false,
+          permissions: { pull: true, push: true },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    try {
+      const response = await worker.fetch(
+        new Request(
+          "http://localhost/api/admin/editor/publication-integration",
+        ),
+        { ...emptyEnv, GITHUB_PUBLISH_TOKEN: "test-token" } as never,
+      );
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data).toMatchObject({
+        ready: false,
+        canWrite: true,
+        missingRequirements: [
+          "EDITORIAL_RELEASE_WEBHOOK_SECRET",
+          "CLOUDFLARE_WORKERS_READ_TOKEN",
+        ],
+        error: expect.stringContaining("EDITORIAL_RELEASE_WEBHOOK_SECRET"),
+      });
+      expect(data).toMatchObject({
+        error: expect.stringContaining("CLOUDFLARE_WORKERS_READ_TOKEN"),
+      });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("reconciles the stored article catalog with the live learning-site graph", async () => {
+    const liveDocumentId = "22222222-2222-4222-8222-222222222221";
+    const removedDocumentId = "22222222-2222-4222-8222-222222222222";
+    const documents = [
+      {
+        id: liveDocumentId,
+        source_article_id: "ja-mathematics-homomorphism-theorem",
+        subject: "mathematics",
+        category: "group-theory",
+        locale: "ja",
+        slug: "homomorphism-theorem",
+        title: "準同型定理",
+        status: "draft",
+        published_at: "2026-08-31T14:30:34.329Z",
+        updated_at: "2026-08-31T14:30:34.329Z",
+        created_at: "2026-08-31T14:30:34.329Z",
+      },
+      {
+        id: removedDocumentId,
+        source_article_id: "ja-mathematics-removed-article",
+        subject: "mathematics",
+        category: "group-theory",
+        locale: "ja",
+        slug: "removed-article",
+        title: "公開終了記事",
+        status: "draft",
+        published_at: "2026-08-31T14:30:34.329Z",
+        updated_at: "2026-08-31T14:30:34.329Z",
+        created_at: "2026-08-31T14:30:34.329Z",
+      },
+    ];
+    const storedRows = [
+      {
+        path: "src/content/articles/ja/mathematics/group-theory/homomorphism-theorem.md",
+        identity_key: "ja/mathematics/group-theory/homomorphism-theorem",
+        repository: "Atlasez/Atlasez01",
+        locale: "ja",
+        subject: "mathematics",
+        category: "group-theory",
+        slug: "homomorphism-theorem",
+        source_article_id: "ja-mathematics-homomorphism-theorem",
+        git_sha: null,
+        title: "準同型定理",
+        summary: "",
+        concept_id: "mathematics.group-theory.homomorphism-theorem",
+        public_status: "editorial-only",
+        document_id: liveDocumentId,
+        last_seen_at: "2026-08-31T14:30:34.329Z",
+        registered_at: null,
+        registered_by: null,
+        source_kind: "editorial-document",
+        source_ref: null,
+        source_checksum: null,
+        source_checksum_algorithm: "sha256",
+        source_body_checksum: null,
+        source_fetched_at: null,
+        source_authority: "editorial-draft",
+        registration_method: "editorial-document",
+        identity_status: "unverified",
+      },
+      {
+        path: "src/content/articles/ja/mathematics/group-theory/removed-article.md",
+        identity_key: "ja/mathematics/group-theory/removed-article",
+        repository: "Atlasez/Atlasez01",
+        locale: "ja",
+        subject: "mathematics",
+        category: "group-theory",
+        slug: "removed-article",
+        source_article_id: "ja-mathematics-removed-article",
+        git_sha: "old-sha",
+        title: "公開終了記事",
+        summary: "",
+        concept_id: "mathematics.group-theory.removed-article",
+        public_status: "published",
+        document_id: removedDocumentId,
+        last_seen_at: "2026-08-31T14:30:34.329Z",
+        registered_at: null,
+        registered_by: null,
+        source_kind: "github-published-markdown",
+        source_ref: null,
+        source_checksum: "old-checksum",
+        source_checksum_algorithm: "sha256",
+        source_body_checksum: null,
+        source_fetched_at: null,
+        source_authority: "reference-only",
+        registration_method: "catalog-observation",
+        identity_status: "verified",
+      },
+    ];
+    const batches: Array<Array<{ query?: string }>> = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          nodes: [
+            {
+              id: "mathematics.group-theory.homomorphism-theorem",
+              articles: {
+                ja: [
+                  {
+                    articleId: "ja-mathematics-homomorphism-theorem",
+                    title: "準同型定理",
+                    path: "atlas/ja/mathematics/group-theory/homomorphism-theorem/",
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const env = {
+      ...emptyEnv,
+      PUBLIC_ANALYTICS_ORIGIN: "https://atlasez.org",
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => {
+          const statement = new EmptyStatement(query);
+          statement.all = async <T>() => {
+            if (query.includes("FROM editorial_documents"))
+              return { results: documents as T[] };
+            if (query.includes("FROM editorial_article_catalog"))
+              return { results: storedRows as T[] };
+            return { results: [] as T[] };
+          };
+          return statement;
+        },
+        batch: async (statements: unknown[]) => {
+          batches.push(statements as Array<{ query?: string }>);
+          return statements.map(() => ({ meta: { changes: 1 } }));
+        },
+      },
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request("http://localhost/api/admin/editor/catalog"),
+        env as never,
+      );
+      const data = (await response.json()) as {
+        catalog: Array<{
+          public_status: string;
+          editorial_document_id: string | null;
+        }>;
+      };
+
+      expect(response.status).toBe(200);
+      expect(data.catalog).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            public_status: "published",
+            editorial_document_id: liveDocumentId,
+          }),
+          expect.objectContaining({
+            public_status: "not-found",
+            editorial_document_id: removedDocumentId,
+          }),
+        ]),
+      );
+      const syncedStatements = batches.flat();
+      expect(
+        syncedStatements.some((statement) =>
+          statement.query?.includes("public_status = 'published'"),
+        ),
+      ).toBe(true);
+      expect(
+        syncedStatements.some((statement) =>
+          statement.query?.includes("public_status = 'not-found'"),
+        ),
+      ).toBe(true);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it("uses the installation token permission for GitHub App integrations", async () => {
     const importKeyMock = vi
       .spyOn(crypto.subtle, "importKey")
@@ -3099,14 +3339,16 @@ describe("admin worker editor APIs", () => {
     }
   });
 
-  it("exposes feedback completion progress before publication review", async () => {
+  it("exposes feedback progress and allows review for a newer version of a published article", async () => {
     const documentId = "22222222-2222-4222-8222-222222222222";
     const document = {
       id: documentId,
       subject: "mathematics",
       status: "in-review",
       created_by: "local-editor@atlasez.test",
-      published_at: null,
+      published_at: "2026-08-30T00:00:00.000Z",
+      current_version_id: "new-saved-version",
+      published_version_id: "previous-published-version",
       publication_review_stage: null,
       publication_review_round: 0,
     };
@@ -3114,12 +3356,30 @@ describe("admin worker editor APIs", () => {
       async first<T>() {
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
-        if (this.query.includes("FROM editorial_feedback_task_links"))
-          return { total: 2, done: 1 } as T;
         return null as T | null;
       }
 
       async all<T>() {
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            results: [
+              {
+                task_id: "task-1",
+                assignee_email: "reviewer@example.com",
+                status: "done",
+              },
+              {
+                task_id: "task-2",
+                assignee_email: "reviewer@example.com",
+                status: "doing",
+              },
+              {
+                task_id: "task-3",
+                assignee_email: "second@example.com",
+                status: "done",
+              },
+            ] as T[],
+          };
         if (this.query.includes("FROM editorial_workflow_roles"))
           return { results: [] as T[] };
         return { results: [] as T[] };
@@ -3149,6 +3409,96 @@ describe("admin worker editor APIs", () => {
       canDecide: false,
       managerOverride: true,
     });
+  });
+
+  it("starts publication review for a saved version newer than the published version", async () => {
+    const documentId = "22222222-2222-4222-8222-222222222222";
+    const document = {
+      id: documentId,
+      subject: "mathematics",
+      status: "draft",
+      created_by: "local-editor@atlasez.test",
+      published_at: "2026-08-30T00:00:00.000Z",
+      current_version_id: "new-saved-version",
+      published_version_id: "previous-published-version",
+      publication_review_stage: null,
+      publication_review_round: 0,
+      archived_at: null,
+      updated_at: "2026-08-31T00:00:00.000Z",
+    };
+    const executed: { query: string; values: unknown[] }[] = [];
+    class PublishedVersionReviewStatement extends EmptyStatement {
+      private values: unknown[] = [];
+
+      bind(...values: unknown[]) {
+        super.bind(...values);
+        this.values = values;
+        return this;
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return document as T;
+        return null as T | null;
+      }
+
+      async all<T>() {
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            results: [
+              {
+                task_id: "feedback-task",
+                assignee_email: "reviewer@example.com",
+                status: "done",
+              },
+            ] as T[],
+          };
+        if (this.query.includes("role = 'project-leader'"))
+          return { results: [{ email: "leader@example.com" }] as T[] };
+        return { results: [] as T[] };
+      }
+
+      async run() {
+        executed.push({ query: this.query, values: this.values });
+        return { meta: { changes: 1 } };
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new PublishedVersionReviewStatement(query),
+      },
+    };
+
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/documents/${documentId}/publication-review`,
+        {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: "{}",
+        },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      status: "in-review",
+      stage: "project-leader",
+    });
+    expect(
+      executed.some(
+        ({ query }) =>
+          query.includes("current_version_id <> published_version_id") &&
+          query.includes("UPDATE editorial_documents"),
+      ),
+    ).toBe(true);
   });
 
   it("does not change feedback assignments for archived articles", async () => {
@@ -3199,6 +3549,56 @@ describe("admin worker editor APIs", () => {
     await expect(response.json()).resolves.toMatchObject({
       error:
         "アーカイブ中の記事のフィードバック担当者は変更できません。先に一覧から復元してください。",
+    });
+    expect(batchCalled).toBe(false);
+  });
+
+  it("does not treat an empty reviewer assignment as a completed feedback request", async () => {
+    const documentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let batchCalled = false;
+    class EmptyReviewersStatement extends EmptyStatement {
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return {
+            subject: "mathematics",
+            status: "in-review",
+            publication_review_stage: null,
+            title: "依頼取り下げテスト",
+            created_by: "local-editor@atlasez.test",
+            archived_at: null,
+          } as T;
+        return null as T | null;
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new EmptyReviewersStatement(query),
+        batch: async () => {
+          batchCalled = true;
+          return [];
+        },
+      },
+    };
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/review-requests/${documentId}`,
+        {
+          method: "PATCH",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ reviewerEmails: [] }),
+        },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("依頼先を1人以上選択してください"),
     });
     expect(batchCalled).toBe(false);
   });
@@ -3263,11 +3663,244 @@ describe("admin worker editor APIs", () => {
     expect(response.status).toBe(409);
     expect(batchQueries[0]).toContain("archived_at IS NULL");
     expect(batchQueries.slice(1)).toHaveLength(5);
+    const recipientDeleteIndex = batchQueries.findIndex((query) =>
+      query.includes("DELETE FROM editorial_review_assignment_recipients"),
+    );
+    const recipientInsertIndex = batchQueries.findIndex((query) =>
+      query.includes("INSERT INTO editorial_review_assignment_recipients"),
+    );
+    const taskLinkInsertIndex = batchQueries.findIndex((query) =>
+      query.includes("INSERT INTO editorial_feedback_task_links"),
+    );
+    expect(recipientDeleteIndex).toBeGreaterThan(0);
+    expect(recipientInsertIndex).toBeGreaterThan(recipientDeleteIndex);
+    expect(taskLinkInsertIndex).toBeGreaterThan(recipientInsertIndex);
     expect(
       batchQueries
         .slice(1)
         .every((query) => query.includes("archived_at IS NULL")),
     ).toBe(true);
+    expect(batchQueries[0]).toContain("editorial_feedback_task_links");
+    expect(batchQueries[0]).toContain("assignee_email");
+  });
+
+  it("rejects a second active feedback request for the same reviewer", async () => {
+    const documentId = "66666666-6666-4666-8666-666666666666";
+    const document = {
+      subject: "mathematics",
+      status: "in-review",
+      publication_review_stage: null,
+      title: "フィードバック重複テスト",
+      created_by: "local-editor@atlasez.test",
+      archived_at: null,
+    };
+    let batchCalled = false;
+    class DuplicateAssignmentStatement extends EmptyStatement {
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return document as T;
+        if (this.query.includes("FROM report_admin_permissions"))
+          return { found: 1 } as T;
+        return null as T | null;
+      }
+
+      async all<T>() {
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            results: [
+              { assignee_email: "Reviewer@Example.com" },
+              { assignee_email: "other@example.com, reviewer@example.com" },
+            ] as T[],
+          };
+        return { results: [] as T[] };
+      }
+    }
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/review-requests/${documentId}`,
+        {
+          method: "PATCH",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ reviewerEmails: ["reviewer@example.com"] }),
+        },
+      ),
+      {
+        ...emptyEnv,
+        REPORTS: {
+          ...emptyEnv.REPORTS,
+          prepare: (query: string) => new DuplicateAssignmentStatement(query),
+          batch: async () => {
+            batchCalled = true;
+            return [];
+          },
+        },
+      } as never,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("未完了のフィードバック依頼があります"),
+    });
+    expect(batchCalled).toBe(false);
+  });
+
+  it("withdraws the requester's active feedback task and returns its article to draft when it was the last request", async () => {
+    const documentId = "77777777-7777-4777-8777-777777777777";
+    const taskId = "88888888-8888-4888-8888-888888888888";
+    const executed: string[] = [];
+    const executedBindings: unknown[][] = [];
+    class FeedbackWithdrawalStatement extends EmptyStatement {
+      bindings: unknown[] = [];
+
+      bind(...values: unknown[]) {
+        this.bindings = values;
+        return super.bind(...values);
+      }
+
+      get queryText() {
+        return this.query;
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return {
+            subject: "mathematics",
+            status: "in-review",
+            publication_review_stage: null,
+            title: "フィードバック中の記事",
+            updated_at: "2026-11-20T00:00:00.000Z",
+            archived_at: null,
+          } as T;
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            title: "フィードバック依頼：フィードバック中の記事",
+            created_by: "local-editor@atlasez.test",
+            status: "open",
+            updated_at: "2026-11-20T00:01:00.000Z",
+          } as T;
+        if (this.query.includes("FROM workflow_transition_events"))
+          return null as T | null;
+        return null as T | null;
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new FeedbackWithdrawalStatement(query),
+        batch: async (statements: FeedbackWithdrawalStatement[]) => {
+          executed.push(...statements.map((statement) => statement.queryText));
+          executedBindings.push(
+            ...statements.map((statement) => statement.bindings),
+          );
+          return statements.map((_, index) => ({
+            meta: { changes: index === 3 || index === 4 ? 0 : 1 },
+          }));
+        },
+      },
+    };
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/review-requests/${documentId}/${taskId}/withdraw`,
+        {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            expectedUpdatedAt: "2026-11-20T00:00:00.000Z",
+          }),
+        },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      withdrawn: true,
+      documentStatus: "draft",
+    });
+    expect(executed).toHaveLength(7);
+    expect(executed[0]).toContain("UPDATE editorial_tasks SET status='done'");
+    expect(executed[1]).toContain("workflow_transition_events");
+    expect(executedBindings[1].join("|")).toContain(
+      "feedback_request_withdrawn",
+    );
+    expect(executed[2]).toContain("INSERT INTO admin_audit_log");
+    expect(executed[3]).toContain("workflow_transition_events");
+    expect(executed[4]).toContain("workflow_transition_events");
+    expect(executed[5]).toContain("NOT EXISTS");
+    expect(executed[6]).toContain("workflow_transition_events");
+    expect(executedBindings[6].join("|")).toContain("document");
+  });
+
+  it("keeps an article in feedback when another feedback request remains", async () => {
+    const documentId = "99999999-9999-4999-8999-999999999999";
+    const taskId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    class FeedbackWithdrawalStatement extends EmptyStatement {
+      get queryText() {
+        return this.query;
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return {
+            subject: "mathematics",
+            status: "in-review",
+            publication_review_stage: null,
+            title: "複数依頼の記事",
+            updated_at: "2026-11-20T00:00:00.000Z",
+            archived_at: null,
+          } as T;
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            title: "フィードバック依頼：複数依頼の記事",
+            created_by: "local-editor@atlasez.test",
+            status: "doing",
+            updated_at: "2026-11-20T00:01:00.000Z",
+          } as T;
+        if (this.query.includes("FROM workflow_transition_events"))
+          return null as T | null;
+        return null as T | null;
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new FeedbackWithdrawalStatement(query),
+        batch: async () =>
+          [1, 1, 1, 0, 0, 0, 0].map((changes) => ({ meta: { changes } })),
+      },
+    };
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/review-requests/${documentId}/${taskId}/withdraw`,
+        {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            expectedUpdatedAt: "2026-11-20T00:00:00.000Z",
+          }),
+        },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      withdrawn: true,
+      documentStatus: "in-review",
+    });
   });
 
   it("allows archiving a feedback-stage article but rejects publication-review stages", async () => {
@@ -3416,12 +4049,30 @@ describe("admin worker editor APIs", () => {
       async first<T>() {
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
-        if (this.query.includes("FROM editorial_feedback_task_links"))
-          return { total: 2, done: 1 } as T;
         return null as T | null;
       }
 
       async all<T>() {
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            results: [
+              {
+                task_id: "task-1",
+                assignee_email: "reviewer@example.com",
+                status: "done",
+              },
+              {
+                task_id: "task-2",
+                assignee_email: "reviewer@example.com",
+                status: "doing",
+              },
+              {
+                task_id: "task-3",
+                assignee_email: "second@example.com",
+                status: "done",
+              },
+            ] as T[],
+          };
         if (this.query.includes("FROM editorial_workflow_roles"))
           return { results: [] as T[] };
         return { results: [] as T[] };
@@ -3536,12 +4187,20 @@ describe("admin worker editor APIs", () => {
       async first<T>() {
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
-        if (this.query.includes("FROM editorial_feedback_task_links"))
-          return { total: 1, done: 1 } as T;
         return null as T | null;
       }
 
       async all<T>() {
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            results: [
+              {
+                task_id: "task-1",
+                assignee_email: "reviewer@example.com",
+                status: "done",
+              },
+            ] as T[],
+          };
         if (this.query.includes("role = 'subject-coordinator'"))
           return { results: [{ email: "coordinator@example.com" }] as T[] };
         if (this.query.includes("role = 'project-leader'"))
@@ -3866,7 +4525,7 @@ describe("admin worker editor APIs", () => {
 
       async first<T>() {
         if (this.query.includes("FROM editorial_document_revisions"))
-          return publicationRevision(document) as T;
+          return publicationRevision({ ...document, status: "draft" }) as T;
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
         if (this.query.includes("FROM editorial_publication_runs"))
@@ -3953,6 +4612,18 @@ describe("admin worker editor APIs", () => {
         pullRequestNumber: 321,
         pullRequestUrl: "https://github.com/Atlasez/Atlasez01/pull/321",
       });
+      const savedRevision = JSON.parse(
+        publicationRevision({ ...document, status: "draft" }).snapshot_json,
+      ) as Record<string, unknown>;
+      const runInsert = executed.find((entry) =>
+        entry.query.includes(
+          "INSERT OR IGNORE INTO editorial_publication_runs",
+        ),
+      );
+      expect(runInsert?.values[5]).toBe(savedRevision.updated_at);
+      expect(runInsert?.values[6]).toBe(
+        await publicationSnapshotHash(savedRevision),
+      );
       const secondResponse = await worker.fetch(
         new Request(
           `http://localhost/api/admin/editor/documents/${documentId}/publish`,

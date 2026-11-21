@@ -26,7 +26,7 @@ Cloudflare Workers BuildsはWorker Versionを候補としてアップロード�
    - `GITHUB_APP_PRIVATE_KEY`
    - `GITHUB_REVIEW_TOKEN`（推奨。PR作成者とは別の、レビューを承認できる書き込み権限アカウントのToken）
    - `EDITORIAL_RELEASE_WEBHOOK_SECRET`（Workers Buildsと共有する署名鍵）
-   - `CLOUDFLARE_WORKERS_READ_TOKEN`（固定Account内のWorker `atlasez01` のDeployment/Versionを読むToken。Workers Scripts Readのみ）
+   - `CLOUDFLARE_WORKERS_READ_TOKEN`（固定Account内のWorker `atlasez01` のDeployment/Versionを読むToken。`atlasez01`だけの`Individual Workers Metadata Read-Only`）
 
 5. `PUBLIC_SITE_ORIGIN=https://atlasez.org`を設定する。
 6. Workers Buildsには`EDITORIAL_RELEASE_ENDPOINT=https://admin.atlasez.org/api/internal/editorial-release`と`EDITORIAL_RELEASE_WEBHOOK_SECRET`を登録する。共有D1のmigration `0139_editorial_release_candidates.sql`を明示手順で適用し、候補APIを含むADMIN Workerを配信してからWorkers Builds側を設定する。

@@ -2403,6 +2403,7 @@ type AdminAuditAction =
   | "article_approved"
   | "article_published"
   | "article_unpublished"
+  | "feedback_request_withdrawn"
   | "permission_granted"
   | "permission_replaced"
   | "permission_revoked"
@@ -2445,6 +2446,7 @@ const adminAuditActionLabel = (action: AdminAuditAction | string) => ({
   article_approved: "記事を承認",
   article_published: "記事を公開",
   article_unpublished: "記事の公開を取り消し",
+  feedback_request_withdrawn: "フィードバック依頼を取り下げ",
   permission_granted: "権限を付与",
   permission_replaced: "権限を変更",
   permission_revoked: "権限を削除",
@@ -2472,6 +2474,36 @@ const adminAuditActionLabel = (action: AdminAuditAction | string) => ({
   workflow_transition: "状態を変更",
 }[action] ?? action);
 
+const adminAuditStatement = (
+  env: Env,
+  actorEmail: string,
+  action: AdminAuditAction,
+  targetType: AdminAuditTarget,
+  targetId: string,
+  targetLabel: string,
+  summary: string,
+  details: Record<string, unknown> = {},
+  onlyAfterSuccessfulStatement = false,
+) => {
+  const insert = `INSERT INTO admin_audit_log
+     (id,actor_email,action,target_type,target_id,target_label,summary,details_json,created_at)`;
+  return env.REPORTS.prepare(
+    onlyAfterSuccessfulStatement
+      ? `${insert} SELECT ?,?,?,?,?,?,?,?,? WHERE changes()=1`
+      : `${insert} VALUES (?,?,?,?,?,?,?,?,?)`,
+  ).bind(
+    crypto.randomUUID(),
+    actorEmail,
+    action,
+    targetType,
+    targetId,
+    targetLabel,
+    summary,
+    JSON.stringify(details),
+    new Date().toISOString(),
+  );
+};
+
 const recordAdminAudit = async (
   env: Env,
   actorEmail: string,
@@ -2483,24 +2515,16 @@ const recordAdminAudit = async (
   details: Record<string, unknown> = {},
 ) => {
   // 監査記録の失敗で本来の操作を失敗させない。旧D1にも安全にデプロイできる。
-  await env.REPORTS.prepare(
-    `INSERT INTO admin_audit_log
-     (id,actor_email,action,target_type,target_id,target_label,summary,details_json,created_at)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
-  )
-    .bind(
-      crypto.randomUUID(),
-      actorEmail,
-      action,
-      targetType,
-      targetId,
-      targetLabel,
-      summary,
-      JSON.stringify(details),
-      new Date().toISOString(),
-    )
-    .run()
-    .catch(() => undefined);
+  await adminAuditStatement(
+    env,
+    actorEmail,
+    action,
+    targetType,
+    targetId,
+    targetLabel,
+    summary,
+    details,
+  ).run().catch(() => undefined);
 };
 
 const workflowEventStatement = (
@@ -2553,6 +2577,19 @@ type WorkflowTransition = {
   label: string;
   requiredRole: "assignee" | "manager" | "reviewer";
 };
+
+const FEEDBACK_REQUEST_WITHDRAWAL_ACTION = "feedback_request_withdrawn";
+
+const isFeedbackRequestWithdrawn = async (env: Env, taskId: string) =>
+  Boolean(
+    await env.REPORTS.prepare(
+      `SELECT 1 AS withdrawn FROM workflow_transition_events
+        WHERE entity_type='task' AND entity_id=?
+          AND json_extract(metadata_json, '$.action')=? LIMIT 1`,
+    )
+      .bind(taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION)
+      .first<{ withdrawn: number }>(),
+  );
 
 /**
  * 状態遷移の正本。画面ごとに許可状態を再定義せず、APIと管理画面が
@@ -2725,6 +2762,8 @@ async function transitionTaskState(
   if (isResponse(project)) return project;
   if (!scope.isManager && !canManageProject && !taskAssignedTo(task.assignee_email, scope.email, task.task_kind) && task.created_by.toLowerCase() !== scope.email.toLowerCase())
     return json({ error: workflowTransitionPolicyError("assignee"), code: "FORBIDDEN_TRANSITION" }, 403);
+  if (task.task_kind === "feedback" && await isFeedbackRequestWithdrawn(env, taskId))
+    return json({ error: "取り下げ済みのフィードバック依頼は再開できません。", code: "FEEDBACK_REQUEST_WITHDRAWN" }, 409);
   if (replay)
     return json({ ok: true, replayed: true, transition: { entityType: "task", entityId: replay.entity_id, fromState: replay.from_state, toState: replay.to_state, createdAt: replay.created_at } });
   if (task.status !== fromState)
@@ -6958,12 +6997,33 @@ async function listEditorialDocuments(
       : Promise.resolve(new Map<string, EditorialActiveEditor[]>()),
     documentRows.length
       ? env.REPORTS.prepare(
-          `SELECT r.document_id,
-                  COALESCE(NULLIF((SELECT GROUP_CONCAT(rr.reviewer_email) FROM editorial_review_assignment_recipients rr WHERE rr.document_id = r.document_id), ''), r.reviewer_email) AS reviewer_email
-           FROM editorial_review_assignments r
-           WHERE r.document_id IN (${documentRows.map(() => "?").join(",")})`,
+          `SELECT d.id AS document_id,
+                  COALESCE(
+                    (SELECT t.assignee_email
+                       FROM editorial_feedback_task_links link
+                       JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+                      WHERE link.document_id=d.id
+                        AND NOT EXISTS (
+                          SELECT 1 FROM workflow_transition_events e
+                           WHERE e.entity_type='task' AND e.entity_id=t.id
+                             AND json_extract(e.metadata_json, '$.action')=?
+                        )
+                      ORDER BY link.created_at DESC,t.created_at DESC LIMIT 1),
+                    (SELECT COALESCE(NULLIF((SELECT GROUP_CONCAT(rr.reviewer_email)
+                                               FROM editorial_review_assignment_recipients rr
+                                              WHERE rr.document_id=r.document_id), ''), r.reviewer_email)
+                       FROM editorial_review_assignments r
+                      WHERE r.document_id=d.id
+                        AND (r.task_id IS NULL OR NOT EXISTS (
+                          SELECT 1 FROM workflow_transition_events e
+                           WHERE e.entity_type='task' AND e.entity_id=r.task_id
+                             AND json_extract(e.metadata_json, '$.action')=?
+                        )) LIMIT 1)
+                  ) AS reviewer_email
+             FROM editorial_documents d
+            WHERE d.id IN (${documentRows.map(() => "?").join(",")})`,
         )
-          .bind(...documentRows.map((document) => document.id))
+          .bind(FEEDBACK_REQUEST_WITHDRAWAL_ACTION, FEEDBACK_REQUEST_WITHDRAWAL_ACTION, ...documentRows.map((document) => document.id))
           .all<{ document_id: string; reviewer_email: string }>()
           .catch(() => ({
             results: [] as { document_id: string; reviewer_email: string }[],
@@ -7410,6 +7470,12 @@ async function getEditorialArticleCatalog(
           identity_status: "unverified",
         },
       }));
+    await syncEditorialArticleCatalogFromPublicSite(
+      env,
+      publicArticles,
+      documents,
+      storedCatalog,
+    );
     return json({
       catalog: [...catalog, ...editorialOnly],
       cache: {
@@ -14452,6 +14518,8 @@ async function updateTask(
     task.created_by.toLowerCase() !== scope.email.toLowerCase()
   )
     return json({ error: "このタスクを更新する権限がありません。" }, 403);
+  if (task.task_kind === "feedback" && await isFeedbackRequestWithdrawn(env, taskId))
+    return json({ error: "取り下げ済みのフィードバック依頼は変更できません。", code: "FEEDBACK_REQUEST_WITHDRAWN" }, 409);
   // 状態変更だけは共通Workflow APIへ委譲する。既存のリマインダー・
   // アーカイブ更新は下の互換処理を維持し、段階的に移行できるようにする。
   if (requestedStatus !== null && requestedArchived === null && !reminderAction && requestedTestData === null)
@@ -16710,7 +16778,7 @@ async function listEditorialRevisions(
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
   const document = await env.REPORTS.prepare(
-    "SELECT subject, status, publication_review_stage, current_version_id, published_version_id FROM editorial_documents WHERE id = ?",
+    "SELECT subject, status, publication_review_stage, current_version_id, published_version_id, archived_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
     .first<{
@@ -16719,6 +16787,7 @@ async function listEditorialRevisions(
       publication_review_stage: EditorialPublicationReviewStage | null;
       current_version_id: string | null;
       published_version_id: string | null;
+      archived_at: string | null;
     }>();
   if (!document || !canReviewDocument(scope, document))
     return json({ error: "この原稿を閲覧する権限がありません。" }, 403);
@@ -16757,6 +16826,14 @@ async function listEditorialRevisions(
   const feedbackRequests = await env.REPORTS.prepare(
     `SELECT t.id AS task_id, t.title, t.details, t.status, t.assignee_email,
             t.created_by, t.created_at, t.updated_at,
+            (SELECT e.created_at FROM workflow_transition_events e
+              WHERE e.entity_type='task' AND e.entity_id=t.id
+                AND json_extract(e.metadata_json, '$.action')=?
+              ORDER BY e.created_at DESC LIMIT 1) AS withdrawn_at,
+            (SELECT e.actor_email FROM workflow_transition_events e
+              WHERE e.entity_type='task' AND e.entity_id=t.id
+                AND json_extract(e.metadata_json, '$.action')=?
+              ORDER BY e.created_at DESC LIMIT 1) AS withdrawn_by,
             COALESCE(NULLIF(TRIM(profile.display_name), ''), t.created_by) AS requester_display_name
        FROM editorial_feedback_task_links link
        JOIN editorial_tasks t ON t.id = link.task_id AND t.task_kind = 'feedback'
@@ -16765,7 +16842,7 @@ async function listEditorialRevisions(
       ORDER BY link.created_at DESC, t.created_at DESC
       LIMIT 100`,
   )
-    .bind(documentId)
+    .bind(FEEDBACK_REQUEST_WITHDRAWAL_ACTION, FEEDBACK_REQUEST_WITHDRAWAL_ACTION, documentId)
     .all<{
       task_id: string;
       title: string;
@@ -16775,6 +16852,8 @@ async function listEditorialRevisions(
       created_by: string;
       created_at: string;
       updated_at: string;
+      withdrawn_at: string | null;
+      withdrawn_by: string | null;
       requester_display_name: string;
     }>();
   return json({
@@ -16785,6 +16864,13 @@ async function listEditorialRevisions(
         scope.isManager ||
         task.created_by.toLowerCase() === scope.email.toLowerCase() ||
         taskAssignedTo(task.assignee_email, scope.email, "feedback"),
+      canWithdraw:
+        !document.archived_at &&
+        document.status === "in-review" &&
+        !document.publication_review_stage &&
+        !task.withdrawn_at &&
+        task.status !== "done" &&
+        (scope.isManager || task.created_by.toLowerCase() === scope.email.toLowerCase()),
     })),
   });
 }
@@ -16831,20 +16917,42 @@ async function listEditorialReviewRequests(
   const [result, reviewerResult] = await Promise.all([
     env.REPORTS.prepare(
       `SELECT d.id, d.subject, d.category, d.title, d.updated_by, d.updated_at,
-         COALESCE(NULLIF((SELECT GROUP_CONCAT(rr.reviewer_email) FROM editorial_review_assignment_recipients rr WHERE rr.document_id = d.id), ''), r.reviewer_email) AS reviewer_email,
+         COALESCE(
+           (SELECT t.assignee_email
+              FROM editorial_feedback_task_links link
+              JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+             WHERE link.document_id=d.id
+               AND NOT EXISTS (
+                 SELECT 1 FROM workflow_transition_events e
+                  WHERE e.entity_type='task' AND e.entity_id=t.id
+                    AND json_extract(e.metadata_json, '$.action')=?
+               )
+             ORDER BY link.created_at DESC,t.created_at DESC LIMIT 1),
+           COALESCE(NULLIF((SELECT GROUP_CONCAT(rr.reviewer_email) FROM editorial_review_assignment_recipients rr WHERE rr.document_id = d.id), ''), r.reviewer_email)
+         ) AS reviewer_email,
          r.request_note,
          COALESCE(NULLIF(TRIM(requester.display_name), ''), '表示名未設定') AS requester_display_name,
-         COALESCE(NULLIF((SELECT GROUP_CONCAT(COALESCE(NULLIF(TRIM(rm.display_name), ''), rr.reviewer_email)) FROM editorial_review_assignment_recipients rr LEFT JOIN editorial_member_profiles rm ON lower(rm.email) = lower(rr.reviewer_email) WHERE rr.document_id = d.id), ''), COALESCE(NULLIF(TRIM(reviewer.display_name), ''), '')) AS reviewer_display_name
+         COALESCE(NULLIF((SELECT GROUP_CONCAT(COALESCE(NULLIF(TRIM(rm.display_name), ''), rr.reviewer_email)) FROM editorial_review_assignment_recipients rr LEFT JOIN editorial_member_profiles rm ON lower(rm.email) = lower(rr.reviewer_email) WHERE rr.document_id = d.id), ''), COALESCE(NULLIF(TRIM(reviewer.display_name), ''), '')) AS reviewer_display_name,
+         (SELECT GROUP_CONCAT(DISTINCT t.assignee_email)
+            FROM editorial_feedback_task_links active_link
+            JOIN editorial_tasks t ON t.id=active_link.task_id AND t.task_kind='feedback'
+           WHERE active_link.document_id=d.id
+             AND t.status IN ('open','doing')
+             AND NOT EXISTS (
+               SELECT 1 FROM workflow_transition_events e
+                WHERE e.entity_type='task' AND e.entity_id=t.id
+                  AND json_extract(e.metadata_json, '$.action')=?
+             )) AS active_reviewer_assignments
        FROM editorial_documents d
        LEFT JOIN editorial_review_assignments r ON r.document_id = d.id
        LEFT JOIN editorial_member_profiles requester ON requester.email = d.updated_by
        LEFT JOIN editorial_member_profiles reviewer ON reviewer.email = r.reviewer_email
        WHERE d.status = 'in-review' AND d.archived_at IS NULL${subjectFilter}${documentFilter}
-       ORDER BY CASE WHEN lower(r.reviewer_email) = lower(?) THEN 0 WHEN r.reviewer_email IS NULL THEN 2 ELSE 1 END,
+       ORDER BY CASE WHEN lower(reviewer_email) = lower(?) THEN 0 WHEN reviewer_email IS NULL THEN 2 ELSE 1 END,
                 d.updated_at ASC LIMIT 100`,
     )
       // SQL内のプレースホルダー順（分野、対象原稿、担当者）に合わせる。
-      .bind(...subjectValues, ...documentValues, scope.email)
+      .bind(FEEDBACK_REQUEST_WITHDRAWAL_ACTION, FEEDBACK_REQUEST_WITHDRAWAL_ACTION, ...subjectValues, ...documentValues, scope.email)
       .all<{
         id: string;
         subject: string;
@@ -16856,6 +16964,7 @@ async function listEditorialReviewRequests(
         requester_display_name: string;
         reviewer_display_name: string;
         request_note: string;
+        active_reviewer_assignments: string | null;
       }>(),
     env.REPORTS.prepare(
       `SELECT p.email,
@@ -16872,6 +16981,17 @@ async function listEditorialReviewRequests(
   return json({
     requests: (result.results ?? []).map((item) => ({
       ...item,
+      activeReviewerEmails: [
+        ...new Set(
+          (item.active_reviewer_assignments ?? "")
+            .split(",")
+            .map((email) => email.trim().toLowerCase())
+            .filter((email) => email && email !== "*"),
+        ),
+      ],
+      hasActiveAllReviewerRequest: (item.active_reviewer_assignments ?? "")
+        .split(",")
+        .some((email) => email.trim() === "*"),
       reviewerDisplayName:
         item.reviewer_email === "*"
           ? "分野担当者全員"
@@ -16941,36 +17061,8 @@ async function updateEditorialReviewAssignment(
     .filter(Boolean)
     .filter((email, index, all) => all.indexOf(email) === index);
   const requestNote = text(payload.note, 2_000);
-  const existingAssignment = await env.REPORTS.prepare(
-    "SELECT task_id FROM editorial_review_assignments WHERE document_id = ?",
-  )
-    .bind(documentId)
-    .first<{ task_id: string | null }>();
-  const feedbackStageGuard = env.REPORTS.prepare(
-    "UPDATE editorial_documents SET updated_at = updated_at WHERE id = ? AND status = 'in-review' AND publication_review_stage IS NULL AND archived_at IS NULL",
-  ).bind(documentId);
-  if (!reviewerEmails.length) {
-    const statements = [
-      feedbackStageGuard,
-      ...(existingAssignment?.task_id
-        ? [
-            env.REPORTS.prepare(
-              "UPDATE editorial_tasks SET status='done',updated_at=? WHERE id=? AND task_kind='feedback' AND EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)",
-            ).bind(new Date().toISOString(), existingAssignment.task_id, documentId),
-          ]
-        : []),
-      env.REPORTS.prepare(
-        "DELETE FROM editorial_review_assignment_recipients WHERE document_id = ? AND EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)",
-      ).bind(documentId, documentId),
-      env.REPORTS.prepare(
-        "DELETE FROM editorial_review_assignments WHERE document_id = ? AND EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)",
-      ).bind(documentId, documentId),
-    ];
-    const results = await env.REPORTS.batch(statements);
-    if (Number(results[0]?.meta?.changes ?? 0) !== 1)
-      return json({ error: "原稿の状態が変わりました。再読み込みしてから担当者を変更してください。" }, 409);
-    return json({ ok: true, reviewerEmail: null, reviewerEmails: [] });
-  }
+  if (!reviewerEmails.length)
+    return json({ error: "依頼先を1人以上選択してください。フィードバック依頼の取り下げは記事の依頼履歴から行えます。" }, 400);
   if (reviewerEmails.includes("*") && reviewerEmails.length > 1)
     return json(
       { error: "担当者全員と個別担当者は同時に選択できません。" },
@@ -17002,6 +17094,78 @@ async function updateEditorialReviewAssignment(
       },
       400,
     );
+  const activeFeedbackAssignments = await env.REPORTS.prepare(
+    `SELECT t.assignee_email
+       FROM editorial_feedback_task_links link
+       JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+      WHERE link.document_id=?
+        AND t.status IN ('open','doing')
+        AND NOT EXISTS (
+          SELECT 1 FROM workflow_transition_events e
+           WHERE e.entity_type='task' AND e.entity_id=t.id
+             AND json_extract(e.metadata_json, '$.action')=?
+        )`,
+  )
+    .bind(documentId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION)
+    .all<{ assignee_email: string | null }>();
+  const activeAssigneeSets = (activeFeedbackAssignments.results ?? []).map(
+    (assignment) =>
+      new Set(
+        (assignment.assignee_email ?? "")
+          .split(",")
+          .map((email) => email.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+  );
+  const duplicateAssignment = reviewerEmails.includes("*")
+    ? activeAssigneeSets.length > 0
+    : activeAssigneeSets.some(
+        (assignees) =>
+          assignees.has("*") ||
+          reviewerEmails.some((email) => assignees.has(email)),
+      );
+  if (duplicateAssignment)
+    return json(
+      {
+        error:
+          "選択した担当者には未完了のフィードバック依頼があります。依頼履歴で取り下げるか、未依頼の担当者を選んでください。",
+      },
+      409,
+    );
+  const duplicateAssigneePredicate = reviewerEmails.includes("*")
+    ? "1=1"
+    : `(
+        lower(trim(COALESCE(t.assignee_email, '')))='*'
+        OR ${reviewerEmails
+          .map(
+            () =>
+              "instr(',' || replace(lower(COALESCE(t.assignee_email, '')), ' ', '') || ',', ',' || ? || ',') > 0",
+          )
+          .join(" OR ")}
+      )`;
+  const feedbackStageBindings = [
+    documentId,
+    ...reviewerEmails.filter((email) => email !== "*"),
+    FEEDBACK_REQUEST_WITHDRAWAL_ACTION,
+  ];
+  const feedbackStageCondition = `status = 'in-review'
+    AND publication_review_stage IS NULL
+    AND archived_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM editorial_feedback_task_links link
+      JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+      WHERE link.document_id=?
+        AND t.status IN ('open','doing')
+        AND ${duplicateAssigneePredicate}
+        AND NOT EXISTS (
+          SELECT 1 FROM workflow_transition_events e
+          WHERE e.entity_type='task' AND e.entity_id=t.id
+            AND json_extract(e.metadata_json, '$.action')=?
+        )
+    )`;
+  const feedbackStageGuard = env.REPORTS.prepare(
+    `UPDATE editorial_documents SET updated_at = updated_at WHERE id = ? AND ${feedbackStageCondition}`,
+  ).bind(documentId, ...feedbackStageBindings);
   const now = new Date().toISOString();
   // 各フィードバック依頼は、記事に紐づく独立した共通タスクとして残す。
   // 最新の依頼だけは既存の assignment テーブルにも保持し、旧一覧との互換を維持する。
@@ -17012,7 +17176,7 @@ async function updateEditorialReviewAssignment(
   const taskDetails = requestNote
     ? `${requestNote}\n\n記事編集画面: /admin/editor/?document=${documentId}`
     : `記事のフィードバックをお願いします。\n\n記事編集画面: /admin/editor/?document=${documentId}`;
-  const isFeedbackStage = `EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)`;
+  const isFeedbackStage = `EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND ${feedbackStageCondition})`;
   const results = await env.REPORTS.batch([
     feedbackStageGuard,
     env.REPORTS.prepare(
@@ -17029,7 +17193,21 @@ async function updateEditorialReviewAssignment(
       requestNote,
       taskId,
       documentId,
+      ...feedbackStageBindings,
     ),
+    // Reviewer display/visibility rows must be written before the new linked task
+    // makes the duplicate-assignee guard reject subsequent statements in this batch.
+    env.REPORTS.prepare(
+      `DELETE FROM editorial_review_assignment_recipients WHERE document_id = ? AND ${isFeedbackStage}`,
+    ).bind(documentId, documentId, ...feedbackStageBindings),
+    ...reviewerEmails
+      .filter((email) => email !== "*")
+      .map((email) =>
+        env.REPORTS.prepare(
+          `INSERT INTO editorial_review_assignment_recipients (document_id, reviewer_email, requested_at, updated_at)
+           SELECT ?, ?, ?, ? WHERE ${isFeedbackStage}`,
+        ).bind(documentId, email, now, now, documentId, ...feedbackStageBindings),
+      ),
     env.REPORTS.prepare(
       `INSERT INTO editorial_tasks (id,project_id,subject,assignee_email,title,details,status,created_by,created_at,updated_at,task_kind)
        SELECT ?, 'atlas', ?, ?, ?, ?, 'open', ?, ?, ?, 'feedback' WHERE ${isFeedbackStage}
@@ -17044,22 +17222,12 @@ async function updateEditorialReviewAssignment(
       now,
       now,
       documentId,
+      ...feedbackStageBindings,
     ),
     env.REPORTS.prepare(
       `INSERT INTO editorial_feedback_task_links (task_id, document_id, created_at)
        SELECT ?, ?, ? WHERE ${isFeedbackStage}`,
-    ).bind(taskId, documentId, now, documentId),
-    env.REPORTS.prepare(
-      `DELETE FROM editorial_review_assignment_recipients WHERE document_id = ? AND ${isFeedbackStage}`,
-    ).bind(documentId, documentId),
-    ...reviewerEmails
-      .filter((email) => email !== "*")
-      .map((email) =>
-        env.REPORTS.prepare(
-          `INSERT INTO editorial_review_assignment_recipients (document_id, reviewer_email, requested_at, updated_at)
-           SELECT ?, ?, ?, ? WHERE ${isFeedbackStage}`,
-        ).bind(documentId, email, now, now, documentId),
-      ),
+    ).bind(taskId, documentId, now, documentId, ...feedbackStageBindings),
   ]);
   if (Number(results[0]?.meta?.changes ?? 0) !== 1)
     return json({ error: "原稿の状態が変わりました。再読み込みしてから担当者を変更してください。" }, 409);
@@ -17069,6 +17237,173 @@ async function updateEditorialReviewAssignment(
     reviewerEmails,
     taskId,
     taskKind: "feedback",
+  });
+}
+
+async function withdrawEditorialFeedbackRequest(
+  request: Request,
+  env: Env,
+  documentId: string,
+  taskId: string,
+): Promise<Response> {
+  const scope = await getAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  if (!isSameOrigin(request))
+    return json({ error: "この送信元からは受け付けられません。" }, 403);
+  let payload: { expectedUpdatedAt?: unknown };
+  try {
+    payload = (await request.json()) as typeof payload;
+  } catch {
+    return json({ error: "入力内容を読み取れませんでした。" }, 400);
+  }
+  const expectedUpdatedAt = text(payload.expectedUpdatedAt, 80);
+  if (!expectedUpdatedAt)
+    return json({ error: "記事を再読み込みしてから、依頼を取り下げてください。" }, 400);
+
+  const document = await env.REPORTS.prepare(
+    `SELECT subject,status,publication_review_stage,title,updated_at,archived_at
+       FROM editorial_documents WHERE id=?`,
+  ).bind(documentId).first<{
+    subject: string;
+    status: EditorialDocumentStatus;
+    publication_review_stage: EditorialPublicationReviewStage | null;
+    title: string;
+    updated_at: string;
+    archived_at: string | null;
+  }>();
+  if (!document) return json({ error: "原稿が見つかりません。" }, 404);
+  if (!canReviewDocument(scope, document))
+    return json({ error: "この原稿を操作する権限がありません。" }, 403);
+
+  const task = await env.REPORTS.prepare(
+    `SELECT t.title,t.created_by,t.status,t.updated_at
+       FROM editorial_feedback_task_links link
+       JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+      WHERE link.document_id=? AND t.id=?`,
+  ).bind(documentId, taskId).first<{
+    title: string;
+    created_by: string;
+    status: string;
+    updated_at: string;
+  }>();
+  if (!task) return json({ error: "この原稿のフィードバック依頼が見つかりません。" }, 404);
+  if (!scope.isManager && task.created_by.toLowerCase() !== scope.email.toLowerCase())
+    return json({ error: "依頼を取り下げられるのは依頼者または運営管理者です。" }, 403);
+
+  const previousWithdrawal = await env.REPORTS.prepare(
+    `SELECT created_at FROM workflow_transition_events
+      WHERE entity_type='task' AND entity_id=?
+        AND json_extract(metadata_json, '$.action')=?
+      ORDER BY created_at DESC LIMIT 1`,
+  ).bind(taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION).first<{ created_at: string }>();
+  if (previousWithdrawal)
+    return json({ ok: true, withdrawn: true, alreadyWithdrawn: true, documentStatus: document.status, updatedAt: document.updated_at });
+
+  if (document.status !== "in-review" || document.publication_review_stage || document.archived_at)
+    return json({ error: "フィードバック中で審査開始前の記事だけ依頼を取り下げられます。" }, 409);
+  if (document.updated_at !== expectedUpdatedAt)
+    return json({ error: "記事が先に更新されています。最新内容を読み込んでから再試行してください。", code: "STALE_STATE", updatedAt: document.updated_at }, 409);
+  if (task.status !== "open" && task.status !== "doing")
+    return json({ error: "完了済みの依頼は取り下げられません。" }, 409);
+
+  const now = new Date().toISOString();
+  const results = await env.REPORTS.batch([
+    env.REPORTS.prepare(
+      `UPDATE editorial_tasks SET status='done',updated_at=?
+        WHERE id=? AND task_kind='feedback' AND status=? AND updated_at=?
+          AND EXISTS (SELECT 1 FROM editorial_feedback_task_links WHERE task_id=? AND document_id=?)
+          AND EXISTS (SELECT 1 FROM editorial_documents
+            WHERE id=? AND status='in-review' AND publication_review_stage IS NULL
+              AND archived_at IS NULL AND updated_at=?)`,
+    ).bind(now, taskId, task.status, task.updated_at, taskId, documentId, documentId, expectedUpdatedAt),
+    workflowEventStatement(env, {
+      entityType: "task",
+      entityId: taskId,
+      fromState: task.status,
+      toState: "done",
+      actorEmail: scope.email,
+      idempotencyKey: `feedback-withdrawal-task:${taskId}`,
+      expectedUpdatedAt: task.updated_at,
+      metadata: { action: FEEDBACK_REQUEST_WITHDRAWAL_ACTION, documentId },
+      createdAt: now,
+    }, true),
+    adminAuditStatement(
+      env,
+      scope.email,
+      "feedback_request_withdrawn",
+      "task",
+      taskId,
+      task.title,
+      `フィードバック依頼を取り下げ：${task.title}`,
+      { documentId, documentTitle: document.title, previousTaskStatus: task.status },
+      true,
+    ),
+    env.REPORTS.prepare(
+      `DELETE FROM editorial_review_assignment_recipients
+        WHERE document_id=? AND EXISTS (
+          SELECT 1 FROM editorial_review_assignments
+           WHERE document_id=? AND task_id=?
+        ) AND EXISTS (
+          SELECT 1 FROM workflow_transition_events
+           WHERE entity_type='task' AND entity_id=?
+             AND json_extract(metadata_json, '$.action')=?
+        )`,
+    ).bind(documentId, documentId, taskId, taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION),
+    env.REPORTS.prepare(
+      `DELETE FROM editorial_review_assignments
+        WHERE document_id=? AND task_id=? AND EXISTS (
+          SELECT 1 FROM workflow_transition_events
+           WHERE entity_type='task' AND entity_id=?
+             AND json_extract(metadata_json, '$.action')=?
+        )`,
+    ).bind(documentId, taskId, taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION),
+    env.REPORTS.prepare(
+      `UPDATE editorial_documents SET status='draft',updated_by=?,updated_at=?
+        WHERE id=? AND status='in-review' AND publication_review_stage IS NULL
+          AND archived_at IS NULL AND updated_at=?
+          AND NOT EXISTS (
+            SELECT 1 FROM editorial_feedback_task_links link
+            JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+            WHERE link.document_id=?
+              AND NOT EXISTS (
+                SELECT 1 FROM workflow_transition_events e
+                 WHERE e.entity_type='task' AND e.entity_id=t.id
+                   AND json_extract(e.metadata_json, '$.action')=?
+              )
+          )`,
+    ).bind(scope.email, now, documentId, expectedUpdatedAt, documentId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION),
+    workflowEventStatement(env, {
+      entityType: "document",
+      entityId: documentId,
+      fromState: "in-review",
+      toState: "draft",
+      actorEmail: scope.email,
+      idempotencyKey: `feedback-withdrawal-document:${taskId}`,
+      expectedUpdatedAt,
+      metadata: { action: FEEDBACK_REQUEST_WITHDRAWAL_ACTION, taskId },
+      createdAt: now,
+    }, true),
+  ]);
+  if (Number(results[0]?.meta?.changes ?? 0) !== 1) {
+    const racedWithdrawal = await env.REPORTS.prepare(
+      `SELECT 1 AS withdrawn FROM workflow_transition_events
+        WHERE entity_type='task' AND entity_id=?
+          AND json_extract(metadata_json, '$.action')=? LIMIT 1`,
+    ).bind(taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION).first<{ withdrawn: number }>();
+    if (racedWithdrawal)
+      return json({ ok: true, withdrawn: true, alreadyWithdrawn: true, documentStatus: document.status, updatedAt: document.updated_at });
+    return json({ error: "依頼の状態が先に変わりました。履歴を再読み込みしてください。", code: "STALE_STATE" }, 409);
+  }
+  if (Number(results[1]?.meta?.changes ?? 0) !== 1)
+    throw new Error("Feedback withdrawal event was not recorded with its task update.");
+  const returnedToDraft = Number(results[5]?.meta?.changes ?? 0) === 1;
+  if (returnedToDraft && Number(results[6]?.meta?.changes ?? 0) !== 1)
+    throw new Error("Document withdrawal event was not recorded with its state update.");
+  return json({
+    ok: true,
+    withdrawn: true,
+    documentStatus: returnedToDraft ? "draft" : "in-review",
+    updatedAt: returnedToDraft ? now : document.updated_at,
   });
 }
 
@@ -18290,14 +18625,14 @@ const githubArticleMarkdown = async (
   return githubText(payload.content);
 };
 
-const upsertEditorialArticleCatalog = async (
+const editorialArticleCatalogUpsertStatement = (
   env: Env,
   article: PublicArticleCatalogEntry,
   documentId: string | null = null,
   registeredAt: string | null = null,
   registeredBy: string | null = null,
-) => {
-  await env.REPORTS.prepare(
+) =>
+  env.REPORTS.prepare(
     `INSERT INTO editorial_article_catalog
       (path, identity_key, repository, locale, subject, category, slug, source_article_id, git_sha, title, summary, concept_id, public_status, document_id, last_seen_at, registered_at, registered_by, source_kind, source_ref, source_checksum, source_checksum_algorithm, source_body_checksum, source_fetched_at, source_authority, registration_method, identity_status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -18354,8 +18689,164 @@ const upsertEditorialArticleCatalog = async (
       article.sourceAuthority,
       article.registrationMethod,
       article.identityStatus,
-    )
-    .run();
+    );
+
+const upsertEditorialArticleCatalog = async (
+  env: Env,
+  article: PublicArticleCatalogEntry,
+  documentId: string | null = null,
+  registeredAt: string | null = null,
+  registeredBy: string | null = null,
+) => {
+  await env.REPORTS.batch([
+    editorialArticleCatalogUpsertStatement(
+      env,
+      article,
+      documentId,
+      registeredAt,
+      registeredBy,
+    ),
+  ]);
+};
+
+const syncEditorialArticleCatalogFromPublicSite = async (
+  env: Env,
+  articles: PublicArticleCatalogEntry[],
+  documents: Awaited<ReturnType<typeof catalogDocumentRows>>,
+  storedCatalog: EditorialArticleCatalogRow[],
+) => {
+  // An empty or malformed graph must not make every cached public article
+  // appear removed from the learning site.
+  if (!articles.length) return;
+
+  const identityForRepository = (repository: string, identity: string) =>
+    `${repository}/${identity}`;
+  const storedByIdentity = new Map(
+    storedCatalog.map((row) => [
+      identityForRepository(row.repository, row.identity_key),
+      row,
+    ]),
+  );
+  const documentsByIdentity = new Map<string, typeof documents>();
+  const documentsBySourceId = new Map<string, typeof documents>();
+  for (const document of documents) {
+    const identity = editorialArticleIdentity(document);
+    documentsByIdentity.set(identity, [
+      ...(documentsByIdentity.get(identity) ?? []),
+      document,
+    ]);
+    if (document.source_article_id) {
+      documentsBySourceId.set(document.source_article_id, [
+        ...(documentsBySourceId.get(document.source_article_id) ?? []),
+        document,
+      ]);
+    }
+  }
+
+  const now = new Date().toISOString();
+  const liveIdentities = new Set(
+    articles.map((article) =>
+      identityForRepository(article.repository, article.identityKey),
+    ),
+  );
+  const statements: D1PreparedStatement[] = [];
+  for (const article of articles) {
+    const matches = documentsByIdentity.get(article.identityKey) ?? [];
+    const sourceMatches = (documentsBySourceId.get(article.sourceArticleId) ?? [])
+      .filter((document) => editorialArticleIdentity(document) !== article.identityKey);
+    const documentState = catalogDocumentState(
+      matches,
+      article.sourceArticleId,
+      sourceMatches,
+    );
+    const documentId =
+      (documentState === "managed" || documentState === "needs-registration") &&
+      matches.length === 1
+        ? matches[0].id
+        : null;
+    const cached = storedByIdentity.get(
+      identityForRepository(article.repository, article.identityKey),
+    );
+    if (!cached) {
+      statements.push(
+        editorialArticleCatalogUpsertStatement(env, article, documentId),
+      );
+      continue;
+    }
+
+    const shouldRepair =
+      cached.public_status !== "published" ||
+      cached.source_article_id !== article.sourceArticleId ||
+      cached.title !== article.title ||
+      cached.concept_id !== article.conceptId ||
+      cached.identity_status !== "verified" ||
+      Boolean(documentId && cached.document_id !== documentId);
+    if (!shouldRepair) continue;
+
+    statements.push(
+      env.REPORTS.prepare(
+        `UPDATE editorial_article_catalog
+            SET source_article_id = ?,
+                title = ?,
+                concept_id = ?,
+                public_status = 'published',
+                document_id = COALESCE(?, document_id),
+                last_seen_at = ?,
+                source_kind = CASE
+                  WHEN source_kind IN ('unknown', 'editorial-document')
+                    THEN 'learning-site-catalog'
+                  ELSE source_kind
+                END,
+                source_ref = COALESCE(source_ref, ?),
+                source_fetched_at = COALESCE(source_fetched_at, ?),
+                source_authority = CASE
+                  WHEN source_authority IN ('unverified', 'editorial-draft')
+                    THEN 'reference-only'
+                  ELSE source_authority
+                END,
+                registration_method = CASE
+                  WHEN registration_method IN ('legacy-backfill', 'editorial-document')
+                    THEN 'catalog-observation'
+                  ELSE registration_method
+                END,
+                identity_status = 'verified'
+          WHERE identity_key = ? AND repository = ?`,
+      ).bind(
+        article.sourceArticleId,
+        article.title,
+        article.conceptId,
+        documentId,
+        now,
+        article.sourceRef,
+        article.sourceFetchedAt,
+        article.identityKey,
+        article.repository,
+      ),
+    );
+  }
+
+  const activeRepositories = new Set(articles.map((article) => article.repository));
+  for (const cached of storedCatalog) {
+    if (
+      cached.public_status === "published" &&
+      activeRepositories.has(cached.repository) &&
+      !liveIdentities.has(
+        identityForRepository(cached.repository, cached.identity_key),
+      )
+    ) {
+      statements.push(
+        env.REPORTS.prepare(
+          `UPDATE editorial_article_catalog
+              SET public_status = 'not-found'
+            WHERE path = ? AND repository = ? AND public_status = 'published'`,
+        ).bind(cached.path, cached.repository),
+      );
+    }
+  }
+
+  for (let offset = 0; offset < statements.length; offset += 40) {
+    await env.REPORTS.batch(statements.slice(offset, offset + 40));
+  }
 };
 
 const CONCEPT_ID = /^[a-z0-9-]+\.[a-z0-9-]+\.[a-z0-9-]+$/;
@@ -18669,6 +19160,10 @@ async function editorialPublicationIntegrationStatus(
     const preflightReady = true;
     const releaseCandidateReady = Boolean(env.EDITORIAL_RELEASE_WEBHOOK_SECRET?.trim());
     const activeDeploymentReadReady = Boolean(env.CLOUDFLARE_WORKERS_READ_TOKEN?.trim());
+    const missingRequirements = [
+      ...(!releaseCandidateReady ? ["EDITORIAL_RELEASE_WEBHOOK_SECRET"] : []),
+      ...(!activeDeploymentReadReady ? ["CLOUDFLARE_WORKERS_READ_TOKEN"] : []),
+    ];
     const ready = defaultBranch === "main" && canWrite && !archived && releaseCandidateReady && activeDeploymentReadReady;
     const automationReady = ready && automaticMerge && automaticReview;
     return json({
@@ -18684,6 +19179,7 @@ async function editorialPublicationIntegrationStatus(
       preflightMode: "pull_request_ci",
       releaseCandidateReady,
       activeDeploymentReadReady,
+      missingRequirements,
       automationReady,
       archived,
       ...(ready
@@ -18702,8 +19198,8 @@ async function editorialPublicationIntegrationStatus(
                 ? "公開先リポジトリの既定ブランチがmainではありません。"
               : !canWrite
                 ? "公開用トークンにContents書込権限がありません。"
-                : !releaseCandidateReady || !activeDeploymentReadReady
-                  ? "候補保存・Cloudflare Deployment照合のSecretが設定されていません。"
+                : missingRequirements.length
+                  ? `公開処理の設定が不足しています: ${missingRequirements.join("、")}。`
                   : "公開連携設定を確認してください。",
           }),
     });
@@ -19098,9 +19594,12 @@ const publicationRunActiveStates = [
 const editorialDocumentHasUnpublishedChanges = (
   document: Pick<EditorialDocument, "published_at" | "current_version_id" | "published_version_id">,
 ) => {
-  if (!document.published_at) return false;
-  return !document.current_version_id || !document.published_version_id ||
-    document.current_version_id !== document.published_version_id;
+  return Boolean(
+    document.published_at &&
+    document.current_version_id &&
+    document.published_version_id &&
+    document.current_version_id !== document.published_version_id,
+  );
 };
 
 const getLatestEditorialPublicationRun = async (
@@ -19323,7 +19822,7 @@ const claimEditorialPublicationRun = async (
   documentId: string,
   action: "publish" | "unpublish",
   createdBy: string,
-  document?: Pick<EditorialDocument, "id" | "updated_at" | "subject" | "category" | "locale" | "slug" | "title" | "summary" | "concept_id" | "body" | "latex_engine" | "status" | "article_references" | "current_version_id">,
+  document?: EditorialDocument,
 ) => {
   const active = await env.REPORTS.prepare(
     `${publicationRunSelect} WHERE document_id = ? AND state IN (${publicationRunActiveStates.map(() => "?").join(",")}) ORDER BY created_at DESC LIMIT 1`,
@@ -19334,7 +19833,18 @@ const claimEditorialPublicationRun = async (
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  const snapshot = document ? await editorialPublicationSnapshot(document) : null;
+  const publicationVersion = document?.current_version_id
+    ? await loadEditorialPublicationVersion(
+        env,
+        document,
+        document.current_version_id,
+      )
+    : null;
+  const snapshot = publicationVersion
+    ? await editorialPublicationSnapshot(publicationVersion)
+    : document
+      ? await editorialPublicationSnapshot(document)
+      : null;
   // 同じ記事世代の二重クリックは同じキーで吸収し、失敗後の明示的な
   // 再試行は末尾にrun IDを付けて新しいrunとして開始できるようにする。
   const idempotencyKey = snapshot
@@ -20134,6 +20644,12 @@ const editorialReleaseArticleIdPattern = /^[a-z0-9-]{1,120}$/;
 const editorialReleaseAccountId = "812021e62fa20465950b61be55dfe064";
 const editorialReleaseWorkerName = "atlasez01";
 const editorialReleaseRequestMaxBytes = 1_000_000;
+const editorialReleaseD1MaxBoundParameters = 100;
+const editorialReleaseCandidateArticleParameterCount = 6;
+const editorialReleaseCandidateArticleChunkSize = Math.floor(
+  editorialReleaseD1MaxBoundParameters /
+    editorialReleaseCandidateArticleParameterCount,
+);
 
 const editorialReleaseManifestFromPayload = (
   value: unknown,
@@ -20341,8 +20857,15 @@ async function registerEditorialReleaseCandidate(
     });
     const versionIds = [...new Set(resolved.map((entry) => entry.versionId).filter((id): id is string => Boolean(id)))];
     const versionDocuments = new Map<string, string>();
-    for (let offset = 0; offset < versionIds.length; offset += 200) {
-      const chunk = versionIds.slice(offset, offset + 200);
+    for (
+      let offset = 0;
+      offset < versionIds.length;
+      offset += editorialReleaseD1MaxBoundParameters
+    ) {
+      const chunk = versionIds.slice(
+        offset,
+        offset + editorialReleaseD1MaxBoundParameters,
+      );
       const rows = await env.REPORTS.prepare(
         `SELECT id, document_id FROM editorial_document_revisions WHERE id IN (${chunk.map(() => "?").join(",")})`,
       ).bind(...chunk).all<{ id: string; document_id: string }>();
@@ -20362,8 +20885,15 @@ async function registerEditorialReleaseCandidate(
         (version_id, repository, worker_name, commit_sha, manifest_hash, state, created_at)
        VALUES (?, ?, ?, ?, ?, 'registered', ?)`,
     ).bind(payload.versionId, payload.repository, payload.workerName, normalizedCommit, manifestHash, now)];
-    for (let offset = 0; offset < resolvedEntries.length; offset += 40) {
-      const chunk = resolvedEntries.slice(offset, offset + 40);
+    for (
+      let offset = 0;
+      offset < resolvedEntries.length;
+      offset += editorialReleaseCandidateArticleChunkSize
+    ) {
+      const chunk = resolvedEntries.slice(
+        offset,
+        offset + editorialReleaseCandidateArticleChunkSize,
+      );
       statements.push(env.REPORTS.prepare(
         `INSERT INTO editorial_release_candidate_articles
           (candidate_version_id, article_id, article_path, document_id, article_version_id, article_status)
@@ -21320,18 +21850,42 @@ async function editorialFeedbackTaskState(
   env: Env,
   documentId: string,
 ): Promise<EditorialFeedbackTaskState> {
-  const row = await env.REPORTS.prepare(
-    `SELECT COUNT(*) AS total,
-            SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) AS done
+  const result = await env.REPORTS.prepare(
+    `SELECT t.id AS task_id, t.assignee_email, t.status
        FROM editorial_feedback_task_links link
        JOIN editorial_tasks t ON t.id = link.task_id
-      WHERE link.document_id = ?`,
+      WHERE link.document_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM workflow_transition_events e
+           WHERE e.entity_type='task' AND e.entity_id=t.id
+             AND json_extract(e.metadata_json, '$.action')=?
+        )`,
   )
-    .bind(documentId)
-    .first<{ total: number | string | null; done: number | string | null }>();
+    .bind(documentId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION)
+    .all<{
+      task_id: string;
+      assignee_email: string | null;
+      status: string;
+    }>();
+  const recipientCompletion = new Map<string, boolean>();
+  for (const task of result.results ?? []) {
+    const recipients = (task.assignee_email ?? "")
+      .split(",")
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean);
+    const uniqueRecipients = recipients.length
+      ? [...new Set(recipients)]
+      : [`task:${task.task_id}`];
+    for (const recipient of uniqueRecipients) {
+      recipientCompletion.set(
+        recipient,
+        (recipientCompletion.get(recipient) ?? true) && task.status === "done",
+      );
+    }
+  }
   return {
-    total: Math.max(0, Number(row?.total ?? 0)),
-    done: Math.max(0, Number(row?.done ?? 0)),
+    total: recipientCompletion.size,
+    done: [...recipientCompletion.values()].filter(Boolean).length,
   };
 }
 
@@ -21574,7 +22128,7 @@ async function getPublicationReviewState(
     round: document.publication_review_round,
     canCompleteWriting:
       !document.archived_at &&
-      !document.published_at &&
+      (!document.published_at || editorialDocumentHasUnpublishedChanges(document)) &&
       !document.publication_review_stage &&
       (document.status === "in-review" || document.status === "draft") &&
       (canEditSubject(scope, document.subject) || document.created_by === scope.email),
@@ -21621,7 +22175,10 @@ async function startPublicationReview(
     return json({ error: "執筆担当者だけが執筆完了にできます。" }, 403);
   if (document.archived_at)
     return json({ error: "アーカイブ中の原稿は公開審査へ進められません。先に一覧から復元してください。" }, 409);
-  if (document.published_at)
+  if (
+    document.published_at &&
+    !editorialDocumentHasUnpublishedChanges(document)
+  )
     return json({ error: "公開済みの記事です。" }, 400);
   if (document.publication_review_stage && !scope.isManager)
     return json({ error: "すでに公開審査中です。" }, 409);
@@ -21633,7 +22190,7 @@ async function startPublicationReview(
   if (managerCanBypassReview) {
     const now = new Date().toISOString();
     const update = await env.REPORTS.prepare(
-      `UPDATE editorial_documents SET status='approved', publication_review_stage=NULL, publication_review_started_at=NULL, reviewed_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND published_at IS NULL AND publication_review_stage IS NULL AND updated_at=?`,
+      `UPDATE editorial_documents SET status='approved', publication_review_stage=NULL, publication_review_started_at=NULL, reviewed_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND (published_at IS NULL OR (current_version_id IS NOT NULL AND published_version_id IS NOT NULL AND current_version_id <> published_version_id)) AND publication_review_stage IS NULL AND updated_at=?`,
     ).bind(now, now, scope.email, documentId, document.updated_at).run();
     if (Number(update.meta?.changes ?? 0) !== 1)
       return json({ error: "原稿の状態が変わりました。再読み込みしてから公開審査へ進んでください。" }, 409);
@@ -21665,7 +22222,7 @@ async function startPublicationReview(
   const now = new Date().toISOString();
   const round = (document.publication_review_round ?? 0) + 1;
   const update = await env.REPORTS.prepare(
-    `UPDATE editorial_documents SET status='in-review', publication_review_stage=?, publication_review_round=?, publication_review_started_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND published_at IS NULL AND publication_review_stage IS NULL AND status IN ('draft', 'in-review') AND updated_at=?`,
+    `UPDATE editorial_documents SET status='in-review', publication_review_stage=?, publication_review_round=?, publication_review_started_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND (published_at IS NULL OR (current_version_id IS NOT NULL AND published_version_id IS NOT NULL AND current_version_id <> published_version_id)) AND publication_review_stage IS NULL AND status IN ('draft', 'in-review') AND updated_at=?`,
   )
     .bind(stage, round, now, now, scope.email, documentId, document.updated_at)
     .run();
@@ -24810,6 +25367,16 @@ async function handleAdminRequest(
     request.method === "GET"
   )
     return listEditorialReviewRequests(request, env);
+  const editorialFeedbackWithdrawalMatch = url.pathname.match(
+    /^\/api\/admin\/editor\/review-requests\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/withdraw$/i,
+  );
+  if (editorialFeedbackWithdrawalMatch && request.method === "POST")
+    return withdrawEditorialFeedbackRequest(
+      request,
+      env,
+      editorialFeedbackWithdrawalMatch[1],
+      editorialFeedbackWithdrawalMatch[2],
+    );
   const editorialReviewAssignmentMatch = url.pathname.match(
     /^\/api\/admin\/editor\/review-requests\/([0-9a-f-]{36})$/i,
   );
