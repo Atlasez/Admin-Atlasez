@@ -84,6 +84,31 @@ const publicationRevision = (values: Record<string, unknown> = {}) => {
   };
 };
 
+const publicationSnapshotHash = async (snapshot: Record<string, unknown>) => {
+  const canonical = JSON.stringify([
+    snapshot.id,
+    snapshot.updated_at,
+    snapshot.subject,
+    snapshot.category,
+    snapshot.locale,
+    snapshot.slug,
+    snapshot.title,
+    snapshot.summary,
+    snapshot.concept_id,
+    snapshot.body,
+    snapshot.latex_engine,
+    snapshot.status,
+    snapshot.article_references,
+  ]);
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(canonical),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+};
+
 const githubWebhookSignature = async (secret: string, body: string) => {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -3314,14 +3339,16 @@ describe("admin worker editor APIs", () => {
     }
   });
 
-  it("exposes feedback completion progress before publication review", async () => {
+  it("exposes feedback progress and allows review for a newer version of a published article", async () => {
     const documentId = "22222222-2222-4222-8222-222222222222";
     const document = {
       id: documentId,
       subject: "mathematics",
       status: "in-review",
       created_by: "local-editor@atlasez.test",
-      published_at: null,
+      published_at: "2026-08-30T00:00:00.000Z",
+      current_version_id: "new-saved-version",
+      published_version_id: "previous-published-version",
       publication_review_stage: null,
       publication_review_round: 0,
     };
@@ -3382,6 +3409,96 @@ describe("admin worker editor APIs", () => {
       canDecide: false,
       managerOverride: true,
     });
+  });
+
+  it("starts publication review for a saved version newer than the published version", async () => {
+    const documentId = "22222222-2222-4222-8222-222222222222";
+    const document = {
+      id: documentId,
+      subject: "mathematics",
+      status: "draft",
+      created_by: "local-editor@atlasez.test",
+      published_at: "2026-08-30T00:00:00.000Z",
+      current_version_id: "new-saved-version",
+      published_version_id: "previous-published-version",
+      publication_review_stage: null,
+      publication_review_round: 0,
+      archived_at: null,
+      updated_at: "2026-08-31T00:00:00.000Z",
+    };
+    const executed: { query: string; values: unknown[] }[] = [];
+    class PublishedVersionReviewStatement extends EmptyStatement {
+      private values: unknown[] = [];
+
+      bind(...values: unknown[]) {
+        super.bind(...values);
+        this.values = values;
+        return this;
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return document as T;
+        return null as T | null;
+      }
+
+      async all<T>() {
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            results: [
+              {
+                task_id: "feedback-task",
+                assignee_email: "reviewer@example.com",
+                status: "done",
+              },
+            ] as T[],
+          };
+        if (this.query.includes("role = 'project-leader'"))
+          return { results: [{ email: "leader@example.com" }] as T[] };
+        return { results: [] as T[] };
+      }
+
+      async run() {
+        executed.push({ query: this.query, values: this.values });
+        return { meta: { changes: 1 } };
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new PublishedVersionReviewStatement(query),
+      },
+    };
+
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/documents/${documentId}/publication-review`,
+        {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: "{}",
+        },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      status: "in-review",
+      stage: "project-leader",
+    });
+    expect(
+      executed.some(
+        ({ query }) =>
+          query.includes("current_version_id <> published_version_id") &&
+          query.includes("UPDATE editorial_documents"),
+      ),
+    ).toBe(true);
   });
 
   it("does not change feedback assignments for archived articles", async () => {
@@ -4408,7 +4525,7 @@ describe("admin worker editor APIs", () => {
 
       async first<T>() {
         if (this.query.includes("FROM editorial_document_revisions"))
-          return publicationRevision(document) as T;
+          return publicationRevision({ ...document, status: "draft" }) as T;
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
         if (this.query.includes("FROM editorial_publication_runs"))
@@ -4495,6 +4612,18 @@ describe("admin worker editor APIs", () => {
         pullRequestNumber: 321,
         pullRequestUrl: "https://github.com/Atlasez/Atlasez01/pull/321",
       });
+      const savedRevision = JSON.parse(
+        publicationRevision({ ...document, status: "draft" }).snapshot_json,
+      ) as Record<string, unknown>;
+      const runInsert = executed.find((entry) =>
+        entry.query.includes(
+          "INSERT OR IGNORE INTO editorial_publication_runs",
+        ),
+      );
+      expect(runInsert?.values[5]).toBe(savedRevision.updated_at);
+      expect(runInsert?.values[6]).toBe(
+        await publicationSnapshotHash(savedRevision),
+      );
       const secondResponse = await worker.fetch(
         new Request(
           `http://localhost/api/admin/editor/documents/${documentId}/publish`,

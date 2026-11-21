@@ -19594,9 +19594,12 @@ const publicationRunActiveStates = [
 const editorialDocumentHasUnpublishedChanges = (
   document: Pick<EditorialDocument, "published_at" | "current_version_id" | "published_version_id">,
 ) => {
-  if (!document.published_at) return false;
-  return !document.current_version_id || !document.published_version_id ||
-    document.current_version_id !== document.published_version_id;
+  return Boolean(
+    document.published_at &&
+    document.current_version_id &&
+    document.published_version_id &&
+    document.current_version_id !== document.published_version_id,
+  );
 };
 
 const getLatestEditorialPublicationRun = async (
@@ -19819,7 +19822,7 @@ const claimEditorialPublicationRun = async (
   documentId: string,
   action: "publish" | "unpublish",
   createdBy: string,
-  document?: Pick<EditorialDocument, "id" | "updated_at" | "subject" | "category" | "locale" | "slug" | "title" | "summary" | "concept_id" | "body" | "latex_engine" | "status" | "article_references" | "current_version_id">,
+  document?: EditorialDocument,
 ) => {
   const active = await env.REPORTS.prepare(
     `${publicationRunSelect} WHERE document_id = ? AND state IN (${publicationRunActiveStates.map(() => "?").join(",")}) ORDER BY created_at DESC LIMIT 1`,
@@ -19830,7 +19833,18 @@ const claimEditorialPublicationRun = async (
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  const snapshot = document ? await editorialPublicationSnapshot(document) : null;
+  const publicationVersion = document?.current_version_id
+    ? await loadEditorialPublicationVersion(
+        env,
+        document,
+        document.current_version_id,
+      )
+    : null;
+  const snapshot = publicationVersion
+    ? await editorialPublicationSnapshot(publicationVersion)
+    : document
+      ? await editorialPublicationSnapshot(document)
+      : null;
   // 同じ記事世代の二重クリックは同じキーで吸収し、失敗後の明示的な
   // 再試行は末尾にrun IDを付けて新しいrunとして開始できるようにする。
   const idempotencyKey = snapshot
@@ -20630,6 +20644,12 @@ const editorialReleaseArticleIdPattern = /^[a-z0-9-]{1,120}$/;
 const editorialReleaseAccountId = "812021e62fa20465950b61be55dfe064";
 const editorialReleaseWorkerName = "atlasez01";
 const editorialReleaseRequestMaxBytes = 1_000_000;
+const editorialReleaseD1MaxBoundParameters = 100;
+const editorialReleaseCandidateArticleParameterCount = 6;
+const editorialReleaseCandidateArticleChunkSize = Math.floor(
+  editorialReleaseD1MaxBoundParameters /
+    editorialReleaseCandidateArticleParameterCount,
+);
 
 const editorialReleaseManifestFromPayload = (
   value: unknown,
@@ -20837,8 +20857,15 @@ async function registerEditorialReleaseCandidate(
     });
     const versionIds = [...new Set(resolved.map((entry) => entry.versionId).filter((id): id is string => Boolean(id)))];
     const versionDocuments = new Map<string, string>();
-    for (let offset = 0; offset < versionIds.length; offset += 200) {
-      const chunk = versionIds.slice(offset, offset + 200);
+    for (
+      let offset = 0;
+      offset < versionIds.length;
+      offset += editorialReleaseD1MaxBoundParameters
+    ) {
+      const chunk = versionIds.slice(
+        offset,
+        offset + editorialReleaseD1MaxBoundParameters,
+      );
       const rows = await env.REPORTS.prepare(
         `SELECT id, document_id FROM editorial_document_revisions WHERE id IN (${chunk.map(() => "?").join(",")})`,
       ).bind(...chunk).all<{ id: string; document_id: string }>();
@@ -20858,8 +20885,15 @@ async function registerEditorialReleaseCandidate(
         (version_id, repository, worker_name, commit_sha, manifest_hash, state, created_at)
        VALUES (?, ?, ?, ?, ?, 'registered', ?)`,
     ).bind(payload.versionId, payload.repository, payload.workerName, normalizedCommit, manifestHash, now)];
-    for (let offset = 0; offset < resolvedEntries.length; offset += 40) {
-      const chunk = resolvedEntries.slice(offset, offset + 40);
+    for (
+      let offset = 0;
+      offset < resolvedEntries.length;
+      offset += editorialReleaseCandidateArticleChunkSize
+    ) {
+      const chunk = resolvedEntries.slice(
+        offset,
+        offset + editorialReleaseCandidateArticleChunkSize,
+      );
       statements.push(env.REPORTS.prepare(
         `INSERT INTO editorial_release_candidate_articles
           (candidate_version_id, article_id, article_path, document_id, article_version_id, article_status)
@@ -22094,7 +22128,7 @@ async function getPublicationReviewState(
     round: document.publication_review_round,
     canCompleteWriting:
       !document.archived_at &&
-      !document.published_at &&
+      (!document.published_at || editorialDocumentHasUnpublishedChanges(document)) &&
       !document.publication_review_stage &&
       (document.status === "in-review" || document.status === "draft") &&
       (canEditSubject(scope, document.subject) || document.created_by === scope.email),
@@ -22141,7 +22175,10 @@ async function startPublicationReview(
     return json({ error: "執筆担当者だけが執筆完了にできます。" }, 403);
   if (document.archived_at)
     return json({ error: "アーカイブ中の原稿は公開審査へ進められません。先に一覧から復元してください。" }, 409);
-  if (document.published_at)
+  if (
+    document.published_at &&
+    !editorialDocumentHasUnpublishedChanges(document)
+  )
     return json({ error: "公開済みの記事です。" }, 400);
   if (document.publication_review_stage && !scope.isManager)
     return json({ error: "すでに公開審査中です。" }, 409);
@@ -22153,7 +22190,7 @@ async function startPublicationReview(
   if (managerCanBypassReview) {
     const now = new Date().toISOString();
     const update = await env.REPORTS.prepare(
-      `UPDATE editorial_documents SET status='approved', publication_review_stage=NULL, publication_review_started_at=NULL, reviewed_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND published_at IS NULL AND publication_review_stage IS NULL AND updated_at=?`,
+      `UPDATE editorial_documents SET status='approved', publication_review_stage=NULL, publication_review_started_at=NULL, reviewed_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND (published_at IS NULL OR (current_version_id IS NOT NULL AND published_version_id IS NOT NULL AND current_version_id <> published_version_id)) AND publication_review_stage IS NULL AND updated_at=?`,
     ).bind(now, now, scope.email, documentId, document.updated_at).run();
     if (Number(update.meta?.changes ?? 0) !== 1)
       return json({ error: "原稿の状態が変わりました。再読み込みしてから公開審査へ進んでください。" }, 409);
@@ -22185,7 +22222,7 @@ async function startPublicationReview(
   const now = new Date().toISOString();
   const round = (document.publication_review_round ?? 0) + 1;
   const update = await env.REPORTS.prepare(
-    `UPDATE editorial_documents SET status='in-review', publication_review_stage=?, publication_review_round=?, publication_review_started_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND published_at IS NULL AND publication_review_stage IS NULL AND status IN ('draft', 'in-review') AND updated_at=?`,
+    `UPDATE editorial_documents SET status='in-review', publication_review_stage=?, publication_review_round=?, publication_review_started_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND (published_at IS NULL OR (current_version_id IS NOT NULL AND published_version_id IS NOT NULL AND current_version_id <> published_version_id)) AND publication_review_stage IS NULL AND status IN ('draft', 'in-review') AND updated_at=?`,
   )
     .bind(stage, round, now, now, scope.email, documentId, document.updated_at)
     .run();

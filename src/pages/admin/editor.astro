@@ -2199,8 +2199,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       metadataSummary.textContent = [selectedOptionLabel(subject), selectedOptionLabel(category), selectedOptionLabel(locale), statusLabel[status.value as keyof typeof statusLabel] ?? selectedOptionLabel(status)].filter(Boolean).join(" / ");
     };
     const hasUnpublishedPublicationChanges = (item: Pick<Document, "published_at" | "current_version_id" | "published_version_id">) => {
-      if (!item.published_at) return false;
-      return !item.current_version_id || !item.published_version_id || item.current_version_id !== item.published_version_id;
+      return Boolean(item.published_at && item.current_version_id && item.published_version_id && item.current_version_id !== item.published_version_id);
     };
     const setDocumentVersionLabel = (item: Pick<Document, "published_at" | "current_version_id" | "published_version_id">) => {
       const hasNewVersion = hasUnpublishedPublicationChanges(item);
