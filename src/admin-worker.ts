@@ -7025,13 +7025,22 @@ async function updateEditorialDocumentArchive(
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
   const document = await env.REPORTS.prepare(
-    "SELECT id, subject, status, created_by, published_at, archived_at, archived_by, archive_expires_at FROM editorial_documents WHERE id = ?",
+    "SELECT id, subject, status, created_by, published_at, published_version_id, publication_review_stage, scheduled_publish_at, archived_at, archived_by, archive_expires_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
-    .first<Pick<EditorialDocument, "id" | "subject" | "status" | "created_by" | "published_at" | "archived_at" | "archived_by" | "archive_expires_at">>();
+    .first<Pick<EditorialDocument, "id" | "subject" | "status" | "created_by" | "published_at" | "published_version_id" | "publication_review_stage" | "scheduled_publish_at" | "archived_at" | "archived_by" | "archive_expires_at">>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (document.status !== "draft" || document.published_at)
-    return json({ error: "アーカイブできるのは未公開の下書きだけです。" }, 400);
+  if (
+    (document.status !== "draft" && document.status !== "in-review") ||
+    document.publication_review_stage ||
+    document.published_version_id ||
+    document.published_at ||
+    document.scheduled_publish_at
+  )
+    return json(
+      { error: "アーカイブできるのは公開前の下書き・フィードバック中の記事です。公開審査中・公開済みの記事はアーカイブできません。" },
+      400,
+    );
   if (!scope.isManager && document.created_by.toLowerCase() !== scope.email.toLowerCase() && !canEditSubject(scope, document.subject))
     return json({ error: "この原稿をアーカイブする権限がありません。" }, 403);
 
@@ -7040,11 +7049,13 @@ async function updateEditorialDocumentArchive(
     if (document.archive_expires_at && Date.parse(document.archive_expires_at) <= Date.now())
       return json({ error: `アーカイブ期限（${EDITORIAL_ARCHIVE_DAYS}日）を過ぎたため復元できません。` }, 410);
     const now = new Date().toISOString();
-    await env.REPORTS.prepare(
-      "UPDATE editorial_documents SET archived_at = NULL, archived_by = NULL, archive_expires_at = NULL, updated_at = ?, updated_by = ? WHERE id = ? AND status = 'draft' AND published_at IS NULL",
+    const result = await env.REPORTS.prepare(
+      "UPDATE editorial_documents SET archived_at = NULL, archived_by = NULL, archive_expires_at = NULL, updated_at = ?, updated_by = ? WHERE id = ? AND archived_at = ? AND status IN ('draft', 'in-review') AND published_version_id IS NULL AND published_at IS NULL AND scheduled_publish_at IS NULL AND publication_review_stage IS NULL",
     )
-      .bind(now, scope.email, documentId)
+      .bind(now, scope.email, documentId, document.archived_at)
       .run();
+    if (Number(result.meta?.changes ?? 0) !== 1)
+      return json({ error: "原稿の状態が変わりました。再読み込みしてから復元してください。" }, 409);
     return json({ ok: true, archived: false, archived_at: null, archive_expires_at: null });
   }
 
@@ -7055,11 +7066,13 @@ async function updateEditorialDocumentArchive(
   const now = new Date();
   const archivedAt = now.toISOString();
   const archiveExpiresAt = editorialArchiveExpiry(now);
-  await env.REPORTS.prepare(
-    "UPDATE editorial_documents SET archived_at = ?, archived_by = ?, archive_expires_at = ?, updated_at = ?, updated_by = ? WHERE id = ? AND status = 'draft' AND published_at IS NULL",
+  const result = await env.REPORTS.prepare(
+    "UPDATE editorial_documents SET archived_at = ?, archived_by = ?, archive_expires_at = ?, updated_at = ?, updated_by = ? WHERE id = ? AND archived_at IS NULL AND status IN ('draft', 'in-review') AND published_version_id IS NULL AND published_at IS NULL AND scheduled_publish_at IS NULL AND publication_review_stage IS NULL",
   )
     .bind(archivedAt, scope.email, archiveExpiresAt, archivedAt, scope.email, documentId)
     .run();
+  if (Number(result.meta?.changes ?? 0) !== 1)
+    return json({ error: "原稿の状態が変わりました。再読み込みしてからアーカイブしてください。" }, 409);
   return json({ ok: true, archived: true, archived_at: archivedAt, archive_expires_at: archiveExpiresAt });
 }
 
@@ -16826,7 +16839,7 @@ async function listEditorialReviewRequests(
        LEFT JOIN editorial_review_assignments r ON r.document_id = d.id
        LEFT JOIN editorial_member_profiles requester ON requester.email = d.updated_by
        LEFT JOIN editorial_member_profiles reviewer ON reviewer.email = r.reviewer_email
-       WHERE d.status = 'in-review'${subjectFilter}${documentFilter}
+       WHERE d.status = 'in-review' AND d.archived_at IS NULL${subjectFilter}${documentFilter}
        ORDER BY CASE WHEN lower(r.reviewer_email) = lower(?) THEN 0 WHEN r.reviewer_email IS NULL THEN 2 ELSE 1 END,
                 d.updated_at ASC LIMIT 100`,
     )
@@ -16898,7 +16911,7 @@ async function updateEditorialReviewAssignment(
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
   const document = await env.REPORTS.prepare(
-    "SELECT subject, status, publication_review_stage, title, created_by FROM editorial_documents WHERE id = ?",
+    "SELECT subject, status, publication_review_stage, title, created_by, archived_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
     .first<{
@@ -16907,9 +16920,12 @@ async function updateEditorialReviewAssignment(
       publication_review_stage: EditorialPublicationReviewStage | null;
       title: string;
       created_by: string;
+      archived_at: string | null;
     }>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (document.status !== "in-review")
+  if (document.archived_at)
+    return json({ error: "アーカイブ中の記事のフィードバック担当者は変更できません。先に一覧から復元してください。" }, 409);
+  if (document.status !== "in-review" || document.publication_review_stage)
     return json(
       { error: "フィードバック中の原稿だけ担当者を設定できます。" },
       400,
@@ -16930,23 +16946,29 @@ async function updateEditorialReviewAssignment(
   )
     .bind(documentId)
     .first<{ task_id: string | null }>();
+  const feedbackStageGuard = env.REPORTS.prepare(
+    "UPDATE editorial_documents SET updated_at = updated_at WHERE id = ? AND status = 'in-review' AND publication_review_stage IS NULL AND archived_at IS NULL",
+  ).bind(documentId);
   if (!reviewerEmails.length) {
     const statements = [
+      feedbackStageGuard,
       ...(existingAssignment?.task_id
         ? [
             env.REPORTS.prepare(
-              "UPDATE editorial_tasks SET status='done',updated_at=? WHERE id=? AND task_kind='feedback'",
-            ).bind(new Date().toISOString(), existingAssignment.task_id),
+              "UPDATE editorial_tasks SET status='done',updated_at=? WHERE id=? AND task_kind='feedback' AND EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)",
+            ).bind(new Date().toISOString(), existingAssignment.task_id, documentId),
           ]
         : []),
       env.REPORTS.prepare(
-        "DELETE FROM editorial_review_assignment_recipients WHERE document_id = ?",
-      ).bind(documentId),
+        "DELETE FROM editorial_review_assignment_recipients WHERE document_id = ? AND EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)",
+      ).bind(documentId, documentId),
       env.REPORTS.prepare(
-        "DELETE FROM editorial_review_assignments WHERE document_id = ?",
-      ).bind(documentId),
+        "DELETE FROM editorial_review_assignments WHERE document_id = ? AND EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)",
+      ).bind(documentId, documentId),
     ];
-    await env.REPORTS.batch(statements);
+    const results = await env.REPORTS.batch(statements);
+    if (Number(results[0]?.meta?.changes ?? 0) !== 1)
+      return json({ error: "原稿の状態が変わりました。再読み込みしてから担当者を変更してください。" }, 409);
     return json({ ok: true, reviewerEmail: null, reviewerEmails: [] });
   }
   if (reviewerEmails.includes("*") && reviewerEmails.length > 1)
@@ -16990,10 +17012,12 @@ async function updateEditorialReviewAssignment(
   const taskDetails = requestNote
     ? `${requestNote}\n\n記事編集画面: /admin/editor/?document=${documentId}`
     : `記事のフィードバックをお願いします。\n\n記事編集画面: /admin/editor/?document=${documentId}`;
-  await env.REPORTS.batch([
+  const isFeedbackStage = `EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)`;
+  const results = await env.REPORTS.batch([
+    feedbackStageGuard,
     env.REPORTS.prepare(
       `INSERT INTO editorial_review_assignments (document_id, reviewer_email, requested_by, requested_at, updated_at, request_note, task_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+       SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${isFeedbackStage}
        ON CONFLICT(document_id) DO UPDATE SET reviewer_email = excluded.reviewer_email,
          requested_by = excluded.requested_by, updated_at = excluded.updated_at, request_note = excluded.request_note, task_id = excluded.task_id`,
     ).bind(
@@ -17004,10 +17028,11 @@ async function updateEditorialReviewAssignment(
       now,
       requestNote,
       taskId,
+      documentId,
     ),
     env.REPORTS.prepare(
       `INSERT INTO editorial_tasks (id,project_id,subject,assignee_email,title,details,status,created_by,created_at,updated_at,task_kind)
-       VALUES (?, 'atlas', ?, ?, ?, ?, 'open', ?, ?, ?, 'feedback')
+       SELECT ?, 'atlas', ?, ?, ?, ?, 'open', ?, ?, ?, 'feedback' WHERE ${isFeedbackStage}
       `,
     ).bind(
       taskId,
@@ -17018,21 +17043,26 @@ async function updateEditorialReviewAssignment(
       scope.email,
       now,
       now,
+      documentId,
     ),
     env.REPORTS.prepare(
-      "INSERT INTO editorial_feedback_task_links (task_id, document_id, created_at) VALUES (?, ?, ?)",
-    ).bind(taskId, documentId, now),
+      `INSERT INTO editorial_feedback_task_links (task_id, document_id, created_at)
+       SELECT ?, ?, ? WHERE ${isFeedbackStage}`,
+    ).bind(taskId, documentId, now, documentId),
     env.REPORTS.prepare(
-      "DELETE FROM editorial_review_assignment_recipients WHERE document_id = ?",
-    ).bind(documentId),
+      `DELETE FROM editorial_review_assignment_recipients WHERE document_id = ? AND ${isFeedbackStage}`,
+    ).bind(documentId, documentId),
     ...reviewerEmails
       .filter((email) => email !== "*")
       .map((email) =>
         env.REPORTS.prepare(
-          "INSERT INTO editorial_review_assignment_recipients (document_id, reviewer_email, requested_at, updated_at) VALUES (?, ?, ?, ?)",
-        ).bind(documentId, email, now, now),
+          `INSERT INTO editorial_review_assignment_recipients (document_id, reviewer_email, requested_at, updated_at)
+           SELECT ?, ?, ?, ? WHERE ${isFeedbackStage}`,
+        ).bind(documentId, email, now, now, documentId),
       ),
   ]);
+  if (Number(results[0]?.meta?.changes ?? 0) !== 1)
+    return json({ error: "原稿の状態が変わりました。再読み込みしてから担当者を変更してください。" }, 409);
   return json({
     ok: true,
     reviewerEmail: reviewerEmails[0],
@@ -21543,6 +21573,7 @@ async function getPublicationReviewState(
     stage: document.publication_review_stage,
     round: document.publication_review_round,
     canCompleteWriting:
+      !document.archived_at &&
       !document.published_at &&
       !document.publication_review_stage &&
       (document.status === "in-review" || document.status === "draft") &&
@@ -21551,6 +21582,7 @@ async function getPublicationReviewState(
     feedbackTaskDone: feedbackTasks.done,
     feedbackComplete,
     canDecide:
+      !document.archived_at &&
       document.status === "in-review" &&
       Boolean(document.publication_review_stage) &&
       (Boolean(scope.isManager) ||
@@ -21559,6 +21591,7 @@ async function getPublicationReviewState(
         (document.publication_review_stage === "project-leader" &&
           Boolean(scope.isProjectLeader))),
     managerOverride: Boolean(scope.isManager),
+    archived: Boolean(document.archived_at),
     coordinatorCount: coordinators.length,
     leaderCount: leaders.length,
   });
@@ -21586,6 +21619,8 @@ async function startPublicationReview(
     document.created_by !== scope.email
   )
     return json({ error: "執筆担当者だけが執筆完了にできます。" }, 403);
+  if (document.archived_at)
+    return json({ error: "アーカイブ中の原稿は公開審査へ進められません。先に一覧から復元してください。" }, 409);
   if (document.published_at)
     return json({ error: "公開済みの記事です。" }, 400);
   if (document.publication_review_stage && !scope.isManager)
@@ -21597,9 +21632,11 @@ async function startPublicationReview(
   const managerCanBypassReview = scope.isManager && !localDevelopmentEnabled(request, env);
   if (managerCanBypassReview) {
     const now = new Date().toISOString();
-    await env.REPORTS.prepare(
-      `UPDATE editorial_documents SET status='approved', publication_review_stage=NULL, publication_review_started_at=NULL, reviewed_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=?`,
-    ).bind(now, now, scope.email, documentId).run();
+    const update = await env.REPORTS.prepare(
+      `UPDATE editorial_documents SET status='approved', publication_review_stage=NULL, publication_review_started_at=NULL, reviewed_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND published_at IS NULL AND publication_review_stage IS NULL AND updated_at=?`,
+    ).bind(now, now, scope.email, documentId, document.updated_at).run();
+    if (Number(update.meta?.changes ?? 0) !== 1)
+      return json({ error: "原稿の状態が変わりました。再読み込みしてから公開審査へ進んでください。" }, 409);
     await recordWorkflowEvent(env, { entityType: "document", entityId: documentId, fromState: document.status, toState: "approved", actorEmail: scope.email, expectedUpdatedAt: document.updated_at, metadata: { managerOverride: true }, createdAt: now });
     await recordAdminAudit(env, scope.email, "article_approved", "article", documentId, document.title, `全分野管理者が記事を承認：${document.title}`, { managerOverride: true });
     await notifyEditorialDocumentChange(env, documentId);
@@ -21627,11 +21664,13 @@ async function startPublicationReview(
     : "project-leader";
   const now = new Date().toISOString();
   const round = (document.publication_review_round ?? 0) + 1;
-  await env.REPORTS.prepare(
-    `UPDATE editorial_documents SET status='in-review', publication_review_stage=?, publication_review_round=?, publication_review_started_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=?`,
+  const update = await env.REPORTS.prepare(
+    `UPDATE editorial_documents SET status='in-review', publication_review_stage=?, publication_review_round=?, publication_review_started_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND published_at IS NULL AND publication_review_stage IS NULL AND status IN ('draft', 'in-review') AND updated_at=?`,
   )
-    .bind(stage, round, now, now, scope.email, documentId)
+    .bind(stage, round, now, now, scope.email, documentId, document.updated_at)
     .run();
+  if (Number(update.meta?.changes ?? 0) !== 1)
+    return json({ error: "原稿の状態が変わりました。再読み込みしてから公開審査へ進んでください。" }, 409);
   if (document.status !== "in-review")
     await recordWorkflowEvent(env, { entityType: "document", entityId: documentId, fromState: document.status, toState: "in-review", actorEmail: scope.email, idempotencyKey, expectedUpdatedAt: document.updated_at, metadata: { stage }, createdAt: now });
   await notifyEditorialDocumentChange(env, documentId);
@@ -21671,6 +21710,8 @@ async function decidePublicationReview(
     .bind(documentId)
     .first<EditorialDocument>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
+  if (document.archived_at)
+    return json({ error: "アーカイブ中の原稿は公開審査を処理できません。先に復元してください。" }, 409);
   const stage = document.publication_review_stage;
   if (document.status !== "in-review" || !stage)
     return json({ error: "この原稿は公開審査中ではありません。" }, 409);

@@ -1035,7 +1035,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
   import { createAdminLoadRetry } from "../../scripts/admin-load-retry";
   import { readAdminApiJson } from "../../lib/admin-api";
   import { isTestArticleTitle } from "../../lib/article-test-classification";
-  type Article={id:string;source_article_id?:string|null;subject:string;category:string;slug?:string;title:string;status:"draft"|"in-review"|"on-hold"|"approved";updated_at:string;published_at:string|null;current_version_id?:string|null;published_version_id?:string|null;scheduled_publish_at?:string|null;archived_at?:string|null;archive_expires_at?:string|null;created_by?:string;updated_by?:string;reviewer_email?:string|null;active_editors?:Array<{sessionId:string;email:string;displayName:string;field:string}>};
+  type Article={id:string;source_article_id?:string|null;subject:string;category:string;slug?:string;title:string;status:"draft"|"in-review"|"on-hold"|"approved";updated_at:string;published_at:string|null;current_version_id?:string|null;published_version_id?:string|null;scheduled_publish_at?:string|null;publication_review_stage?:"subject-coordinator"|"project-leader"|null;archived_at?:string|null;archive_expires_at?:string|null;created_by?:string;updated_by?:string;reviewer_email?:string|null;active_editors?:Array<{sessionId:string;email:string;displayName:string;field:string}>};
   type ArticleFilterState={query:string;subject:string;category:string;status:string;publication:string;test:string;workflow:string;archive:string};
   type ArticleScope={email:string;subjects?:string[];coordinatorSubjects?:string[];allSubjects?:boolean;isManager?:boolean;isProjectLeader?:boolean};
   type ArticlePagination={limit:number;nextCursor:string|null;hasMore:boolean};
@@ -1306,7 +1306,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
         const updatedLabel = "最終更新";
         const archiveBadge = article && isArchived(article) ? '<span class="badge archived">アーカイブ済み</span>' : "";
         const testBadge = isTestArticleTitle(title) ? '<span class="badge">テスト原稿</span>' : "";
-        const archiveAction = article && article.status === "draft" && !article.published_at
+        const canArchiveArticle = article && (article.status === "draft" || article.status === "in-review") && !article.publication_review_stage && !article.published_version_id && !article.published_at && !article.scheduled_publish_at;
+        const archiveAction = canArchiveArticle
           ? isArchived(article)
             ? archiveExpired(article)
               ? '<button type="button" class="article-action" disabled title="アーカイブ期限を過ぎています">期限切れ</button>'

@@ -1099,6 +1099,82 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     );
   });
 
+  test("D-5: フィードバック中はアーカイブでき、公開審査中はできない", async ({
+    page,
+  }) => {
+    const feedbackId = "33333333-3333-4333-8333-333333333333";
+    const reviewId = "44444444-4444-4444-8444-444444444444";
+    let archived = false;
+    const feedbackDocument = {
+      id: feedbackId,
+      subject: "mathematics",
+      category: "algebra",
+      title: "フィードバック中の記事",
+      status: "in-review",
+      publication_review_stage: null,
+      created_by: "alice@example.com",
+      updated_at: "2026-08-28T00:00:00.000Z",
+      published_at: null,
+      archived_at: null,
+    };
+    await page.route("**/api/admin/editor/documents**", async (route) => {
+      await route.fulfill({
+        json: {
+          scope: { email: "alice@example.com" },
+          documents: [
+            ...(archived
+              ? [
+                  {
+                    ...feedbackDocument,
+                    archived_at: "2026-08-28T01:00:00.000Z",
+                  },
+                ]
+              : [feedbackDocument]),
+            {
+              id: reviewId,
+              subject: "mathematics",
+              category: "algebra",
+              title: "公開審査中の記事",
+              status: "in-review",
+              publication_review_stage: "subject-coordinator",
+              created_by: "alice@example.com",
+              updated_at: "2026-08-27T00:00:00.000Z",
+              published_at: null,
+              archived_at: null,
+            },
+          ],
+        },
+      });
+    });
+    await page.route(
+      `**/api/admin/editor/documents/${feedbackId}/archive`,
+      async (route) => {
+        archived = true;
+        await route.fulfill({
+          json: {
+            ok: true,
+            archived: true,
+            archived_at: "2026-08-28T01:00:00.000Z",
+            archive_expires_at: "2026-09-27T01:00:00.000Z",
+          },
+        });
+      },
+    );
+
+    await page.goto("admin/articles/?verify=feedback-archive");
+    const feedbackRow = page.locator(`[data-document-id="${feedbackId}"]`);
+    const reviewRow = page.locator(`[data-document-id="${reviewId}"]`);
+    await expect(
+      feedbackRow.locator('[data-archive-action="archive"]'),
+    ).toBeVisible();
+    await expect(reviewRow.locator("[data-archive-action]")).toHaveCount(0);
+
+    await feedbackRow.locator('[data-archive-action="archive"]').click();
+    await expect(page.locator("[data-list]")).not.toContainText(
+      "フィードバック中の記事",
+    );
+  });
+
   test("V-1 フィードバックは原稿一覧で未確認に絞り、自分への依頼を優先する", async ({
     page,
   }) => {

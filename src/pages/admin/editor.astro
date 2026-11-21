@@ -125,7 +125,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     </header>
 
     <section class="workflow-guide" data-status-workflow aria-label="開いている原稿の進捗">
-      <p>現在の状態：<strong data-workflow-current>記事を選択してください</strong><small data-workflow-help>保存済みの記事を開くか、新規記事を作成します。</small></p>
+      <p>現在の状態：<strong data-workflow-current>記事を選択してください</strong><small data-workflow-help>保存済みの記事を開くか、新規記事を作成します。</small><button type="button" class="workflow-feedback-task-link" data-feedback-task-link hidden>未完了の依頼を確認</button></p>
       <ol aria-label="原稿の公開までの進捗">
         <li data-workflow-step="draft"><b>1</b><span>執筆・保存</span></li>
         <li data-workflow-step="in-review"><b>2</b><span>フィードバック</span></li>
@@ -434,7 +434,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .workspace-header nav a, .workspace-header nav button { background: var(--surface); border: 1px solid var(--border); border-radius: .45rem; color: var(--text); cursor: pointer; font: inherit; font-size: .84rem; padding: .55rem .7rem; text-decoration: none; }
   .workspace-header nav a:hover, .workspace-header nav button:hover { background: var(--surface-alt); }
   .workspace-header nav form { margin: 0; }
-  .workflow-guide { color: var(--muted); display: grid; font-size: .8rem; gap: .75rem; padding: 1rem 0 1.15rem; }.workflow-guide p { margin: 0; }.workflow-guide p strong { color: var(--text); }.workflow-guide p small { color: var(--muted); display: block; margin-top: .2rem; }.workflow-guide ol { display: grid; gap: .65rem; grid-template-columns: repeat(6, minmax(0, 1fr)); list-style: none; margin: 0; max-width: none; padding: 0; width: 100%; }.workflow-guide li { align-items: center; color: var(--muted); display: grid; font-weight: 700; gap: .42rem; grid-template-rows: 1.55rem auto; justify-items: center; min-width: 0; position: relative; text-align: center; }.workflow-guide li:not(:last-child)::after { background: var(--border); content: ""; height: 2px; left: calc(50% + .9rem); position: absolute; right: calc(-50% + .9rem); top: .72rem; z-index: 0; }.workflow-guide b { align-items: center; background: color-mix(in srgb, var(--accent), transparent 88%); border-radius: 999px; color: var(--accent); display: inline-flex; font-size: .72rem; height: 1.3rem; justify-content: center; position: relative; width: 1.3rem; z-index: 1; }.workflow-guide li span { line-height: 1.35; max-width: 100%; overflow-wrap: anywhere; }.workflow-guide li.is-complete { color: var(--accent); }.workflow-guide li.is-complete b, .workflow-guide li.is-current b { background: var(--accent); color: white; }.workflow-guide li.is-complete:not(:last-child)::after { background: var(--accent); }.workflow-guide li.is-current { color: var(--text); }.workflow-guide li.is-current span { text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: .25rem; }.workflow-guide.is-on-hold [data-workflow-step] { opacity: .45; }
+  .workflow-guide { color: var(--muted); display: grid; font-size: .8rem; gap: .75rem; padding: 1rem 0 1.15rem; }.workflow-guide p { margin: 0; }.workflow-guide p strong { color: var(--text); }.workflow-guide p small { color: var(--muted); display: block; margin-top: .2rem; }.workflow-feedback-task-link { background: none; border: 0; color: var(--accent); cursor: pointer; display: block; font: inherit; font-size: .78rem; font-weight: 800; margin-top: .35rem; padding: 0; text-decoration: underline; text-underline-offset: .12rem; }.workflow-feedback-task-link[hidden] { display: none; }.workflow-guide ol { display: grid; gap: .65rem; grid-template-columns: repeat(6, minmax(0, 1fr)); list-style: none; margin: 0; max-width: none; padding: 0; width: 100%; }.workflow-guide li { align-items: center; color: var(--muted); display: grid; font-weight: 700; gap: .42rem; grid-template-rows: 1.55rem auto; justify-items: center; min-width: 0; position: relative; text-align: center; }.workflow-guide li:not(:last-child)::after { background: var(--border); content: ""; height: 2px; left: calc(50% + .9rem); position: absolute; right: calc(-50% + .9rem); top: .72rem; z-index: 0; }.workflow-guide b { align-items: center; background: color-mix(in srgb, var(--accent), transparent 88%); border-radius: 999px; color: var(--accent); display: inline-flex; font-size: .72rem; height: 1.3rem; justify-content: center; position: relative; width: 1.3rem; z-index: 1; }.workflow-guide li span { line-height: 1.35; max-width: 100%; overflow-wrap: anywhere; }.workflow-guide li.is-complete { color: var(--accent); }.workflow-guide li.is-complete b, .workflow-guide li.is-current b { background: var(--accent); color: white; }.workflow-guide li.is-complete:not(:last-child)::after { background: var(--accent); }.workflow-guide li.is-current { color: var(--text); }.workflow-guide li.is-current span { text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: .25rem; }.workflow-guide.is-on-hold [data-workflow-step] { opacity: .45; }
   .workspace-grid { border-bottom: 1px solid var(--border); border-top: 2px solid var(--accent); display: grid; grid-template-columns: minmax(0, 1fr); min-height: 46rem; overflow: visible; }
 
   button { font: inherit; }
@@ -1552,6 +1552,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const workflow = root.querySelector<HTMLElement>("[data-status-workflow]")!;
     const workflowCurrent = root.querySelector<HTMLElement>("[data-workflow-current]")!;
     const workflowHelp = root.querySelector<HTMLElement>("[data-workflow-help]")!;
+    const feedbackTaskLink = root.querySelector<HTMLButtonElement>("[data-feedback-task-link]")!;
     const wordCount = root.querySelector<HTMLElement>("[data-word-count]")!;
     const authoringHelpDialog = root.querySelector<HTMLDialogElement>("[data-authoring-help-dialog]")!;
     const helpTopicButtons = [...root.querySelectorAll<HTMLButtonElement>("[data-help-topic]")];
@@ -2244,7 +2245,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         ? "公開中の版は維持されています。修正内容は再レビュー後に更新できます。"
         : isPublished
         ? "公開済みです。編集内容は新しい版として保存され、公開版は公開操作まで維持されます。"
-        : current === "publication-subject" ? "分野統括の承認を待っています。" : current === "publication-leader" ? "プロジェクトリーダーの承認を待っています。" : ({ draft: "入力内容は自動保存されます。準備ができたらフィードバックを依頼します。", "in-review": "フィードバックを反映したら「執筆完了（公開審査へ）」を押します。", approved: "公開審査が完了しています。公開または公開予約へ進めます。", "on-hold": "保留中です。状態の変更は自動保存されます。" } as const)[documentStatus];
+        : current === "publication-subject" ? "分野統括の承認を待っています。" : current === "publication-leader" ? "プロジェクトリーダーの承認を待っています。" : ({ draft: "入力内容は自動保存されます。準備ができたらフィードバックを依頼します。", "in-review": "フィードバック依頼をすべて完了にすると、公開審査へ進めます。", approved: "公開審査が完了しています。公開または公開予約へ進めます。", "on-hold": "保留中です。状態の変更は自動保存されます。" } as const)[documentStatus];
       workflowHelp.textContent = help;
       workflow.querySelectorAll<HTMLElement>("[data-workflow-step]").forEach((step) => {
         const stepIndex = workflowSteps.indexOf(step.dataset.workflowStep as typeof workflowSteps[number]);
@@ -2255,7 +2256,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const loadPublicationReview = async (documentId: string, item?: Omit<Document, "body">) => {
       if (!documentId) return;
       const response = await fetch(`/api/admin/editor/documents/${encodeURIComponent(documentId)}/publication-review`, { credentials: "same-origin", cache: "no-store" });
-      const stateData = await read<{ stage?: Document["publication_review_stage"]; canCompleteWriting?: boolean; canDecide?: boolean; managerOverride?: boolean; feedbackTaskTotal?: number; feedbackTaskDone?: number; feedbackComplete?: boolean; error?: string }>(response);
+      const stateData = await read<{ stage?: Document["publication_review_stage"]; canCompleteWriting?: boolean; canDecide?: boolean; managerOverride?: boolean; archived?: boolean; feedbackTaskTotal?: number; feedbackTaskDone?: number; feedbackComplete?: boolean; error?: string }>(response);
       if (!response.ok) throw new Error(stateData.error ?? "公開審査状態を読み込めませんでした。");
       const loadedId = (form.elements.namedItem("documentId") as HTMLInputElement).value;
       if (loadedId !== documentId) return;
@@ -2270,7 +2271,10 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       const feedbackTaskTotal = stateData.feedbackTaskTotal ?? 0;
       const feedbackTaskDone = stateData.feedbackTaskDone ?? 0;
       const feedbackComplete = Boolean(stateData.feedbackComplete);
-      if (currentItem?.status === "in-review" || currentItem?.status === "draft") {
+      feedbackTaskLink.hidden = stateData.archived === true || feedbackTaskTotal === 0 || feedbackTaskDone >= feedbackTaskTotal;
+      if (stateData.archived) {
+        workflowHelp.textContent = "アーカイブ中です。公開審査へ進むには、編集・フィードバック一覧から復元してください。";
+      } else if (currentItem?.status === "in-review" || currentItem?.status === "draft") {
         completeWritingButton.disabled = !feedbackComplete;
         completeWritingButton.textContent = feedbackComplete
           ? "フィードバック完了・公開審査へ"
@@ -2283,7 +2287,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         if (!feedbackComplete)
           workflowHelp.textContent = feedbackTaskTotal === 0
             ? "フィードバック依頼を完了すると、公開審査へ進めます。"
-            : `フィードバック依頼の完了を待っています（${feedbackTaskDone}/${feedbackTaskTotal}件）。`;
+            : `フィードバック依頼の完了を待っています（${feedbackTaskDone}/${feedbackTaskTotal}件）。依頼の状態を「完了」にして保存してください。`;
         else workflowHelp.textContent = "すべてのフィードバック依頼が完了しました。「フィードバック完了・公開審査へ」を押します。";
       } else {
         completeWritingButton.disabled = false;
@@ -4721,6 +4725,19 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       const after = revisions.querySelector<HTMLSelectElement>("[data-revision-after]");
       if (after) { after.value = "current"; after.dispatchEvent(new Event("change")); }
       title.focus({ preventScroll: true });
+    });
+    feedbackTaskLink.addEventListener("click", () => {
+      const item = feedbackRequestHistory
+        .querySelector<HTMLElement>(
+          ".feedback-request-status.is-open, .feedback-request-status.is-doing",
+        )
+        ?.closest<HTMLElement>(".feedback-request-history-item");
+      if (!item) {
+        feedbackRequestHistory.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      item.scrollIntoView({ behavior: "smooth", block: "center" });
+      item.querySelector<HTMLSelectElement>("[data-feedback-task-status]")?.focus({ preventScroll: true });
     });
     feedbackRequestHistory.addEventListener("click", (event) => {
       const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-save-feedback-task]");
