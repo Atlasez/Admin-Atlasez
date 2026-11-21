@@ -2375,6 +2375,7 @@ describe("admin worker editor APIs", () => {
     });
     expect(documentQuery).toContain("AND d.id = ?");
     expect(documentBindings).toEqual([
+      "feedback_request_withdrawn",
       "mathematics",
       "doc-1",
       "member@example.com",
@@ -2569,7 +2570,7 @@ describe("admin worker editor APIs", () => {
           )
         )
           return { results: [] as T[] };
-        if (this.query.includes("FROM editorial_documents d")) {
+        if (this.query.includes("SELECT d.id, d.creator_kind")) {
           documentQueries.push(this.query);
           return {
             results: [
@@ -3203,6 +3204,56 @@ describe("admin worker editor APIs", () => {
     expect(batchCalled).toBe(false);
   });
 
+  it("does not treat an empty reviewer assignment as a completed feedback request", async () => {
+    const documentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let batchCalled = false;
+    class EmptyReviewersStatement extends EmptyStatement {
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return {
+            subject: "mathematics",
+            status: "in-review",
+            publication_review_stage: null,
+            title: "依頼取り下げテスト",
+            created_by: "local-editor@atlasez.test",
+            archived_at: null,
+          } as T;
+        return null as T | null;
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new EmptyReviewersStatement(query),
+        batch: async () => {
+          batchCalled = true;
+          return [];
+        },
+      },
+    };
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/review-requests/${documentId}`,
+        {
+          method: "PATCH",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ reviewerEmails: [] }),
+        },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("依頼先を1人以上選択してください"),
+    });
+    expect(batchCalled).toBe(false);
+  });
+
   it("guards feedback assignment writes if an article is archived after it is read", async () => {
     const documentId = "66666666-6666-4666-8666-666666666666";
     const document = {
@@ -3268,6 +3319,162 @@ describe("admin worker editor APIs", () => {
         .slice(1)
         .every((query) => query.includes("archived_at IS NULL")),
     ).toBe(true);
+  });
+
+  it("withdraws the requester's active feedback task and returns its article to draft when it was the last request", async () => {
+    const documentId = "77777777-7777-4777-8777-777777777777";
+    const taskId = "88888888-8888-4888-8888-888888888888";
+    const executed: string[] = [];
+    const executedBindings: unknown[][] = [];
+    class FeedbackWithdrawalStatement extends EmptyStatement {
+      bindings: unknown[] = [];
+
+      bind(...values: unknown[]) {
+        this.bindings = values;
+        return super.bind(...values);
+      }
+
+      get queryText() {
+        return this.query;
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return {
+            subject: "mathematics",
+            status: "in-review",
+            publication_review_stage: null,
+            title: "フィードバック中の記事",
+            updated_at: "2026-11-20T00:00:00.000Z",
+            archived_at: null,
+          } as T;
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            title: "フィードバック依頼：フィードバック中の記事",
+            created_by: "local-editor@atlasez.test",
+            status: "open",
+            updated_at: "2026-11-20T00:01:00.000Z",
+          } as T;
+        if (this.query.includes("FROM workflow_transition_events"))
+          return null as T | null;
+        return null as T | null;
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new FeedbackWithdrawalStatement(query),
+        batch: async (statements: FeedbackWithdrawalStatement[]) => {
+          executed.push(...statements.map((statement) => statement.queryText));
+          executedBindings.push(
+            ...statements.map((statement) => statement.bindings),
+          );
+          return statements.map((_, index) => ({
+            meta: { changes: index === 3 || index === 4 ? 0 : 1 },
+          }));
+        },
+      },
+    };
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/review-requests/${documentId}/${taskId}/withdraw`,
+        {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            expectedUpdatedAt: "2026-11-20T00:00:00.000Z",
+          }),
+        },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      withdrawn: true,
+      documentStatus: "draft",
+    });
+    expect(executed).toHaveLength(7);
+    expect(executed[0]).toContain("UPDATE editorial_tasks SET status='done'");
+    expect(executed[1]).toContain("workflow_transition_events");
+    expect(executedBindings[1].join("|")).toContain(
+      "feedback_request_withdrawn",
+    );
+    expect(executed[2]).toContain("INSERT INTO admin_audit_log");
+    expect(executed[3]).toContain("workflow_transition_events");
+    expect(executed[4]).toContain("workflow_transition_events");
+    expect(executed[5]).toContain("NOT EXISTS");
+    expect(executed[6]).toContain("workflow_transition_events");
+    expect(executedBindings[6].join("|")).toContain("document");
+  });
+
+  it("keeps an article in feedback when another feedback request remains", async () => {
+    const documentId = "99999999-9999-4999-8999-999999999999";
+    const taskId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    class FeedbackWithdrawalStatement extends EmptyStatement {
+      get queryText() {
+        return this.query;
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return {
+            subject: "mathematics",
+            status: "in-review",
+            publication_review_stage: null,
+            title: "複数依頼の記事",
+            updated_at: "2026-11-20T00:00:00.000Z",
+            archived_at: null,
+          } as T;
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            title: "フィードバック依頼：複数依頼の記事",
+            created_by: "local-editor@atlasez.test",
+            status: "doing",
+            updated_at: "2026-11-20T00:01:00.000Z",
+          } as T;
+        if (this.query.includes("FROM workflow_transition_events"))
+          return null as T | null;
+        return null as T | null;
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new FeedbackWithdrawalStatement(query),
+        batch: async () =>
+          [1, 1, 1, 0, 0, 0, 0].map((changes) => ({ meta: { changes } })),
+      },
+    };
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/review-requests/${documentId}/${taskId}/withdraw`,
+        {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            expectedUpdatedAt: "2026-11-20T00:00:00.000Z",
+          }),
+        },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      withdrawn: true,
+      documentStatus: "in-review",
+    });
   });
 
   it("allows archiving a feedback-stage article but rejects publication-review stages", async () => {
