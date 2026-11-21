@@ -43,7 +43,7 @@ Google OAuthでログインし、既存の `report_admin_permissions` に設定�
 2. `GITHUB_WEBHOOK_SECRET`（公開リポジトリWebhook署名の検証）
 3. `GITHUB_REVIEW_TOKEN`（PR作成者と公開Appとは別のレビュー用認証情報。App設定と実装が認める既存フォールバック条件は[公開手順](EDITORIAL_ADMIN_ONLY_PUBLICATION.md)を確認）
 4. `EDITORIAL_RELEASE_WEBHOOK_SECRET`（Workers Buildsと共有する候補通知の署名鍵）
-5. `CLOUDFLARE_WORKERS_READ_TOKEN`（Worker `atlasez01` のDeployment/Version照合用。Workers Scripts Readのみ）
+5. `CLOUDFLARE_WORKERS_READ_TOKEN`（Worker `atlasez01` のDeployment/Version照合用。`atlasez01`だけの`Individual Workers Metadata Read-Only`）
 6. `PUBLIC_SITE_ORIGIN=https://atlasez.org` と `GITHUB_REPOSITORY=Atlasez/Atlasez01`
 
 `migrations/0139_editorial_release_candidates.sql`の適用後に、新しい公開候補API・履歴記録を有効にします。ADMINのWorker設定と公開Workers Buildsの設定は、対象値・権限・適用順・復旧方法をPRでレビューしてから変更します。設定状態は編集画面の連携診断で確認し、未設定・失敗は公開不可として扱います。Tokenや秘密鍵の値をログ・PR・Issueへ書き写さないでください。
