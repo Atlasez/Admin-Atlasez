@@ -3026,6 +3026,219 @@ describe("admin worker editor APIs", () => {
     }
   });
 
+  it("names the missing public release settings separately", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          default_branch: "main",
+          archived: false,
+          permissions: { pull: true, push: true },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    try {
+      const response = await worker.fetch(
+        new Request(
+          "http://localhost/api/admin/editor/publication-integration",
+        ),
+        { ...emptyEnv, GITHUB_PUBLISH_TOKEN: "test-token" } as never,
+      );
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data).toMatchObject({
+        ready: false,
+        canWrite: true,
+        missingRequirements: [
+          "EDITORIAL_RELEASE_WEBHOOK_SECRET",
+          "CLOUDFLARE_WORKERS_READ_TOKEN",
+        ],
+        error: expect.stringContaining("EDITORIAL_RELEASE_WEBHOOK_SECRET"),
+      });
+      expect(data).toMatchObject({
+        error: expect.stringContaining("CLOUDFLARE_WORKERS_READ_TOKEN"),
+      });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("reconciles the stored article catalog with the live learning-site graph", async () => {
+    const liveDocumentId = "22222222-2222-4222-8222-222222222221";
+    const removedDocumentId = "22222222-2222-4222-8222-222222222222";
+    const documents = [
+      {
+        id: liveDocumentId,
+        source_article_id: "ja-mathematics-homomorphism-theorem",
+        subject: "mathematics",
+        category: "group-theory",
+        locale: "ja",
+        slug: "homomorphism-theorem",
+        title: "準同型定理",
+        status: "draft",
+        published_at: "2026-08-31T14:30:34.329Z",
+        updated_at: "2026-08-31T14:30:34.329Z",
+        created_at: "2026-08-31T14:30:34.329Z",
+      },
+      {
+        id: removedDocumentId,
+        source_article_id: "ja-mathematics-removed-article",
+        subject: "mathematics",
+        category: "group-theory",
+        locale: "ja",
+        slug: "removed-article",
+        title: "公開終了記事",
+        status: "draft",
+        published_at: "2026-08-31T14:30:34.329Z",
+        updated_at: "2026-08-31T14:30:34.329Z",
+        created_at: "2026-08-31T14:30:34.329Z",
+      },
+    ];
+    const storedRows = [
+      {
+        path: "src/content/articles/ja/mathematics/group-theory/homomorphism-theorem.md",
+        identity_key: "ja/mathematics/group-theory/homomorphism-theorem",
+        repository: "Atlasez/Atlasez01",
+        locale: "ja",
+        subject: "mathematics",
+        category: "group-theory",
+        slug: "homomorphism-theorem",
+        source_article_id: "ja-mathematics-homomorphism-theorem",
+        git_sha: null,
+        title: "準同型定理",
+        summary: "",
+        concept_id: "mathematics.group-theory.homomorphism-theorem",
+        public_status: "editorial-only",
+        document_id: liveDocumentId,
+        last_seen_at: "2026-08-31T14:30:34.329Z",
+        registered_at: null,
+        registered_by: null,
+        source_kind: "editorial-document",
+        source_ref: null,
+        source_checksum: null,
+        source_checksum_algorithm: "sha256",
+        source_body_checksum: null,
+        source_fetched_at: null,
+        source_authority: "editorial-draft",
+        registration_method: "editorial-document",
+        identity_status: "unverified",
+      },
+      {
+        path: "src/content/articles/ja/mathematics/group-theory/removed-article.md",
+        identity_key: "ja/mathematics/group-theory/removed-article",
+        repository: "Atlasez/Atlasez01",
+        locale: "ja",
+        subject: "mathematics",
+        category: "group-theory",
+        slug: "removed-article",
+        source_article_id: "ja-mathematics-removed-article",
+        git_sha: "old-sha",
+        title: "公開終了記事",
+        summary: "",
+        concept_id: "mathematics.group-theory.removed-article",
+        public_status: "published",
+        document_id: removedDocumentId,
+        last_seen_at: "2026-08-31T14:30:34.329Z",
+        registered_at: null,
+        registered_by: null,
+        source_kind: "github-published-markdown",
+        source_ref: null,
+        source_checksum: "old-checksum",
+        source_checksum_algorithm: "sha256",
+        source_body_checksum: null,
+        source_fetched_at: null,
+        source_authority: "reference-only",
+        registration_method: "catalog-observation",
+        identity_status: "verified",
+      },
+    ];
+    const batches: Array<Array<{ query?: string }>> = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          nodes: [
+            {
+              id: "mathematics.group-theory.homomorphism-theorem",
+              articles: {
+                ja: [
+                  {
+                    articleId: "ja-mathematics-homomorphism-theorem",
+                    title: "準同型定理",
+                    path: "atlas/ja/mathematics/group-theory/homomorphism-theorem/",
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const env = {
+      ...emptyEnv,
+      PUBLIC_ANALYTICS_ORIGIN: "https://atlasez.org",
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => {
+          const statement = new EmptyStatement(query);
+          statement.all = async <T>() => {
+            if (query.includes("FROM editorial_documents"))
+              return { results: documents as T[] };
+            if (query.includes("FROM editorial_article_catalog"))
+              return { results: storedRows as T[] };
+            return { results: [] as T[] };
+          };
+          return statement;
+        },
+        batch: async (statements: unknown[]) => {
+          batches.push(statements as Array<{ query?: string }>);
+          return statements.map(() => ({ meta: { changes: 1 } }));
+        },
+      },
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request("http://localhost/api/admin/editor/catalog"),
+        env as never,
+      );
+      const data = (await response.json()) as {
+        catalog: Array<{
+          public_status: string;
+          editorial_document_id: string | null;
+        }>;
+      };
+
+      expect(response.status).toBe(200);
+      expect(data.catalog).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            public_status: "published",
+            editorial_document_id: liveDocumentId,
+          }),
+          expect.objectContaining({
+            public_status: "not-found",
+            editorial_document_id: removedDocumentId,
+          }),
+        ]),
+      );
+      const syncedStatements = batches.flat();
+      expect(
+        syncedStatements.some((statement) =>
+          statement.query?.includes("public_status = 'published'"),
+        ),
+      ).toBe(true);
+      expect(
+        syncedStatements.some((statement) =>
+          statement.query?.includes("public_status = 'not-found'"),
+        ),
+      ).toBe(true);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it("uses the installation token permission for GitHub App integrations", async () => {
     const importKeyMock = vi
       .spyOn(crypto.subtle, "importKey")
