@@ -55,12 +55,28 @@ class ReleaseStatement {
   }
 
   async all<T>() {
-    return this.database.all<T>(this.query);
+    return this.database.all<T>(this.query, this.bindings);
   }
 }
 
 class ReleaseDatabase {
   readonly batches: Array<Array<{ query: string; bindings: unknown[] }>> = [];
+  readonly queryBindingCounts: number[] = [];
+  documentRows: Array<Record<string, unknown>> = [
+    {
+      id: documentId,
+      source_article_id: article.articleId,
+      locale: "jpn",
+      subject: "mathematics",
+      category: "set-theory",
+      slug: "sets",
+      current_version_id: articleVersionId,
+      published_version_id: articleVersionId,
+    },
+  ];
+  revisionRows: Array<Record<string, unknown>> = [
+    { id: articleVersionId, document_id: documentId },
+  ];
   candidateState = "registered";
   historyRecorded = false;
   failNextBatch = false;
@@ -103,26 +119,14 @@ class ReleaseDatabase {
     return null as T | null;
   }
 
-  async all<T>(query: string) {
+  async all<T>(query: string, bindings: unknown[] = []) {
+    this.queryBindingCounts.push(bindings.length);
+    if (bindings.length > 100)
+      throw new Error("D1 permits at most 100 bound parameters per query");
     if (query.includes("FROM editorial_documents"))
-      return {
-        results: [
-          {
-            id: documentId,
-            source_article_id: article.articleId,
-            locale: "jpn",
-            subject: "mathematics",
-            category: "set-theory",
-            slug: "sets",
-            current_version_id: articleVersionId,
-            published_version_id: articleVersionId,
-          },
-        ] as T[],
-      };
+      return { results: this.documentRows as T[] };
     if (query.includes("FROM editorial_document_revisions"))
-      return {
-        results: [{ id: articleVersionId, document_id: documentId }] as T[],
-      };
+      return { results: this.revisionRows as T[] };
     if (query.includes("FROM editorial_release_candidate_articles"))
       return {
         results: [
@@ -144,6 +148,8 @@ class ReleaseDatabase {
         bindings: [...bindings],
       })),
     );
+    if (statements.some(({ bindings }) => bindings.length > 100))
+      throw new Error("D1 permits at most 100 bound parameters per statement");
     if (this.failNextBatch) {
       this.failNextBatch = false;
       throw new Error("simulated D1 write failure");
@@ -160,13 +166,13 @@ class ReleaseDatabase {
   }
 }
 
-function candidatePayload() {
+function candidatePayload(entries = [article]) {
   return {
     repository: "Atlasez/Atlasez01",
     workerName: "atlasez01",
     commitSha,
     versionId,
-    manifest: { schemaVersion: 1, commitSha, entries: [article] },
+    manifest: { schemaVersion: 1, commitSha, entries },
   };
 }
 
@@ -217,6 +223,71 @@ describe("記事公開候補の永続化と切替復旧", () => {
       ),
     ).toBe(true);
     expect(cloudflareFetch).not.toHaveBeenCalled();
+  });
+
+  it("41件を超える記事版をD1の100 bind上限内で候補登録する", async () => {
+    const entries = Array.from({ length: 201 }, (_, index) => {
+      const sequence = String(index + 1).padStart(12, "0");
+      return {
+        articleId: `ja-math-set-theory-article-${index + 1}`,
+        path: `src/content/articles/jpn/mathematics/set-theory/article-${index + 1}.md`,
+        status: "published",
+        versionId: `d3aa94a0-fd78-4d4a-bf88-${sequence}`,
+      };
+    });
+    const database = new ReleaseDatabase();
+    database.documentRows = entries.map((entry, index) => ({
+      id: `22222222-2222-4222-8222-${String(index + 1).padStart(12, "0")}`,
+      source_article_id: entry.articleId,
+      locale: "jpn",
+      subject: "mathematics",
+      category: "set-theory",
+      slug: `article-${index + 1}`,
+      current_version_id: entry.versionId,
+      published_version_id: entry.versionId,
+    }));
+    database.revisionRows = database.documentRows.map((document) => ({
+      id: document.current_version_id,
+      document_id: document.id,
+    }));
+    const body = JSON.stringify(candidatePayload(entries));
+    vi.stubGlobal("fetch", vi.fn());
+
+    const response = await worker.fetch(
+      new Request(
+        "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+        {
+          method: "POST",
+          headers: await signedHeaders(body),
+          body,
+        },
+      ),
+      {
+        REPORTS: database,
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        GITHUB_REPOSITORY: "Atlasez/Atlasez01",
+      } as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(database.queryBindingCounts.every((count) => count <= 100)).toBe(
+      true,
+    );
+    const articleStatements = database.batches
+      .flat()
+      .filter(({ query }) =>
+        query.includes("INSERT INTO editorial_release_candidate_articles"),
+      );
+    expect(articleStatements).toHaveLength(13);
+    expect(
+      articleStatements.every(({ bindings }) => bindings.length <= 100),
+    ).toBe(true);
+    expect(
+      articleStatements.reduce(
+        (count, statement) => count + statement.bindings.length / 6,
+        0,
+      ),
+    ).toBe(201);
   });
 
   it("nullや配列などの候補JSONを400で拒否する", async () => {

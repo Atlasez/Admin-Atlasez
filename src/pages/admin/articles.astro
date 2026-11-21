@@ -1234,8 +1234,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       subjectBrowserAll.hidden = subject.value === "all";
     };
     const hasUnpublishedPublicationChanges = (article: Pick<Article, "published_at" | "current_version_id" | "published_version_id">) => {
-      if (!article.published_at) return false;
-      return !article.current_version_id || !article.published_version_id || article.current_version_id !== article.published_version_id;
+      return Boolean(article.published_at && article.current_version_id && article.published_version_id && article.current_version_id !== article.published_version_id);
     };
     const render = () => {
       list.classList.remove("loading-state", "error-state");

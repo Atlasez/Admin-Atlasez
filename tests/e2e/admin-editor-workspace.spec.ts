@@ -1388,10 +1388,13 @@ test("公開済み記事の未反映変更は運営サイトから再公開で�
     status: "approved" as const,
     updated_at: "2026-08-31T01:34:00.000Z",
     published_at: "2026-08-30T01:34:00.000Z",
+    current_version_id: "version-current",
+    published_version_id: "version-published",
     publication_run: {
       id: "run-published-1",
       state: "failed",
       action: "publish" as const,
+      snapshot_version_id: "version-current",
       attempt: 3,
       error_code: "ci_failed",
       error_message: "CIが失敗しました（verify）。",
@@ -2487,16 +2490,18 @@ test("公開済み記事を編集すると新しい版を保存し公開版を�
   page,
 }) => {
   let currentDocument: Omit<typeof documentItem, "published_at" | "status"> & {
-    status: "draft" | "approved";
+    status: "draft" | "in-review" | "approved";
     published_at: string;
     current_version_id: string;
     published_version_id: string;
+    publication_review_stage: string | null;
   } = {
     ...documentItem,
     status: "approved" as const,
     published_at: "2026-08-30T01:34:00.000Z",
     current_version_id: "version-public",
     published_version_id: "version-public",
+    publication_review_stage: null,
   };
   const savedPayloads: Record<string, unknown>[] = [];
   await page.route("**/api/admin/**", async (route) => {
@@ -2576,14 +2581,33 @@ test("公開済み記事を編集すると新しい版を保存し公開版を�
       return;
     }
     if (url.pathname.endsWith("/publication-review")) {
+      if (request.method() === "POST") {
+        currentDocument = {
+          ...currentDocument,
+          status: "in-review",
+          publication_review_stage: "project-leader",
+        };
+        await route.fulfill({
+          json: {
+            ok: true,
+            status: "in-review",
+            stage: "project-leader",
+          },
+        });
+        return;
+      }
+      const hasNewVersion =
+        currentDocument.current_version_id !==
+        currentDocument.published_version_id;
+      const reviewStage = currentDocument.publication_review_stage ?? null;
       await route.fulfill({
         json: {
-          stage: null,
-          canCompleteWriting: false,
-          canDecide: false,
-          feedbackTaskTotal: 0,
-          feedbackTaskDone: 0,
-          feedbackComplete: false,
+          stage: reviewStage,
+          canCompleteWriting: hasNewVersion && !reviewStage,
+          canDecide: Boolean(reviewStage),
+          feedbackTaskTotal: hasNewVersion ? 1 : 0,
+          feedbackTaskDone: hasNewVersion ? 1 : 0,
+          feedbackComplete: hasNewVersion,
         },
       });
       return;
@@ -2644,6 +2668,14 @@ test("公開済み記事を編集すると新しい版を保存し公開版を�
   await expect(page.locator("[data-revision-list]")).toContainText("公開版");
   expect(currentDocument.published_version_id).toBe("version-public");
   expect(savedPayloads[0]?.body).toBe(nextBody);
+  const completeButton = page.locator("[data-complete-writing]");
+  await expect(completeButton).toBeVisible();
+  await expect(completeButton).toBeEnabled();
+  page.once("dialog", (dialog) => dialog.accept());
+  await completeButton.click();
+  await expect(page.locator("[data-save-message]")).toContainText(
+    "フィードバック完了として公開審査を開始しました",
+  );
 });
 
 test("連続入力中の自動保存は同じ原稿を重複更新しない", async ({ page }) => {
