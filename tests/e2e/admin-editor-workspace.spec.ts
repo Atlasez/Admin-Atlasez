@@ -1154,14 +1154,16 @@ test("公開審査の競合エラーを審査ダイアログ内に表示する",
   await expect(dialog).toBeVisible();
 });
 
-test("連携エラーの詳細をポップアップで確認できる", async ({ page }) => {
+test("公開連携の確認事項をポップアップで確認できる", async ({ page }) => {
   await mockAdminApi(page);
   await page.route(
     "**/api/admin/editor/publication-integration",
     async (route) => {
       await route.fulfill({
         json: {
-          ready: false,
+          ready: true,
+          configured: true,
+          canWrite: true,
           automationReady: false,
           repository: "Atlasez/Atlasez01",
           automationError: "GitHub Appの接続を確認してください。",
@@ -1172,7 +1174,7 @@ test("連携エラーの詳細をポップアップで確認できる", async ({
   await page.goto("./admin/editor/?document=doc-1");
 
   const integrationTrigger = page.locator("[data-publication-integration]");
-  await expect(integrationTrigger).toHaveText("連携エラー");
+  await expect(integrationTrigger).toHaveText("公開連携要確認");
   const details = page.locator("[data-publication-details-dialog]");
   await integrationTrigger.click();
   await expect(details).toBeVisible();

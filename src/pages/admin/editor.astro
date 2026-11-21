@@ -316,9 +316,10 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         </header>
         <div class="publication-details-content">
           <section class="publication-details-section" aria-labelledby="publication-details-integration-title">
-            <h3 id="publication-details-integration-title">GitHub連携</h3>
+            <h3 id="publication-details-integration-title">自動公開の共通設定</h3>
             <p class="publication-details-status"><span>状態</span><strong data-publication-integration-state>確認中</strong></p>
-            <p class="publication-details-message" data-publication-integration-message>連携状態を確認しています。</p>
+            <p class="publication-details-message" data-publication-integration-message>共通設定を確認しています。記事ごとの公開状態とは別の項目です。</p>
+            <ul class="publication-integration-missing" data-publication-integration-missing hidden></ul>
             <p class="publication-details-repository"><span>リポジトリ</span><code data-publication-integration-repository>—</code></p>
           </section>
           <section class="publication-details-section" aria-labelledby="publication-details-sync-title">
@@ -1535,6 +1536,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const publicationIntegrationTrigger = root.querySelector<HTMLElement>("[data-publication-integration-trigger]")!;
     const publicationIntegrationState = root.querySelector<HTMLElement>("[data-publication-integration-state]")!;
     const publicationIntegrationMessage = root.querySelector<HTMLElement>("[data-publication-integration-message]")!;
+    const publicationIntegrationMissing = root.querySelector<HTMLUListElement>("[data-publication-integration-missing]")!;
     const publicationIntegrationRepository = root.querySelector<HTMLElement>("[data-publication-integration-repository]")!;
     const publicationRun = root.querySelector<HTMLElement>("[data-publication-run]")!;
     const publicationRunState = root.querySelector<HTMLElement>("[data-publication-run-state]")!;
@@ -2306,6 +2308,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         publicationIntegration.hidden = true;
         publicationIntegrationState.textContent = "管理者のみ確認できます";
         publicationIntegrationMessage.textContent = "公開連携の設定は運営管理者が確認できます。";
+        publicationIntegrationMissing.hidden = true;
+        publicationIntegrationMissing.replaceChildren();
         publicationIntegrationRepository.textContent = "—";
         return;
       }
@@ -2313,21 +2317,41 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       publicationIntegration.dataset.state = "checking";
       publicationIntegrationTrigger.textContent = "連携確認中";
       publicationIntegrationState.textContent = "確認中";
-      publicationIntegrationMessage.textContent = "GitHubとの連携状態を確認しています。";
+      publicationIntegrationMessage.textContent = "記事ごとの紐付けとは別に、自動公開の共通設定を確認しています。";
+      publicationIntegrationMissing.hidden = true;
+      publicationIntegrationMissing.replaceChildren();
       try {
         const response = await fetch("/api/admin/editor/publication-integration", { credentials: "same-origin", cache: "no-store" });
-        const data = await read<{ ready?: boolean; automationReady?: boolean; repository?: string; error?: string; automationError?: string }>(response);
+        const data = await read<{ ready?: boolean; configured?: boolean; canWrite?: boolean; automationReady?: boolean; automaticMerge?: boolean; automaticReview?: boolean; releaseCandidateReady?: boolean; activeDeploymentReadReady?: boolean; missingRequirements?: string[]; repository?: string; error?: string; automationError?: string }>(response);
         const automationReady = data.automationReady ?? data.ready;
+        const missingRequirements = data.missingRequirements ?? [];
+        const publicationSetupMissing = Boolean(data.configured && data.canWrite && missingRequirements.length);
         publicationIntegration.dataset.state = automationReady ? "ready" : "error";
-        publicationIntegrationTrigger.textContent = automationReady ? "連携OK" : "連携エラー";
-        publicationIntegrationState.textContent = automationReady ? "接続済み" : "要確認";
+        publicationIntegrationTrigger.textContent = automationReady ? "自動公開OK" : publicationSetupMissing ? "公開設定不足" : data.configured ? "公開連携要確認" : "GitHub未設定";
+        publicationIntegrationState.textContent = automationReady ? "自動公開可能" : publicationSetupMissing ? "共通設定不足" : data.configured ? "要確認" : "未設定";
         publicationIntegrationRepository.textContent = data.repository ?? "公開基盤";
-        publicationIntegrationMessage.textContent = automationReady ? "GitHubとの自動公開連携は利用できます。" : data.automationError ?? data.error ?? "連携状態を確認できません。設定と接続を確認してください。";
+        publicationIntegrationMessage.textContent = automationReady
+          ? "記事の公開・更新を自動処理できます。"
+          : missingRequirements.length
+            ? `公開処理に必要な共通設定が未登録です。記事ごとの公開状態は「この記事の公開・同期」で確認できます。${data.error ? ` ${data.error}` : ""}`
+            : data.automationError ?? data.error ?? "公開連携の状態を確認できません。設定と接続を確認してください。";
+        publicationIntegrationMissing.replaceChildren(...missingRequirements.map((requirement) => {
+          const item = document.createElement("li");
+          const descriptions: Record<string, string> = {
+            EDITORIAL_RELEASE_WEBHOOK_SECRET: "候補保存の署名鍵。ADMIN WorkerとWorkers Buildsの両方に同じ値が必要です。",
+            CLOUDFLARE_WORKERS_READ_TOKEN: "atlasez01のDeployment/Versionを読むWorkers Scripts Read専用Tokenです。",
+          };
+          item.textContent = `${requirement} — ${descriptions[requirement] ?? "設定を確認してください。"}`;
+          return item;
+        }));
+        publicationIntegrationMissing.hidden = missingRequirements.length === 0;
       } catch {
         publicationIntegration.dataset.state = "error";
-        publicationIntegrationTrigger.textContent = "連携エラー";
+        publicationIntegrationTrigger.textContent = "公開連携を確認できません";
         publicationIntegrationState.textContent = "確認できません";
-        publicationIntegrationMessage.textContent = "連携先に接続できませんでした。時間をおいて再読み込みしてください。";
+        publicationIntegrationMessage.textContent = "公開設定を確認できませんでした。時間をおいて再読み込みしてください。記事ごとの公開状態とは別の診断です。";
+        publicationIntegrationMissing.hidden = true;
+        publicationIntegrationMissing.replaceChildren();
         publicationIntegrationRepository.textContent = "—";
       }
       publicationIntegration.title = "クリックして公開連携の詳細を確認";
@@ -6114,7 +6138,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   }
 
   .editor-workspace .document-toolbar[data-compact] .document-statuses .publication-integration-status[data-state="error"]::before {
-    content: "! 連携エラー";
+    content: "! 公開要確認";
     font-size: .62rem;
     margin: 0;
     white-space: nowrap;
@@ -6417,6 +6441,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .publication-details-updated { color: var(--muted); font-size: .72rem; }
   .publication-details-status strong { font-size: .76rem; }
   .publication-details-message { font-size: .76rem; line-height: 1.55; margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .publication-integration-missing { color: var(--warning, #805500); display: grid; font-size: .74rem; gap: .25rem; line-height: 1.5; margin: 0; padding-left: 1.2rem; }
+  .publication-integration-missing[hidden] { display: none; }
   .publication-details-repository code { font-size: .72rem; overflow-wrap: anywhere; }
   .publication-details-updated { margin: -.2rem 0 0; }
   .publication-details-dialog .publication-links { display: flex; flex-wrap: wrap; gap: .4rem; }

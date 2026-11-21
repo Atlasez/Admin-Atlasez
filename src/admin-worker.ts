@@ -7470,6 +7470,12 @@ async function getEditorialArticleCatalog(
           identity_status: "unverified",
         },
       }));
+    await syncEditorialArticleCatalogFromPublicSite(
+      env,
+      publicArticles,
+      documents,
+      storedCatalog,
+    );
     return json({
       catalog: [...catalog, ...editorialOnly],
       cache: {
@@ -18524,14 +18530,14 @@ const githubArticleMarkdown = async (
   return githubText(payload.content);
 };
 
-const upsertEditorialArticleCatalog = async (
+const editorialArticleCatalogUpsertStatement = (
   env: Env,
   article: PublicArticleCatalogEntry,
   documentId: string | null = null,
   registeredAt: string | null = null,
   registeredBy: string | null = null,
-) => {
-  await env.REPORTS.prepare(
+) =>
+  env.REPORTS.prepare(
     `INSERT INTO editorial_article_catalog
       (path, identity_key, repository, locale, subject, category, slug, source_article_id, git_sha, title, summary, concept_id, public_status, document_id, last_seen_at, registered_at, registered_by, source_kind, source_ref, source_checksum, source_checksum_algorithm, source_body_checksum, source_fetched_at, source_authority, registration_method, identity_status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -18588,8 +18594,164 @@ const upsertEditorialArticleCatalog = async (
       article.sourceAuthority,
       article.registrationMethod,
       article.identityStatus,
-    )
-    .run();
+    );
+
+const upsertEditorialArticleCatalog = async (
+  env: Env,
+  article: PublicArticleCatalogEntry,
+  documentId: string | null = null,
+  registeredAt: string | null = null,
+  registeredBy: string | null = null,
+) => {
+  await env.REPORTS.batch([
+    editorialArticleCatalogUpsertStatement(
+      env,
+      article,
+      documentId,
+      registeredAt,
+      registeredBy,
+    ),
+  ]);
+};
+
+const syncEditorialArticleCatalogFromPublicSite = async (
+  env: Env,
+  articles: PublicArticleCatalogEntry[],
+  documents: Awaited<ReturnType<typeof catalogDocumentRows>>,
+  storedCatalog: EditorialArticleCatalogRow[],
+) => {
+  // An empty or malformed graph must not make every cached public article
+  // appear removed from the learning site.
+  if (!articles.length) return;
+
+  const identityForRepository = (repository: string, identity: string) =>
+    `${repository}/${identity}`;
+  const storedByIdentity = new Map(
+    storedCatalog.map((row) => [
+      identityForRepository(row.repository, row.identity_key),
+      row,
+    ]),
+  );
+  const documentsByIdentity = new Map<string, typeof documents>();
+  const documentsBySourceId = new Map<string, typeof documents>();
+  for (const document of documents) {
+    const identity = editorialArticleIdentity(document);
+    documentsByIdentity.set(identity, [
+      ...(documentsByIdentity.get(identity) ?? []),
+      document,
+    ]);
+    if (document.source_article_id) {
+      documentsBySourceId.set(document.source_article_id, [
+        ...(documentsBySourceId.get(document.source_article_id) ?? []),
+        document,
+      ]);
+    }
+  }
+
+  const now = new Date().toISOString();
+  const liveIdentities = new Set(
+    articles.map((article) =>
+      identityForRepository(article.repository, article.identityKey),
+    ),
+  );
+  const statements: D1PreparedStatement[] = [];
+  for (const article of articles) {
+    const matches = documentsByIdentity.get(article.identityKey) ?? [];
+    const sourceMatches = (documentsBySourceId.get(article.sourceArticleId) ?? [])
+      .filter((document) => editorialArticleIdentity(document) !== article.identityKey);
+    const documentState = catalogDocumentState(
+      matches,
+      article.sourceArticleId,
+      sourceMatches,
+    );
+    const documentId =
+      (documentState === "managed" || documentState === "needs-registration") &&
+      matches.length === 1
+        ? matches[0].id
+        : null;
+    const cached = storedByIdentity.get(
+      identityForRepository(article.repository, article.identityKey),
+    );
+    if (!cached) {
+      statements.push(
+        editorialArticleCatalogUpsertStatement(env, article, documentId),
+      );
+      continue;
+    }
+
+    const shouldRepair =
+      cached.public_status !== "published" ||
+      cached.source_article_id !== article.sourceArticleId ||
+      cached.title !== article.title ||
+      cached.concept_id !== article.conceptId ||
+      cached.identity_status !== "verified" ||
+      Boolean(documentId && cached.document_id !== documentId);
+    if (!shouldRepair) continue;
+
+    statements.push(
+      env.REPORTS.prepare(
+        `UPDATE editorial_article_catalog
+            SET source_article_id = ?,
+                title = ?,
+                concept_id = ?,
+                public_status = 'published',
+                document_id = COALESCE(?, document_id),
+                last_seen_at = ?,
+                source_kind = CASE
+                  WHEN source_kind IN ('unknown', 'editorial-document')
+                    THEN 'learning-site-catalog'
+                  ELSE source_kind
+                END,
+                source_ref = COALESCE(source_ref, ?),
+                source_fetched_at = COALESCE(source_fetched_at, ?),
+                source_authority = CASE
+                  WHEN source_authority IN ('unverified', 'editorial-draft')
+                    THEN 'reference-only'
+                  ELSE source_authority
+                END,
+                registration_method = CASE
+                  WHEN registration_method IN ('legacy-backfill', 'editorial-document')
+                    THEN 'catalog-observation'
+                  ELSE registration_method
+                END,
+                identity_status = 'verified'
+          WHERE identity_key = ? AND repository = ?`,
+      ).bind(
+        article.sourceArticleId,
+        article.title,
+        article.conceptId,
+        documentId,
+        now,
+        article.sourceRef,
+        article.sourceFetchedAt,
+        article.identityKey,
+        article.repository,
+      ),
+    );
+  }
+
+  const activeRepositories = new Set(articles.map((article) => article.repository));
+  for (const cached of storedCatalog) {
+    if (
+      cached.public_status === "published" &&
+      activeRepositories.has(cached.repository) &&
+      !liveIdentities.has(
+        identityForRepository(cached.repository, cached.identity_key),
+      )
+    ) {
+      statements.push(
+        env.REPORTS.prepare(
+          `UPDATE editorial_article_catalog
+              SET public_status = 'not-found'
+            WHERE path = ? AND repository = ? AND public_status = 'published'`,
+        ).bind(cached.path, cached.repository),
+      );
+    }
+  }
+
+  for (let offset = 0; offset < statements.length; offset += 40) {
+    await env.REPORTS.batch(statements.slice(offset, offset + 40));
+  }
 };
 
 const CONCEPT_ID = /^[a-z0-9-]+\.[a-z0-9-]+\.[a-z0-9-]+$/;
@@ -18903,6 +19065,10 @@ async function editorialPublicationIntegrationStatus(
     const preflightReady = true;
     const releaseCandidateReady = Boolean(env.EDITORIAL_RELEASE_WEBHOOK_SECRET?.trim());
     const activeDeploymentReadReady = Boolean(env.CLOUDFLARE_WORKERS_READ_TOKEN?.trim());
+    const missingRequirements = [
+      ...(!releaseCandidateReady ? ["EDITORIAL_RELEASE_WEBHOOK_SECRET"] : []),
+      ...(!activeDeploymentReadReady ? ["CLOUDFLARE_WORKERS_READ_TOKEN"] : []),
+    ];
     const ready = defaultBranch === "main" && canWrite && !archived && releaseCandidateReady && activeDeploymentReadReady;
     const automationReady = ready && automaticMerge && automaticReview;
     return json({
@@ -18918,6 +19084,7 @@ async function editorialPublicationIntegrationStatus(
       preflightMode: "pull_request_ci",
       releaseCandidateReady,
       activeDeploymentReadReady,
+      missingRequirements,
       automationReady,
       archived,
       ...(ready
@@ -18936,8 +19103,8 @@ async function editorialPublicationIntegrationStatus(
                 ? "公開先リポジトリの既定ブランチがmainではありません。"
               : !canWrite
                 ? "公開用トークンにContents書込権限がありません。"
-                : !releaseCandidateReady || !activeDeploymentReadReady
-                  ? "候補保存・Cloudflare Deployment照合のSecretが設定されていません。"
+                : missingRequirements.length
+                  ? `公開処理の設定が不足しています: ${missingRequirements.join("、")}。`
                   : "公開連携設定を確認してください。",
           }),
     });
