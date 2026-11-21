@@ -48,6 +48,8 @@ Google OAuthでログインし、既存の `report_admin_permissions` に設定�
 
 `migrations/0139_editorial_release_candidates.sql`の適用後に、新しい公開候補API・履歴記録を有効にします。ADMINのWorker設定と公開Workers Buildsの設定は、対象値・権限・適用順・復旧方法をPRでレビューしてから変更します。設定状態は編集画面の連携診断で確認し、未設定・失敗は公開不可として扱います。Tokenや秘密鍵の値をログ・PR・Issueへ書き写さないでください。
 
+本番の設定一覧、適用順、影響、復旧手順は[記事自動公開の本番設定と受入確認](EDITORIAL_PRODUCTION_READINESS.md)を参照してください。
+
 ## ローカル確認
 
 ```bash
