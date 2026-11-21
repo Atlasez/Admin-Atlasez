@@ -211,21 +211,18 @@ function creatorAuditProfile(db: DatabaseSync) {
   ).run(new Date().toISOString());
 }
 
-it("運営作成原稿の一覧・詳細は個人プロフィールを作者に使わず、個人原稿と更新案だけ個人ワークスペース・記事数に含める", async () => {
+it("運営原稿と個人原稿の作者表示と個人ワークスペースの範囲を分ける", async () => {
   const { db, request } = environment();
   creatorAuditProfile(db);
   const now = new Date().toISOString();
   const organizationId = "630fac16-45e3-5742-a023-5f060786f130";
   const personId = "06a9aafd-8bcd-42d2-aacf-9713be232eaa";
-  const proposalId = "32b7cf2d-bb75-469d-922e-a2eb8d6ea4b4";
   const insert = db.prepare(
-    "INSERT INTO editorial_documents(id,creator_kind,document_kind,base_document_id,source_article_id,subject,category,slug,title,concept_id,created_by,updated_by,created_at,updated_at) VALUES (?,?,?,?,?,'mathematics','ring-theory',?,?,'math.ring-theory.ring-definition','global@atlasez.test','global@atlasez.test',?,?)",
+    "INSERT INTO editorial_documents(id,creator_kind,source_article_id,subject,category,slug,title,concept_id,created_by,updated_by,created_at,updated_at) VALUES (?,?,?,'mathematics','ring-theory',?,?,'math.ring-theory.ring-definition','global@atlasez.test','global@atlasez.test',?,?)",
   );
   insert.run(
     organizationId,
     "organization",
-    "canonical",
-    null,
     "ja-mathematics-ring-definition",
     "ring-definition",
     "運営の原稿",
@@ -235,22 +232,9 @@ it("運営作成原稿の一覧・詳細は個人プロフィールを作者に�
   insert.run(
     personId,
     "person",
-    "canonical",
-    null,
     null,
     "personal-definition",
     "個人の原稿",
-    now,
-    now,
-  );
-  insert.run(
-    proposalId,
-    "person",
-    "update-proposal",
-    organizationId,
-    "ja-mathematics-ring-definition",
-    "proposal-definition",
-    "個人の更新案",
     now,
     now,
   );
@@ -262,8 +246,8 @@ it("運営作成原稿の一覧・詳細は個人プロフィールを作者に�
   const list = (await listResponse.json()) as {
     documents: Array<Record<string, unknown>>;
   };
-  expect(list.documents).toHaveLength(3);
-  for (const id of [organizationId, personId, proposalId]) {
+  expect(list.documents).toHaveLength(2);
+  for (const id of [organizationId, personId]) {
     const expected = {
       id,
       creator_kind: id === organizationId ? "organization" : "person",
@@ -295,16 +279,16 @@ it("運営作成原稿の一覧・詳細は個人プロフィールを作者に�
   const workspace = (await workspaceResponse.json()) as {
     documents: Array<{ id: string }>;
   };
-  expect(workspace.documents.map((document) => document.id).sort()).toEqual(
-    [personId, proposalId].sort(),
-  );
+  expect(workspace.documents.map((document) => document.id)).toEqual([
+    personId,
+  ]);
   const memberResponse = await request(
     "/api/admin/member-management?email=global%40atlasez.test",
     "global@atlasez.test",
   );
   expect(memberResponse.status, await memberResponse.clone().text()).toBe(200);
   expect(await memberResponse.json()).toMatchObject({
-    member: { articleCount: 2 },
+    member: { articleCount: 1 },
   });
   expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
 });

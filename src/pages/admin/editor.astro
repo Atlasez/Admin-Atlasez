@@ -185,7 +185,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
                 <button type="button" class="collaboration-retry" data-collaboration-retry hidden>再接続</button>
               </div>
               <div class="document-actions">
-                <button type="button" class="primary-action" data-create-update-proposal hidden>更新案を作成</button>
                 <button type="button" class="quiet-action" data-request-review hidden>フィードバックを依頼する</button>
                 <button type="button" class="quiet-action" data-complete-writing hidden>フィードバック完了・公開審査へ</button>
                 <button type="button" class="quiet-action" data-publication-review hidden>公開審査を処理</button>
@@ -200,12 +199,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
                 <span data-document-conflict-message>変更を確認してから保存してください。</span>
                 <button type="button" class="quiet-action" data-reload-conflicted-document>最新内容を読み込む</button>
               </div>
-              <p class="update-proposal-note" data-update-proposal-note hidden aria-live="polite"></p>
-              <div class="document-version-switcher" data-document-version-switcher hidden aria-label="現行版と更新案の切り替え">
-                <span data-document-version-label></span>
-                <button type="button" class="quiet-action" data-open-current-version hidden>現行版を開く</button>
-                <button type="button" class="quiet-action" data-open-update-proposal hidden>更新案を開く</button>
-              </div>
+              <p class="document-version-note" data-document-version-label hidden aria-live="polite"></p>
             </div>
           </section>
 
@@ -482,12 +476,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .pane-resize-handle { align-items:center; background:transparent; border:0; color:var(--muted); cursor:ns-resize; display:flex; height:1rem; justify-content:center; padding:0; position:relative; touch-action:none; width:100%; z-index:6; }.pane-resize-handle span { border-top:2px solid currentColor; border-radius:999px; display:block; opacity:.65; transition:color .15s ease,opacity .15s ease,width .15s ease; width:3.2rem; }.pane-resize-handle:hover,.pane-resize-handle:focus-visible { color:var(--accent); outline:2px solid color-mix(in srgb,var(--accent),transparent 65%); outline-offset:-2px; }.pane-resize-handle:hover span,.pane-resize-handle:focus-visible span { opacity:1; width:4.5rem; }.is-resizing-pane,.is-resizing-pane * { cursor:ns-resize !important; user-select:none !important; }
   .editor-split > section.is-pane-resized { display:flex; flex-direction:column; height:var(--editor-pane-height); max-height:none; min-height:var(--editor-pane-height); overflow:hidden; }.editor-split > .writing-area.is-pane-resized > .body-editor-surface,.editor-split > .media-area.is-pane-resized > .media-studio { flex:1 1 0; height:auto; max-height:none; min-height:0; }.editor-split > .review-panel.is-pane-resized { min-height:var(--editor-pane-height); }.review-panel.is-pane-resized .comment-list { flex:1 1 0; max-height:none; min-height:6rem; overflow:auto; }.editor-split > .memo-area.is-pane-resized .memo-content { min-height:0; }
   .document-toolbar { background:var(--surface); border-bottom:1px solid var(--border); padding:.7rem 0; position:static; z-index:15; }.editor-workspace[data-sticky-toolbar] .document-toolbar { position:sticky; top:0; }.document-statuses{align-items:center;color:var(--muted);display:flex;flex-wrap:wrap;font-size:.72rem;font-weight:700;gap:.4rem .7rem;margin-bottom:.25rem}.document-statuses > span{background:var(--surface-alt);border:1px solid var(--border);border-radius:999px;padding:.18rem .45rem}.document-statuses strong{color:var(--text)}.document-toolbar h2 { font-size: 1.35rem; margin: 0; }.document-toolbar output { color: var(--muted); flex: 1 1 12rem; font-size: .8rem; min-width: 10rem; }.save-status{background:var(--surface-alt);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:.35rem;color:var(--text)!important;font-weight:700;padding:.48rem .6rem;position:sticky;right:0;top:.55rem;z-index:5}.toolbar-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem; justify-content: end; }.toolbar-actions > .save-status { flex: 0 1 auto; max-width: min(24rem, 100%); min-width: 0; width: max-content; }.document-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem; }.unsaved-warning { background:#fff4d6; border-left:3px solid #c78500; color:#805500; font-size:.76rem; font-weight:700; margin:0; padding:.42rem .55rem; }.engine-control { align-items: center; color: var(--muted); display: flex; font-size:.76rem; font-weight:800; gap:.4rem; letter-spacing:.02em; margin:0; white-space:nowrap; }.engine-control select { font-size:.78rem; min-height:2.35rem; }.metadata label small{color:var(--muted);font-size:.68rem;font-weight:500;line-height:1.45}.editor-quick-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin:.2rem 0}.editor-quick-actions button{flex:1 1 auto;font-size:.72rem;min-height:2rem}.editor-tabs,.heading-outline{display:none}.heading-outline nav{display:flex;flex-wrap:wrap;gap:.3rem;padding:.55rem 0}.heading-outline button{background:transparent;border:0;color:var(--accent);cursor:pointer;font:inherit;font-size:.76rem;text-align:left}.heading-outline button:hover{text-decoration:underline}
-  .update-proposal-note { background: color-mix(in srgb, var(--accent) 9%, var(--surface)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); border-left: 3px solid var(--accent); color: var(--text); font-size: .74rem; line-height: 1.55; margin: .45rem 0 0; max-width: 38rem; padding: .45rem .6rem; }
-  .document-version-switcher { align-items: center; display: flex; flex-wrap: wrap; gap: .4rem .55rem; margin: .45rem 0 0; }
-  .document-version-switcher > span { color: var(--muted); font-size: .72rem; font-weight: 700; }
-  .document-version-switcher .quiet-action { min-height: 1.9rem; padding: .25rem .55rem; }
-  .document-form.is-update-proposal .metadata input:disabled,
-  .document-form.is-update-proposal .metadata select:disabled { cursor: not-allowed; opacity: .72; }
+  .document-version-note { background: color-mix(in srgb, var(--accent) 8%, var(--surface)); border-left: 3px solid var(--accent); color: var(--muted); font-size: .74rem; line-height: 1.5; margin: .45rem 0 0; max-width: 38rem; padding: .4rem .6rem; }
   .metadata { background: var(--surface-alt); border: 1px solid var(--border); border-radius: .65rem; padding: .7rem .8rem .85rem; }.metadata summary, .personal-notebook summary { align-items:center; cursor:pointer; display:flex; font-size:.88rem; font-weight:800; gap:.4rem; list-style:none; }.metadata summary::-webkit-details-marker, .personal-notebook summary::-webkit-details-marker { display:none; }.metadata summary::before, .personal-notebook summary::before { color:var(--accent); content:"▶"; display:inline-block; font-size:.7em; transition:transform .15s ease; }.metadata[open] summary::before, .personal-notebook[open] summary::before { transform:rotate(90deg); }.metadata-grid { display: grid; gap: .7rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: .85rem; }.metadata label { display: grid; font-size: .76rem; font-weight: 800; gap: .3rem; letter-spacing: .02em; }.metadata label:nth-child(1), .metadata label:nth-child(2) { grid-column: span 2; }
   .editor-split { --editor-pane-height:clamp(32rem,66vh,52rem); align-items:start; display:grid; gap:1rem; grid-template-columns:repeat(3,minmax(0,1fr)); min-height:0; padding:.8rem; }.writing-area, .preview-area, .media-area, .review-panel, .memo-area { align-self:start; border:1px solid var(--border); min-width:0; overflow:visible; position:relative; }.writing-area, .preview-area, .review-panel { box-sizing:border-box; height:var(--editor-pane-height); max-height:var(--editor-pane-height); min-height:0; }.writing-area { display:flex; flex-direction:column; overflow:hidden; }.preview-area { display:flex; flex-direction:column; }.review-panel { overflow:auto; }.memo-area { background:var(--surface); display:flex; flex-direction:column; min-height:clamp(38rem,72vh,60rem); }.memo-content { display:grid; flex:1 1 auto; gap:.65rem; grid-template-rows:auto minmax(0,1fr); min-height:0; padding:.85rem; }.memo-content p { color:var(--muted); font-size:.78rem; line-height:1.55; margin:0; }.memo-content textarea { background:var(--surface-alt); border:1px solid var(--border); box-sizing:border-box; color:var(--text); font:inherit; height:100%; line-height:1.6; min-height:0; padding:.7rem; resize:vertical; width:100%; }.pane-heading { background:var(--surface-alt); border-bottom:1px solid var(--border); padding:.75rem .9rem; }.pane-heading h3 { font-size:.95rem; margin:0; }.pane-heading p { color:var(--muted); font-size:.77rem; margin:.22rem 0 0; }.pane-heading code { background:var(--surface); border:1px solid var(--border); border-radius:0; padding:.03rem .2rem; }.pane-heading > span { color:var(--muted); flex:0 0 auto; font-size:.76rem; }.live-badge { color:var(--success) !important; font-weight:800; }
   /* 見出しバーの高さを除いた残りだけをプレビューに割り当て、長文はこの領域内でスクロールさせる。 */
@@ -804,9 +793,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   /* ペインを手動で拡張したときもCodeMirrorを本文欄いっぱいに広げ、末尾の空白を残さない。 */
   .body-editor-surface { display: flex; flex-direction: column; }
   .body-editor-surface :global(.body-codemirror) { flex: 1 1 auto; height: 100% !important; min-height: 0; }
-  .body-editor-surface[data-published-locked="true"] { cursor: not-allowed; }
-  .body-editor-surface[data-published-locked="true"]::after { background: color-mix(in srgb, var(--surface-alt) 90%, transparent); border-bottom: 1px solid var(--border); color: var(--muted); content: "公開中の記事です。編集するには「更新案を作成」を押してください"; font-size: .7rem; left: 0; line-height: 1.35; padding: .35rem .7rem; pointer-events: none; position: absolute; right: 0; text-align: right; top: 0; z-index: 4; }
-  .body-editor-surface[data-published-locked="true"] :global(.body-codemirror .cm-content) { cursor: not-allowed; }
 </style>
 
 <style>
@@ -1332,8 +1318,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   type LockedRange = { start: number; end: number; text: string };
   type CustomMathPreset = { id: string; label: string; group?: string; macros: Record<string, string> };
   type ArticleReference = { id: string; title: string; authors?: string; year?: string; publisher?: string; url?: string; note?: string };
-  type PublicationRun = { id: string; state: string; action: "publish" | "unpublish"; attempt: number; pull_request_number?: number | null; pull_request_url?: string | null; branch?: string | null; head_sha?: string | null; merge_sha?: string | null; last_check_at?: string | null; next_attempt_at?: string | null; error_code?: string | null; error_message?: string | null; failure_kind?: string | null; check_name?: string | null; check_url?: string | null; diagnostic_url?: string | null; failure_detail?: string | null; failure_step?: string | null; failure_file?: string | null; failure_line?: number | null; failure_column?: number | null; failure_suggestion?: string | null; failure_history?: string; updated_at?: string };
-  type Document = { id: string; document_kind?: "canonical" | "update-proposal"; base_document_id?: string | null; base_document_updated_at?: string | null; source_article_id: string | null; subject: string; category: string; locale: string; slug: string; title: string; summary: string; concept_id: string; concept_name: string | null; concept_name_en: string | null; concept_is_new: number | boolean; body: string; writing_memo?: string; references?: string | ArticleReference[]; latex_engine: "uplatex" | "pdflatex" | "xelatex" | "lualatex" | "mathjax" | "katex"; status: "draft" | "in-review" | "on-hold" | "approved"; creator_kind?: "person" | "organization"; created_by: string; updated_by: string; created_at: string; updated_at: string; reviewed_at: string | null; published_at: string | null; archived_at?: string | null; scheduled_publish_at?: string | null; publication_review_stage?: "subject-coordinator" | "project-leader" | null; publication_review_round?: number; publication_pr_number?: number | null; publication_pr_url?: string | null; publication_branch?: string | null; publication_action?: "publish" | "unpublish" | null; publication_requested_at?: string | null; publication_run?: PublicationRun | null; locked_ranges?: string | LockedRange[]; created_by_display_name?: string; updated_by_display_name?: string; created_by_avatar_url?: string; updated_by_avatar_url?: string };
+  type PublicationRun = { id: string; state: string; action: "publish" | "unpublish"; attempt: number; pull_request_number?: number | null; pull_request_url?: string | null; branch?: string | null; head_sha?: string | null; merge_sha?: string | null; last_check_at?: string | null; next_attempt_at?: string | null; error_code?: string | null; error_message?: string | null; failure_kind?: string | null; check_name?: string | null; check_url?: string | null; diagnostic_url?: string | null; snapshot_version_id?: string | null; failure_detail?: string | null; failure_step?: string | null; failure_file?: string | null; failure_line?: number | null; failure_column?: number | null; failure_suggestion?: string | null; failure_history?: string; updated_at?: string };
+  type Document = { id: string; current_version_id?: string | null; published_version_id?: string | null; source_article_id: string | null; subject: string; category: string; locale: string; slug: string; title: string; summary: string; concept_id: string; concept_name: string | null; concept_name_en: string | null; concept_is_new: number | boolean; body: string; writing_memo?: string; references?: string | ArticleReference[]; latex_engine: "uplatex" | "pdflatex" | "xelatex" | "lualatex" | "mathjax" | "katex"; status: "draft" | "in-review" | "on-hold" | "approved"; creator_kind?: "person" | "organization"; created_by: string; updated_by: string; created_at: string; updated_at: string; reviewed_at: string | null; published_at: string | null; archived_at?: string | null; scheduled_publish_at?: string | null; publication_review_stage?: "subject-coordinator" | "project-leader" | null; publication_review_round?: number; publication_pr_number?: number | null; publication_pr_url?: string | null; publication_branch?: string | null; publication_action?: "publish" | "unpublish" | null; publication_requested_at?: string | null; publication_run?: PublicationRun | null; locked_ranges?: string | LockedRange[]; created_by_display_name?: string; updated_by_display_name?: string; created_by_avatar_url?: string; updated_by_avatar_url?: string };
   type SelectedRange = { start: number | null; end: number | null; text: string; source: "本文" | "プレビュー" | "記事" };
   type CommentSelection = { id?: string; position?: number; selection_start: number | null; selection_end: number | null; selection_text: string };
   type CommentAction = "acknowledge" | "unacknowledge" | "resolve" | "reopen";
@@ -1381,7 +1367,18 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const toolbarStickySentinel = form.querySelector<HTMLElement>("[data-toolbar-sticky-sentinel]");
     if (documentToolbar && toolbarStickySentinel && "IntersectionObserver" in window) {
       const toolbarCompactObserver = new IntersectionObserver(([entry]) => {
-        documentToolbar.toggleAttribute("data-compact", !entry.isIntersecting);
+        const compact = !entry.isIntersecting;
+        if (documentToolbar.hasAttribute("data-compact") === compact) return;
+        const expandedHeight = compact
+          ? documentToolbar.getBoundingClientRect().height
+          : 0;
+        documentToolbar.toggleAttribute("data-compact", compact);
+        if (!compact) {
+          toolbarStickySentinel.style.height = "0px";
+          return;
+        }
+        const compactHeight = documentToolbar.getBoundingClientRect().height;
+        toolbarStickySentinel.style.height = `${Math.max(0, expandedHeight - compactHeight)}px`;
       });
       toolbarCompactObserver.observe(toolbarStickySentinel);
     }
@@ -1574,12 +1571,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       }));
       if (!editorialPreflightDialog.open) editorialPreflightDialog.showModal();
     });
-    const updateProposalButton = root.querySelector<HTMLButtonElement>("[data-create-update-proposal]")!;
-    const updateProposalNote = root.querySelector<HTMLElement>("[data-update-proposal-note]")!;
-    const versionSwitcher = root.querySelector<HTMLElement>("[data-document-version-switcher]")!;
-    const versionSwitcherLabel = root.querySelector<HTMLElement>("[data-document-version-label]")!;
-    const openCurrentVersionButton = root.querySelector<HTMLButtonElement>("[data-open-current-version]")!;
-    const openUpdateProposalButton = root.querySelector<HTMLButtonElement>("[data-open-update-proposal]")!;
+    const documentVersionLabel = root.querySelector<HTMLElement>("[data-document-version-label]")!;
     const publishButton = root.querySelector<HTMLButtonElement>("[data-publish-document]")!;
     const unpublishButton = root.querySelector<HTMLButtonElement>("[data-unpublish-document]")!;
     const reviewButton = root.querySelector<HTMLButtonElement>("[data-request-review]")!;
@@ -2121,10 +2113,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       }));
       documentEditors.setAttribute("aria-label", editors.length ? `編集履歴：${editors.map((person) => person.name).join("、")}` : "編集履歴：まだありません");
     };
-    // Keep the list state in sync immediately after the user starts an update
-    // proposal. Persisted proposals are also detected from updated_at so the
-    // label survives a reload.
-    const activeUpdateProposalDocumentIds = new Set<string>();
     let latestPublicationRealtimeVersion = 0;
     let currentComments: Comment[] = [];
     const pendingCommentReactions = new Set<string>();
@@ -2168,112 +2156,32 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       const locale = form.elements.namedItem("locale") as HTMLSelectElement;
       metadataSummary.textContent = [selectedOptionLabel(subject), selectedOptionLabel(category), selectedOptionLabel(locale), statusLabel[status.value as keyof typeof statusLabel] ?? selectedOptionLabel(status)].filter(Boolean).join(" / ");
     };
-    let loadedDocumentWasPublished = false;
-    let loadedDocumentIsUpdateProposal = false;
-    let updateProposalActive = false;
-    const updateProposalIdentityFields = new Set(["locale", "subject", "category", "slug", "conceptId"]);
-    type DocumentVersionLinks = { canonicalId: string | null; proposalId: string | null };
-    let loadedVersionLinks: DocumentVersionLinks = { canonicalId: null, proposalId: null };
-    const setUpdateProposalState = (active: boolean) => {
-      updateProposalActive = loadedDocumentIsUpdateProposal || (loadedDocumentWasPublished && active);
-      form.classList.toggle("is-update-proposal", updateProposalActive);
-      const publishedBodyLocked = loadedDocumentWasPublished && !updateProposalActive;
-      bodySurface.dataset.publishedLocked = String(publishedBodyLocked);
-      bodySurface.setAttribute("aria-disabled", String(publishedBodyLocked));
-      updateProposalButton.hidden = !loadedDocumentWasPublished;
-      updateProposalButton.disabled = updateProposalActive;
-      updateProposalButton.textContent = updateProposalActive ? "更新案を作成済み" : "更新案を作成";
-      publishButton.textContent = updateProposalActive ? "更新公開" : "公開する";
-      updateProposalNote.hidden = !(loadedDocumentWasPublished || loadedDocumentIsUpdateProposal);
-      updateProposalNote.textContent = updateProposalActive
-        ? "更新案を編集中です。公開中の記事は変更されません。保存・フィードバック・承認はこの別下書きで行い、承認後に「更新公開」すると公開原稿へ反映されます。"
-        : "公開中の記事を保持したまま更新案を作成できます。移行用の「運営管理へ登録」とは異なり、既存原稿を編集して同じ公開先へ更新します。";
+    const hasUnpublishedPublicationChanges = (item: Pick<Document, "published_at" | "current_version_id" | "published_version_id">) => {
+      if (!item.published_at) return false;
+      return !item.current_version_id || !item.published_version_id || item.current_version_id !== item.published_version_id;
+    };
+    const setDocumentVersionLabel = (item: Pick<Document, "published_at" | "current_version_id" | "published_version_id">) => {
+      const hasNewVersion = hasUnpublishedPublicationChanges(item);
+      documentVersionLabel.hidden = !hasNewVersion;
+      documentVersionLabel.textContent = hasNewVersion
+        ? "最新保存版を編集中です。公開中の記事は公開版のまま保持されています。"
+        : "";
+    };
+    const syncPublishedVersionControls = () => {
+      const published = Boolean(currentDocument?.published_at);
+      const hasNewVersion = currentDocument ? hasUnpublishedPublicationChanges(currentDocument) : false;
+      body.readOnly = false;
+      bodySurface.dataset.publishedLocked = "false";
+      bodySurface.setAttribute("aria-disabled", "false");
       form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input, select, textarea").forEach((field) => {
         if (field.name === "documentId") return;
-        const locked = (loadedDocumentWasPublished && (!updateProposalActive || field.name === "status" || updateProposalIdentityFields.has(field.name))) || (loadedDocumentIsUpdateProposal && updateProposalIdentityFields.has(field.name));
-        // 本文はdisabledにせずreadOnlyにする。CodeMirror側でも状態を
-        // 同期するため、クリック時に「更新案を作成」へ案内できる。
-        if (field === body) {
-          field.disabled = false;
-          field.readOnly = publishedBodyLocked;
-          return;
-        }
-        field.disabled = locked;
+        field.disabled = false;
       });
-      publishButton.hidden = !(isManager && Boolean((form.elements.namedItem("documentId") as HTMLInputElement).value) && status.value === "approved" && (!loadedDocumentWasPublished || updateProposalActive));
-      reviewButton.disabled = loadedDocumentWasPublished && !loadedDocumentIsUpdateProposal;
-      reviewButton.title = loadedDocumentWasPublished
-        ? "公開済みの正原稿は変更されません。更新案を作成してからフィードバックを依頼してください。"
+      reviewButton.disabled = published && !hasNewVersion;
+      reviewButton.title = published && !hasNewVersion
+        ? "フィードバックを依頼するには、記事を編集して新しい版を保存してください。"
         : "複数回、別の担当者へフィードバックを依頼できます。";
     };
-    const setDocumentVersionSwitcher = (item: Document, links: DocumentVersionLinks = loadedVersionLinks) => {
-      const isProposal = item.document_kind === "update-proposal";
-      const canonicalId = isProposal ? item.base_document_id ?? links.canonicalId ?? "" : links.canonicalId || item.id;
-      const proposal = !isProposal && item.id
-        ? documents.find((candidate) => candidate.document_kind === "update-proposal" && candidate.base_document_id === item.id && !candidate.archived_at)
-        : null;
-      const proposalId = isProposal ? item.id : proposal?.id ?? links.proposalId ?? "";
-      const showCurrent = Boolean(isProposal && canonicalId);
-      const showProposal = Boolean(!isProposal && proposalId);
-      versionSwitcher.hidden = !(showCurrent || showProposal);
-      openCurrentVersionButton.hidden = !showCurrent;
-      openUpdateProposalButton.hidden = !showProposal;
-      openCurrentVersionButton.dataset.documentId = canonicalId;
-      openUpdateProposalButton.dataset.documentId = proposalId;
-      versionSwitcherLabel.textContent = showCurrent
-        ? "更新案を表示中"
-        : showProposal
-          ? "現行版を表示中（更新案あり）"
-          : "";
-    };
-    const beginUpdateProposal = async () => {
-      if (!loadedDocumentWasPublished) return;
-      const documentId = (form.elements.namedItem("documentId") as HTMLInputElement).value.trim();
-      if (!documentId || updateProposalButton.disabled) return;
-      updateProposalButton.disabled = true;
-      updateProposalButton.setAttribute("aria-busy", "true");
-      try {
-        const response = await fetch(`/api/admin/editor/documents/${encodeURIComponent(documentId)}/update-proposal`, {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "content-type": "application/json" },
-          body: "{}",
-        });
-        const data = await read<{ error?: string; id?: string }>(response);
-        if (!response.ok || !data.id) throw new Error(data.error ?? "更新案を作成できませんでした。");
-        activeUpdateProposalDocumentIds.add(documentId);
-        await openDocument(data.id);
-        // 更新案の作成自体は個別APIで完了している。一覧の再取得が一時的に
-        // 失敗しても、保存済みの更新案を「作成失敗」と誤表示しない。
-        try { await loadDocuments(); } catch { /* 次回の再読み込みで一覧を同期する */ }
-        await loadRevisions(data.id);
-        saveMessage.value = "更新案を作成しました。公開中の記事は保持されています。内容を確認して保存・フィードバック依頼を進めてください。";
-      } catch (error) {
-        saveMessage.value = error instanceof Error ? error.message : "更新案を作成できませんでした。";
-      } finally {
-        updateProposalButton.removeAttribute("aria-busy");
-        if (loadedDocumentWasPublished) updateProposalButton.disabled = false;
-      }
-    };
-    const openVersion = (button: HTMLButtonElement) => {
-      const id = button.dataset.documentId?.trim();
-      if (!id) return;
-      button.disabled = true;
-      saveMessage.value = "別の版を読み込み中…";
-      void openDocument(id)
-        .then(() => loadRevisions(id))
-        .catch((error: unknown) => { saveMessage.value = error instanceof Error ? error.message : "別の版を読み込めませんでした。"; })
-        .finally(() => { button.disabled = false; });
-    };
-    openCurrentVersionButton.addEventListener("click", () => openVersion(openCurrentVersionButton));
-    openUpdateProposalButton.addEventListener("click", () => openVersion(openUpdateProposalButton));
-    const showPublishedBodyLockNotice = () => {
-      if (!(loadedDocumentWasPublished && !updateProposalActive)) return;
-      saveMessage.value = "公開中の記事を編集するには「更新案を作成」を押してください。";
-      updateProposalButton.focus({ preventScroll: true });
-    };
-    bodySurface.addEventListener("click", showPublishedBodyLockNotice);
-    bodySurface.addEventListener("focusin", showPublishedBodyLockNotice);
     const setUnsavedChanges = (dirty: boolean) => {
       hasUnsavedChanges = dirty;
       root.dataset.unsavedChanges = String(dirty);
@@ -2292,12 +2200,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       event.returnValue = "";
     });
     const workflowSteps = ["draft", "in-review", "publication-subject", "publication-leader", "approved", "published"] as const;
-    const hasUnpublishedPublicationChanges = (item: Pick<Document, "published_at" | "updated_at">) => {
-      if (!item.published_at) return false;
-      const updatedAt = Date.parse(item.updated_at);
-      const publishedAt = Date.parse(item.published_at);
-      return Number.isFinite(updatedAt) && Number.isFinite(publishedAt) && updatedAt > publishedAt;
-    };
     const updateWorkflow = (documentStatus: keyof typeof statusLabel, isPublished = false, publicationStage: Document["publication_review_stage"] = null, publicationNeedsUpdate = false) => {
       const current = isPublished ? "published" : publicationStage === "subject-coordinator" ? "publication-subject" : publicationStage === "project-leader" ? "publication-leader" : documentStatus;
       const currentIndex = workflowSteps.indexOf(current as typeof workflowSteps[number]);
@@ -2306,7 +2208,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       const help = publicationNeedsUpdate
         ? "公開済みですが、最新の変更は学習サイトに未反映です。「公開内容を更新して再試行」から反映できます。"
         : isPublished
-        ? "公開済みです。修正内容は自動保存されます。公開内容へ反映するには更新案を作成してください。"
+        ? "公開済みです。編集内容は新しい版として保存され、公開版は公開操作まで維持されます。"
         : current === "publication-subject" ? "分野統括の承認を待っています。" : current === "publication-leader" ? "プロジェクトリーダーの承認を待っています。" : ({ draft: "入力内容は自動保存されます。準備ができたらフィードバックを依頼します。", "in-review": "フィードバックを反映したら「執筆完了（公開審査へ）」を押します。", approved: "公開審査が完了しています。公開または公開予約へ進めます。", "on-hold": "保留中です。状態の変更は自動保存されます。" } as const)[documentStatus];
       workflowHelp.textContent = help;
       workflow.querySelectorAll<HTMLElement>("[data-workflow-step]").forEach((step) => {
@@ -2401,7 +2303,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const publicationRunActiveStates = new Set(["queued", "checks_pending", "merge_pending", "deploy_pending", "retry_wait"]);
     const publicationRunTerminalStates = new Set(["published", "unpublished", "failed", "needs_operator"]);
     const learningSiteHasPublishedSource = (sourceArticleId?: string | null) => Boolean(sourceArticleId && articles.some((article) => article.articleId === sourceArticleId));
-    const setPublicationState = (item: Pick<Document, "status" | "publication_pr_url" | "publication_action" | "published_at" | "updated_at" | "publication_pr_number" | "publication_run" | "scheduled_publish_at"> & { source_article_id?: string | null }) => {
+    const setPublicationState = (item: Pick<Document, "status" | "publication_pr_url" | "publication_action" | "published_at" | "updated_at" | "current_version_id" | "published_version_id" | "publication_pr_number" | "publication_run" | "scheduled_publish_at"> & { source_article_id?: string | null }) => {
       const run = item.publication_run;
       const runLabels: Record<string, string> = { queued: "受付済み", checks_pending: "自動検証中", merge_pending: "公開処理中", deploy_pending: "学習サイト反映確認中", retry_wait: "自動再試行中", published: "公開済み", unpublished: "非公開化済み", failed: "自動公開失敗", needs_operator: "運営サイトで確認が必要" };
       const failureLabels: Record<string, string> = { configuration: "設定", validation: "入力・記事検証", github_api: "GitHub API", github_conflict: "GitHub競合", ci: "CI", deployment: "学習サイト反映", internal: "内部処理" };
@@ -2473,9 +2375,11 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         publicationLink.append(link);
       }
     };
-    const updatePublicationActions = (item: Pick<Document, "id" | "status" | "published_at" | "updated_at" | "publication_pr_url" | "publication_action" | "publication_run">) => {
-      const canRetryPublication = Boolean(item.publication_run && ["failed", "needs_operator"].includes(item.publication_run.state) && item.publication_run.action === "publish") || (item.publication_action === "publish" && Boolean(item.publication_pr_url));
-      const canUpdatePublishedArticle = Boolean(item.published_at);
+    const updatePublicationActions = (item: Pick<Document, "id" | "status" | "published_at" | "current_version_id" | "published_version_id" | "publication_pr_url" | "publication_action" | "publication_run">) => {
+      const hasNewVersion = hasUnpublishedPublicationChanges(item);
+      const runTargetsCurrentVersion = Boolean(item.publication_run?.snapshot_version_id && item.publication_run.snapshot_version_id === item.current_version_id);
+      const canRetryPublication = Boolean(item.publication_run && ["failed", "needs_operator"].includes(item.publication_run.state) && item.publication_run.action === "publish" && (!item.publication_run.snapshot_version_id || runTargetsCurrentVersion)) || (item.publication_action === "publish" && Boolean(item.publication_pr_url));
+      const canUpdatePublishedArticle = Boolean(item.published_at && hasNewVersion);
       const canRetryUnpublication = Boolean(item.published_at && item.publication_run?.action === "unpublish" && ["failed", "needs_operator"].includes(item.publication_run.state));
       const publicationBusy = Boolean(item.publication_run && ["queued", "checks_pending", "merge_pending", "deploy_pending", "retry_wait"].includes(item.publication_run.state));
       publishButton.hidden = !(isManager && Boolean(item.id) && item.status === "approved" && (!item.published_at || canUpdatePublishedArticle || canRetryPublication) && (!item.publication_pr_url || canRetryPublication));
@@ -2486,8 +2390,12 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       unpublishButton.disabled = publicationBusy || publicationActionInFlight;
       unpublishButton.textContent = canRetryUnpublication ? "非公開処理を再試行" : "公開を取り消す";
       reviewButton.hidden = !Boolean(item.id);
-      reviewButton.disabled = Boolean(item.published_at) || Boolean(item.publication_pr_url);
-      reviewButton.title = item.published_at ? "公開済みの記事へ依頼するには、先に公開を取り消してください。" : "複数回、別の担当者へフィードバックを依頼できます。";
+      reviewButton.disabled = (Boolean(item.published_at) && !hasNewVersion) || Boolean(item.publication_pr_url);
+      reviewButton.title = item.published_at && !hasNewVersion
+        ? "フィードバックを依頼するには、記事を編集して新しい版を保存してください。"
+        : "複数回、別の担当者へフィードバックを依頼できます。";
+      setDocumentVersionLabel(item);
+      syncPublishedVersionControls();
     };
     let publicationActionInFlight = false;
     let publicationRefreshTimer: number | null = null;
@@ -2521,8 +2429,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
           if (refreshed.publication_run && publicationRunTerminalStates.has(refreshed.publication_run.state)) {
             window.clearInterval(publicationRefreshTimer!);
             publicationRefreshTimer = null;
-            const followUpId = refreshed.document_kind === "update-proposal" && refreshed.base_document_id ? refreshed.base_document_id : item.id;
-            void openDocument(followUpId).catch(() => undefined);
+            void openDocument(item.id).catch(() => undefined);
           }
         } catch {
           // 次の周期で再確認する。
@@ -2543,6 +2450,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       publicationStage?: unknown;
       publishedAt?: unknown;
       publishedAtValue?: unknown;
+      currentVersionId?: unknown;
+      publishedVersionId?: unknown;
       updatedAt?: unknown;
       publicationPrNumber?: unknown;
       publicationPrUrl?: unknown;
@@ -2578,6 +2487,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         status: payload.status as Document["status"],
         updated_at: typeof payload.updatedAt === "string" && payload.updatedAt ? payload.updatedAt : current.updated_at,
         published_at: nextPublishedAt,
+        current_version_id: typeof payload.currentVersionId === "string" ? payload.currentVersionId : payload.currentVersionId === null ? null : current.current_version_id,
+        published_version_id: typeof payload.publishedVersionId === "string" ? payload.publishedVersionId : payload.publishedVersionId === null ? null : current.published_version_id,
         publication_review_stage: nextStage,
         publication_pr_number: typeof payload.publicationPrNumber === "number" ? payload.publicationPrNumber : payload.publicationPrNumber === null ? null : current.publication_pr_number,
         publication_pr_url: typeof payload.publicationPrUrl === "string" ? payload.publicationPrUrl : payload.publicationPrUrl === null ? null : current.publication_pr_url,
@@ -2588,6 +2499,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       };
       const stageChanged = current.publication_review_stage !== next.publication_review_stage;
       documents[index] = next;
+      if (currentDocument?.id === documentId) currentDocument = { ...currentDocument, ...next, body: body.value };
       state.textContent = statusLabel[next.status];
       setPublicationState(next);
       monitorPublicationRun(next);
@@ -3951,6 +3863,12 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const applySavedDocumentState = (item: Omit<Document, "body">) => {
       if (documentIdForRequest() !== item.id) return;
       if (currentDocument?.id === item.id) currentDocument = { ...currentDocument, ...item, body: body.value };
+      if (item.status !== status.value) {
+        status.value = item.status;
+        syncStatusControl(item.status);
+        state.textContent = statusLabel[item.status];
+        syncMetadataSummary();
+      }
       setPublicationState(item);
       updateWorkflow(item.status, Boolean(item.published_at), item.publication_review_stage ?? null, hasUnpublishedPublicationChanges(item));
       updatePublicationActions(item);
@@ -3961,18 +3879,13 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       window.clearTimeout(autosaveTimer);
       if (!autosaveGuardIsCurrent(guard)) return "";
       const requestedId = documentIdForRequest();
-      if (requestedId && loadedDocumentWasPublished && !updateProposalActive) {
-        saveMessage.value = "公開中の記事を編集するには「更新案を作成」を押してください。";
-        updateProposalButton.focus({ preventScroll: true });
-        return requestedId;
-      }
       try {
         saveMessage.value = autoSave ? "入力内容を自動保存中…" : "保存中…";
         const id = requestedId;
         const sentPayload = documentPayload();
         const sentFingerprint = documentSaveFingerprint(sentPayload);
         const response = await fetch(id ? `/api/admin/editor/documents/${id}` : "/api/admin/editor/documents", { method: id ? "PATCH" : "POST", headers: { "content-type": "application/json" }, credentials: "same-origin", body: JSON.stringify(sentPayload), ...(guard ? { signal: guard.signal } : {}) });
-        const data = await read<{ id?: string; error?: string; code?: string; updatedAt?: string; updatedBy?: string }>(response);
+        const data = await read<{ id?: string; error?: string; code?: string; updatedAt?: string; updatedBy?: string; status?: Document["status"]; versionId?: string; currentVersionId?: string }>(response);
         if (!autosaveGuardIsCurrent(guard)) return "";
         if (!response.ok) {
           if (response.status === 409 && data.code === "document_conflict") markDocumentConflict(data);
@@ -4010,7 +3923,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
           ? "入力内容を自動保存しました。"
           : status.value === "approved"
             ? refreshed?.published_at
-              ? "保存しました。公開内容を更新する場合は「公開内容を更新して再試行」を押してください。"
+              ? "新しい版を保存しました。公開中の内容は公開操作まで維持されます。"
               : "フィードバック済みとして保存しました。公開する場合は「公開」ボタンを押してください。"
             : "保存しました。";
         try { await loadPublicationReview(savedId, refreshed); } catch { /* 保存結果には影響させない */ }
@@ -4095,7 +4008,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       const id = documentIdForRequest();
       const generation = autosaveGeneration;
       if (!hasUnsavedChanges || autosaveInFlight || !documentConflict.hidden) return;
-      if (id && loadedDocumentWasPublished && !updateProposalActive) return;
       if (status.value !== "draft" && (!title.value.trim() || !formValue("summary").trim())) {
         saveMessage.value = "タイトルと要約を入力すると自動保存されます。";
         return;
@@ -4159,7 +4071,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       }
     };
     const scheduleAutosave = () => {
-      if (!hasUnsavedChanges || !documentConflict.hidden || (loadedDocumentWasPublished && !updateProposalActive)) return;
+      if (!hasUnsavedChanges || !documentConflict.hidden) return;
       window.clearTimeout(autosaveTimer);
       const generation = autosaveGeneration;
       saveMessage.value = "自動保存待ち…";
@@ -4489,12 +4401,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       }
       collaborationReconnectNow?.();
     });
-    const setDocument = (item: Document, commentsForDocument: Comment[] = [], versionLinks?: DocumentVersionLinks) => {
+    const setDocument = (item: Document, commentsForDocument: Comment[] = []) => {
       cancelAutosave();
-      loadedVersionLinks = versionLinks ?? {
-        canonicalId: item.document_kind === "update-proposal" ? item.base_document_id ?? null : item.id || null,
-        proposalId: item.document_kind === "update-proposal" ? item.id : null,
-      };
       currentDocument = item;
       slugEdited = Boolean(item.id);
       empty.hidden = true; form.hidden = false;
@@ -4527,11 +4435,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       const reviewOnly = false;
       form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input, select, textarea").forEach((field) => { if (field.name !== "documentId" && field.name !== "status") field.disabled = reviewOnly; });
       syncMetadataSummary(); metadata.open = !item.id || metadataMissingCount() > 0;
-      loadedDocumentWasPublished = Boolean(item.published_at) && item.document_kind !== "update-proposal";
-      loadedDocumentIsUpdateProposal = item.document_kind === "update-proposal";
-      if (item.id && item.published_at && hasUnpublishedPublicationChanges(item)) activeUpdateProposalDocumentIds.add(item.id);
-      setUpdateProposalState(loadedDocumentIsUpdateProposal || Boolean(loadedVersionLinks.proposalId && item.document_kind !== "update-proposal"));
-      setDocumentVersionSwitcher(item, loadedVersionLinks);
+      setDocumentVersionLabel(item);
+      syncPublishedVersionControls();
       heading.textContent = item.title || "新規原稿"; state.textContent = statusLabel[item.status]; setPublicationState(item); monitorPublicationRun(item); updateWorkflow(item.status, Boolean(item.published_at), item.publication_review_stage, hasUnpublishedPublicationChanges(item)); currentComments = commentsForDocument; renderComments(); renderHeadingOutline(); void renderPreview(); void loadMediaAssets(item.id); updatePublicationActions(item); completeWritingButton.hidden = true; publicationReviewButton.hidden = true; saveMessage.value = item.id ? "保存済み" : "未保存の新規原稿"; setUnsavedChanges(false); connectCollaboration(item.id); if (item.id) void loadPublicationReview(item.id, item).catch((error: unknown) => { saveMessage.value = error instanceof Error ? error.message : "公開審査状態を読み込めませんでした。"; });
     };
     const emptyDocument = (seed?: DraftSeed) => {
@@ -4603,17 +4508,13 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       const loadGeneration = ++documentLoadGeneration;
       saveMessage.value = "原稿を読み込み中…";
       const response = await fetch(`/api/admin/editor/documents/${encodeURIComponent(id)}`, { credentials: "same-origin" });
-      const data = await read<{ document?: Document; comments?: Comment[]; versions?: Partial<DocumentVersionLinks>; error?: string }>(response);
+      const data = await read<{ document?: Document; comments?: Comment[]; error?: string }>(response);
       if (!response.ok || !data.document) throw new Error(data.error ?? "原稿を読み込めませんでした。");
       // A slower response for a previously selected article must never replace
       // the article the user has opened most recently.
       if (loadGeneration !== documentLoadGeneration || (id && activeDocumentId !== id)) return;
       expandedReplyThreadIds.clear();
-      const versions: DocumentVersionLinks = {
-        canonicalId: data.versions?.canonicalId ?? (data.document.document_kind === "update-proposal" ? data.document.base_document_id ?? null : data.document.id || null),
-        proposalId: data.versions?.proposalId ?? (data.document.document_kind === "update-proposal" ? data.document.id : null),
-      };
-      setDocument(data.document, data.comments ?? [], versions);
+      setDocument(data.document, data.comments ?? []);
       // 一部の認証付きレスポンス／古いキャッシュでは本文は返るのに
       // document.id が欠落することがある。呼び出し元のIDを復元して、
       // 画像アップロード等が新規原稿POSTへ誤分岐しないようにする。
@@ -4653,8 +4554,10 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         if (Number.isFinite(refreshedVersion) && refreshedVersion > latestPublicationRealtimeVersion) latestPublicationRealtimeVersion = refreshedVersion;
         const index = documents.findIndex((item) => item.id === id);
         if (index >= 0) documents[index] = data.document;
+        if (currentDocument?.id === id) currentDocument = { ...currentDocument, ...data.document, body: body.value };
         setPublicationState(data.document);
         monitorPublicationRun(data.document);
+        updatePublicationActions(data.document);
         updateWorkflow(data.document.status, Boolean(data.document.published_at), data.document.publication_review_stage ?? null);
         await loadPublicationReview(id, data.document);
 
@@ -4666,7 +4569,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         if (workflowRefreshInFlight === refresh) workflowRefreshInFlight = null;
       }
     };
-    type Revision = { id: string; title: string; summary: string; body: string; status: string; saved_by: string; saved_at: string; saved_by_display_name?: string; saved_by_avatar_url?: string };
+    type Revision = { id: string; title: string; summary: string; body: string; status: string; saved_by: string; saved_at: string; is_current_version?: number | boolean; is_published_version?: number | boolean; saved_by_display_name?: string; saved_by_avatar_url?: string };
     type FeedbackRequestHistory = { task_id: string; title: string; details: string; status: "open" | "doing" | "done"; assignee_email: string | null; created_at: string; requester_display_name?: string; created_by: string; canUpdate?: boolean };
     type RevisionDiffLine = { kind: "unchanged" | "added" | "removed"; text: string };
     const revisionLineDiff = (before: string, after: string): RevisionDiffLine[] => {
@@ -4685,12 +4588,15 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       if (documentIdForRequest() !== id) return;
       if (!response.ok) { revisions.textContent = data.error ?? "版履歴を読み込めませんでした。"; feedbackRequestHistory.textContent = "フィードバック依頼の履歴を読み込めませんでした。"; return; }
       const history = data.revisions ?? [];
-      const revisionStatusLabel = (value: string) => value === "published" ? "現行版（公開時点）" : statusLabel[value as keyof typeof statusLabel] ?? value;
+      const revisionStatusLabel = (item: Revision) => {
+        const labels = [item.is_published_version ? "公開版" : "", item.is_current_version ? "最新保存版" : ""].filter(Boolean);
+        return labels.length ? labels.join("・") : statusLabel[item.status as keyof typeof statusLabel] ?? item.status;
+      };
       loadedRevisionHistory = history;
       if (currentDocument) renderDocumentProvenance(currentDocument, history.map((item) => ({ email: item.saved_by, name: item.saved_by_display_name?.trim() || personLabel(item.saved_by), avatarUrl: item.saved_by_avatar_url || "" })));
       if (!history.length) revisions.textContent = "まだ過去版はありません。次回の保存から記録されます。";
       else {
-        const options = history.map((item, index) => `<option value="${index}">${date(item.saved_at)}・${esc(item.saved_by_display_name?.trim() || personLabel(item.saved_by))}・${esc(revisionStatusLabel(item.status))}</option>`).join("");
+        const options = history.map((item, index) => `<option value="${index}">${date(item.saved_at)}・${esc(item.saved_by_display_name?.trim() || personLabel(item.saved_by))}・${esc(revisionStatusLabel(item))}</option>`).join("");
         revisions.innerHTML = `<div class="revision-compare-controls"><label>比較元<select data-revision-before>${options}</select></label><label>比較先<select data-revision-after><option value="current">現在の入力内容</option>${options}</select></label><button type="button" class="quiet-action revision-restore-action" data-revision-restore>選択した版を入力へ反映</button></div><p class="revision-restore-help">選択した版は入力欄へ反映され、自動保存されます。</p><pre class="revision-diff" data-revision-diff></pre>`;
         const before = revisions.querySelector<HTMLSelectElement>("[data-revision-before]")!;
         const after = revisions.querySelector<HTMLSelectElement>("[data-revision-after]")!;
@@ -4720,11 +4626,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       const before = revisions.querySelector<HTMLSelectElement>("[data-revision-before]");
       const revision = before ? loadedRevisionHistory[Number(before.value)] : undefined;
       if (!revision) return;
-      if (loadedDocumentWasPublished && !updateProposalActive) {
-        saveMessage.value = "公開中の記事へ版を反映するには、先に「更新案を作成」を押してください。";
-        updateProposalButton.focus({ preventScroll: true });
-        return;
-      }
       const title = form.elements.namedItem("title") as HTMLInputElement;
       const summary = form.elements.namedItem("summary") as HTMLInputElement;
       title.value = revision.title;
@@ -4817,7 +4718,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       unpublishButton.hidden = true;
       reviewButton.hidden = !(form.elements.namedItem("documentId") as HTMLInputElement).value;
     });
-    updateProposalButton.addEventListener("click", beginUpdateProposal);
     reviewRequestAssignee.addEventListener("change", () => {
       const allOption = [...reviewRequestAssignee.options].find((option) => option.value === "*");
       if (!allOption) return;
@@ -5355,7 +5255,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       disconnectCollaboration();
       releaseAllAssetPreviews();
     }, { once: true });
-    const query = new URLSearchParams(window.location.search); const reviewDocumentId = query.get("document"); const isNewDocument = query.get("new") === "1"; const updateModeRequested = query.get("mode") === "update";
+    const query = new URLSearchParams(window.location.search); const reviewDocumentId = query.get("document"); const isNewDocument = query.get("new") === "1";
     if ((reviewDocumentId || isNewDocument) && !window.location.hash) {
       initialScrollRestoreUntil = performance.now() + 15_000;
       [0, 50, 250, 750, 1_500, 3_000, 4_500, 8_000, 12_000].forEach((delay) => window.setTimeout(restoreInitialEditorScroll, delay));
@@ -5376,7 +5276,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       if (reviewDocumentId) {
         await openDocument(reviewDocumentId);
         await loadRevisions(reviewDocumentId);
-        if (updateModeRequested) beginUpdateProposal();
       } else if (isNewDocument) {
         // 動的に追加された分野・カテゴリをselectへ反映してから、
         // URLに初期値がある場合は適用する。
