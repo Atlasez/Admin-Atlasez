@@ -487,6 +487,9 @@ describe("公開記事との運営原稿連携契約", () => {
       ...importedArticle,
       source_article_id: importedArticle.sourceArticleId,
       concept_id: importedArticle.conceptId,
+      concept_name: null,
+      concept_name_en: null,
+      concept_is_new: 0,
       writing_memo: "",
       latex_engine: importedArticle.latexEngine,
       created_by: "author@example.com",
@@ -545,6 +548,9 @@ describe("公開記事との運営原稿連携契約", () => {
       ...importedArticle,
       source_article_id: importedArticle.sourceArticleId,
       concept_id: importedArticle.conceptId,
+      concept_name: null,
+      concept_name_en: null,
+      concept_is_new: 0,
       writing_memo: "",
       latex_engine: importedArticle.latexEngine,
       created_by: "author@example.com",
@@ -590,6 +596,11 @@ describe("公開記事との運営原稿連携契約", () => {
     );
 
     expect(response.status).toBe(200);
+    const result = (await response.json()) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      status: "draft",
+      statusResetForPublishedEdit: true,
+    });
     const update = calls.find((call) =>
       call.query.includes("UPDATE editorial_documents SET source_article_id"),
     );
@@ -610,7 +621,6 @@ describe("公開記事との運営原稿連携契約", () => {
     );
     expect(revisionInsert?.query).toContain("snapshot_json");
     expect(revisionInsert?.values[0]).toBe(update?.values[18]);
-    const result = (await response.json()) as Record<string, unknown>;
     expect(result).toMatchObject({
       status: "draft",
       currentVersionId: update?.values[18],
