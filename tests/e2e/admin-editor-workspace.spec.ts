@@ -1030,6 +1030,66 @@ test("フィードバック済みは公開審査の承認前に状態選択で�
   );
 });
 
+test("未完了の依頼から状態操作へ移動し、完了後に審査ボタンが有効になる", async ({
+  page,
+}) => {
+  const feedbackRequest = {
+    task_id: "feedback-task-1",
+    title: "フィードバック依頼：記事の確認",
+    details: "本文を確認してください。",
+    status: "open",
+    assignee_email: "alice@example.com",
+    created_by: "alice@example.com",
+    created_at: "2026-08-28T00:00:00.000Z",
+    canUpdate: true,
+  };
+  let feedbackDone = false;
+  await mockAdminApi(
+    page,
+    undefined,
+    { ...documentItem, status: "in-review" },
+    [feedbackRequest],
+  );
+  await page.route(
+    "**/api/admin/editor/documents/doc-1/publication-review",
+    async (route) =>
+      route.fulfill({
+        json: {
+          canCompleteWriting: true,
+          canDecide: false,
+          feedbackTaskTotal: 1,
+          feedbackTaskDone: feedbackDone ? 1 : 0,
+          feedbackComplete: feedbackDone,
+        },
+      }),
+  );
+  await page.route(
+    "**/api/admin/operations/tasks/feedback-task-1",
+    async (route) => {
+      feedbackDone = true;
+      feedbackRequest.status = "done";
+      await route.fulfill({ json: { ok: true, status: "done" } });
+    },
+  );
+
+  await page.goto("./admin/editor/?document=doc-1");
+  const completeButton = page.locator("[data-complete-writing]");
+  const feedbackLink = page.locator("[data-feedback-task-link]");
+  await expect(completeButton).toBeDisabled();
+  await expect(feedbackLink).toBeVisible();
+  await feedbackLink.click();
+
+  const taskStatus = page.locator(
+    '[data-feedback-task-status="feedback-task-1"]',
+  );
+  await expect(taskStatus).toBeFocused();
+  await taskStatus.selectOption("done");
+  await page.locator('[data-save-feedback-task="feedback-task-1"]').click();
+
+  await expect(completeButton).toBeEnabled();
+  await expect(feedbackLink).toBeHidden();
+});
+
 test("公開審査段階がない原稿では運営管理者にも代理承認を表示しない", async ({
   page,
 }) => {

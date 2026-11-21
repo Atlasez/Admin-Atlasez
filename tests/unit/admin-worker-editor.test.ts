@@ -3151,6 +3151,136 @@ describe("admin worker editor APIs", () => {
     });
   });
 
+  it("allows archiving a feedback-stage article but rejects publication-review stages", async () => {
+    const documentId = "33333333-3333-4333-8333-333333333333";
+    const executed: string[] = [];
+    const document = {
+      id: documentId,
+      subject: "mathematics",
+      status: "in-review",
+      created_by: "local-editor@atlasez.test",
+      published_at: null,
+      published_version_id: null as string | null,
+      publication_review_stage: null as
+        "subject-coordinator" | "project-leader" | null,
+      scheduled_publish_at: null,
+      archived_at: null,
+      archived_by: null,
+      archive_expires_at: null,
+    };
+    class ArchiveStatement extends EmptyStatement {
+      async first<T>() {
+        if (this.query.includes("SELECT id, subject, status, created_by"))
+          return document as T;
+        return null as T | null;
+      }
+
+      async run() {
+        executed.push(this.query);
+        return { meta: { changes: 1 } };
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new ArchiveStatement(query),
+      },
+    };
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/documents/${documentId}/archive`,
+        { method: "POST", headers: { origin: "http://localhost" } },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(executed).toHaveLength(1);
+    expect(executed[0]).toContain("status IN ('draft', 'in-review')");
+    expect(executed[0]).toContain("published_version_id IS NULL");
+    expect(executed[0]).toContain("publication_review_stage IS NULL");
+
+    document.published_version_id = "published-revision";
+    executed.length = 0;
+    const publishedResponse = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/documents/${documentId}/archive`,
+        { method: "POST", headers: { origin: "http://localhost" } },
+      ),
+      env as never,
+    );
+    expect(publishedResponse.status).toBe(400);
+    expect(executed).toEqual([]);
+
+    document.published_version_id = null;
+    document.publication_review_stage = "subject-coordinator";
+    executed.length = 0;
+    const reviewStageResponse = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/documents/${documentId}/archive`,
+        { method: "POST", headers: { origin: "http://localhost" } },
+      ),
+      env as never,
+    );
+    expect(reviewStageResponse.status).toBe(400);
+    expect(executed).toEqual([]);
+  });
+
+  it("does not start publication review for an archived article", async () => {
+    const documentId = "44444444-4444-4444-8444-444444444444";
+    const document = {
+      id: documentId,
+      subject: "mathematics",
+      status: "in-review",
+      created_by: "local-editor@atlasez.test",
+      published_at: null,
+      publication_review_stage: null,
+      archived_at: "2026-08-30T00:00:00.000Z",
+    };
+    const executed: string[] = [];
+    class ArchivedPublicationStatement extends EmptyStatement {
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return document as T;
+        return null as T | null;
+      }
+
+      async run() {
+        executed.push(this.query);
+        return {};
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new ArchivedPublicationStatement(query),
+      },
+    };
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/documents/${documentId}/publication-review`,
+        {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: "{}",
+        },
+      ),
+      env as never,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error:
+        "アーカイブ中の原稿は公開審査へ進められません。先に一覧から復元してください。",
+    });
+    expect(executed).toEqual([]);
+  });
+
   it("blocks publication review until every feedback task is complete", async () => {
     const documentId = "22222222-2222-4222-8222-222222222222";
     const document = {
