@@ -148,7 +148,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
 
         <form class="document-form" data-document-form hidden>
           <input type="hidden" name="documentId" />
-          <section class="document-toolbar">
+          <div class="document-toolbar-sentinel" data-toolbar-sticky-sentinel aria-hidden="true"></div>
+          <section class="document-toolbar" data-document-toolbar>
             <div>
               <div class="document-statuses" aria-label="原稿と公開の状態">
                 <span class="document-status-pill"><span>原稿</span><strong data-document-state>下書き</strong></span>
@@ -1376,6 +1377,27 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     let publicCatalogReady: Promise<void> = Promise.resolve();
     const externalStatementIds = [...new Set(articles.flatMap((article) => [...article.body.matchAll(/\{#([A-Za-z][A-Za-z0-9_-]*)\}/g)].map((match) => match[1].toLowerCase())))];
     const form = root.querySelector<HTMLFormElement>("[data-document-form]")!;
+    const documentToolbar = form.querySelector<HTMLElement>("[data-document-toolbar]");
+    const toolbarStickySentinel = form.querySelector<HTMLElement>("[data-toolbar-sticky-sentinel]");
+    if (documentToolbar && toolbarStickySentinel && "IntersectionObserver" in window) {
+      const toolbarCompactObserver = new IntersectionObserver(([entry]) => {
+        documentToolbar.toggleAttribute("data-compact", !entry.isIntersecting);
+      });
+      toolbarCompactObserver.observe(toolbarStickySentinel);
+    }
+    documentToolbar?.addEventListener("focusin", () => root.removeAttribute("data-toolbar-hidden"));
+    let previousToolbarScrollY = window.scrollY;
+    window.addEventListener("scroll", () => {
+      const currentScrollY = window.scrollY;
+      const scrollDelta = currentScrollY - previousToolbarScrollY;
+      previousToolbarScrollY = currentScrollY;
+      if (!root.hasAttribute("data-sticky-toolbar")) return;
+      if (currentScrollY <= 8 || scrollDelta < -2) {
+        root.removeAttribute("data-toolbar-hidden");
+      } else if (scrollDelta > 2 && !documentToolbar?.contains(document.activeElement)) {
+        root.setAttribute("data-toolbar-hidden", "");
+      }
+    }, { passive: true });
     const articleReportCount = root.querySelector<HTMLElement>("[data-article-report-count]")!;
     const articleReportFeedback = root.querySelector<HTMLElement>("[data-article-report-feedback]")!;
     const articleReportList = root.querySelector<HTMLElement>("[data-article-report-list]")!;
@@ -2353,6 +2375,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         publicationIntegration.dataset.state = "error";
         publicationIntegration.textContent = "公開連携：疎通確認に失敗しました";
       }
+      publicationIntegration.title = publicationIntegration.textContent ?? "";
     };
     const renderHeadingOutline = () => {
       const lines = body.value.split("\\n"); let offset = 0;
@@ -5765,7 +5788,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
    * リンク文字が縦一列になってツールバー全体の高さも不安定になっていた。
    */
   .editor-workspace .document-toolbar {
-    grid-template-columns: minmax(0, .9fr) minmax(0, 1.8fr);
+    grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
   }
 
   .editor-workspace .document-toolbar > div:first-child,
@@ -5916,6 +5939,265 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     width: auto;
   }
 
+  /* スクロール中は公開状態と主要操作だけを残す薄い固定バーにする。 */
+  .editor-workspace .document-toolbar[data-compact] {
+    align-items: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0 0 .65rem .65rem;
+    box-shadow: 0 .35rem 1rem rgb(0 0 0 / .2);
+    display: grid;
+    gap: .3rem .75rem;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+    padding: .32rem .55rem;
+    transition: transform .16s ease;
+  }
+
+  .editor-workspace[data-toolbar-hidden] .document-toolbar[data-compact]:not(:has([data-publication-run][data-state="failed"], [data-publication-run][data-state="needs_operator"], .document-conflict:not([hidden]))) {
+    pointer-events: none;
+    transform: translateY(calc(-100% + .18rem));
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .editor-workspace .document-toolbar[data-compact] {
+      transition: none;
+    }
+  }
+
+  .editor-workspace .document-toolbar[data-compact] > div:first-child {
+    align-items: center;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: .5rem;
+    justify-content: flex-start;
+    min-width: 0;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-statuses {
+    display: flex;
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+    gap: .25rem;
+    margin: 0;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    width: auto;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-statuses::-webkit-scrollbar {
+    display: none;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-statuses:has([data-publication-run][data-state="failed"]),
+  .editor-workspace .document-toolbar[data-compact] .document-statuses:has([data-publication-run][data-state="needs_operator"]) {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-statuses > .document-status-pill {
+    align-items: center;
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    font-size: .62rem;
+    line-height: 1.1;
+    min-height: 1.65rem;
+    padding: .08rem .35rem;
+    white-space: nowrap;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-statuses [data-publication-run]:not([data-state="failed"]):not([data-state="needs_operator"]):not([aria-busy="true"]),
+  .editor-workspace .document-toolbar[data-compact] .document-statuses .publication-links,
+  .editor-workspace .document-toolbar[data-compact] .document-statuses .publication-integration-status:not([data-state="error"]),
+  .editor-workspace .document-toolbar[data-compact] .document-statuses .publication-diagnostic {
+    display: none;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-statuses [data-publication-run][data-state="failed"],
+  .editor-workspace .document-toolbar[data-compact] .document-statuses [data-publication-run][data-state="needs_operator"] {
+    flex: 1 1 100%;
+    box-sizing: border-box;
+    font-size: .64rem;
+    max-width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    padding: .12rem .4rem;
+    white-space: normal;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-statuses .publication-integration-status[data-state="error"] {
+    box-sizing: border-box;
+    border-radius: 999px;
+    flex: 0 0 auto;
+    font-size: 0;
+    height: auto;
+    max-width: 6.4rem;
+    min-height: 1.65rem;
+    min-width: 0;
+    overflow: hidden;
+    padding: .08rem .42rem;
+    white-space: nowrap;
+    width: auto;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-statuses .publication-integration-status[data-state="error"]::before {
+    content: "! 連携エラー";
+    font-size: .62rem;
+    margin: 0;
+    white-space: nowrap;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] h2 {
+    flex: 1 1 14rem;
+    font-size: .95rem;
+    min-width: 0;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-provenance,
+  .editor-workspace .document-toolbar[data-compact] .toolbar-guide-link,
+  .editor-workspace .document-toolbar[data-compact] .engine-control,
+  .editor-workspace .document-toolbar[data-compact] .editor-test-tools {
+    display: none;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] [data-collaboration-participants] {
+    display: none;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .toolbar-actions {
+    align-items: center;
+    flex-wrap: wrap;
+    gap: .3rem;
+    justify-content: flex-start !important;
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-actions {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    gap: .3rem;
+    min-width: 0;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-actions > button {
+    font-size: .7rem;
+    min-height: 1.85rem;
+    padding: .25rem .5rem;
+    white-space: nowrap;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .collaboration-status,
+  .editor-workspace .document-toolbar[data-compact] .save-status,
+  .editor-workspace .document-toolbar[data-compact] .document-version-switcher {
+    flex: 0 0 auto;
+    font-size: .68rem;
+    margin: 0;
+    padding: .2rem .4rem;
+    position: static;
+    white-space: nowrap;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .save-status {
+    flex: 1 1 auto;
+    max-width: min(18rem, 100%);
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-version-switcher > span {
+    display: none;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-version-switcher .quiet-action,
+  .editor-workspace .document-toolbar[data-compact] .collaboration-status button {
+    min-height: 1.85rem;
+    padding: .2rem .45rem;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .update-proposal-note {
+    flex: 1 1 100%;
+    font-size: .66rem;
+    line-height: 1.3;
+    margin: 0;
+    max-width: 100%;
+    overflow: hidden;
+    padding: .22rem .4rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .editor-workspace .document-toolbar[data-compact] .document-conflict {
+    flex: 1 1 100%;
+    font-size: .66rem;
+    padding: .25rem .4rem;
+  }
+
+  @media (max-width: 760px) {
+    .editor-workspace .document-toolbar[data-compact] {
+      grid-template-columns: minmax(0, 1fr);
+      padding: .3rem .45rem;
+    }
+
+    .editor-workspace .document-toolbar[data-compact] > div:first-child {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      justify-content: initial;
+      row-gap: .2rem;
+    }
+
+    .editor-workspace .document-toolbar[data-compact] .document-statuses {
+      display: flex;
+      flex: 0 1 auto;
+      flex-wrap: nowrap;
+      gap: .15rem;
+      justify-self: start;
+      max-width: 100%;
+      width: 100%;
+    }
+
+    .editor-workspace .document-toolbar[data-compact] .document-statuses > .document-status-pill {
+      min-height: 1.45rem;
+      font-size: .56rem;
+      padding: .08rem .25rem;
+    }
+
+    .editor-workspace .document-toolbar[data-compact] h2 {
+      font-size: .82rem;
+      width: 100%;
+    }
+
+    .editor-workspace .document-toolbar[data-compact] .toolbar-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .25rem;
+      justify-content: flex-start !important;
+      max-width: 100%;
+      overflow: visible;
+    }
+
+    .editor-workspace .document-toolbar[data-compact] .document-actions {
+      display: flex;
+      flex: 1 1 auto;
+      flex-wrap: wrap;
+      gap: .25rem;
+      min-width: 0;
+    }
+
+    .editor-workspace .document-toolbar[data-compact] .document-actions > button {
+      flex: 0 0 auto;
+      width: auto;
+    }
+  }
+
   @media (min-width: 1081px) {
     .editor-workspace .document-toolbar {
       grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.4fr);
@@ -5930,6 +6212,15 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   @media (max-width: 1080px) {
     .editor-workspace .document-toolbar {
       grid-template-columns: minmax(0, 1fr);
+    }
+
+    .editor-workspace .document-toolbar[data-compact] {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .editor-workspace .document-toolbar[data-compact] .toolbar-actions {
+      justify-content: flex-start !important;
+      width: 100%;
     }
 
     .editor-workspace .toolbar-actions > .document-actions {
