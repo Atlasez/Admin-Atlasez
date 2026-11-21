@@ -2403,6 +2403,7 @@ type AdminAuditAction =
   | "article_approved"
   | "article_published"
   | "article_unpublished"
+  | "feedback_request_withdrawn"
   | "permission_granted"
   | "permission_replaced"
   | "permission_revoked"
@@ -2445,6 +2446,7 @@ const adminAuditActionLabel = (action: AdminAuditAction | string) => ({
   article_approved: "記事を承認",
   article_published: "記事を公開",
   article_unpublished: "記事の公開を取り消し",
+  feedback_request_withdrawn: "フィードバック依頼を取り下げ",
   permission_granted: "権限を付与",
   permission_replaced: "権限を変更",
   permission_revoked: "権限を削除",
@@ -2472,6 +2474,36 @@ const adminAuditActionLabel = (action: AdminAuditAction | string) => ({
   workflow_transition: "状態を変更",
 }[action] ?? action);
 
+const adminAuditStatement = (
+  env: Env,
+  actorEmail: string,
+  action: AdminAuditAction,
+  targetType: AdminAuditTarget,
+  targetId: string,
+  targetLabel: string,
+  summary: string,
+  details: Record<string, unknown> = {},
+  onlyAfterSuccessfulStatement = false,
+) => {
+  const insert = `INSERT INTO admin_audit_log
+     (id,actor_email,action,target_type,target_id,target_label,summary,details_json,created_at)`;
+  return env.REPORTS.prepare(
+    onlyAfterSuccessfulStatement
+      ? `${insert} SELECT ?,?,?,?,?,?,?,?,? WHERE changes()=1`
+      : `${insert} VALUES (?,?,?,?,?,?,?,?,?)`,
+  ).bind(
+    crypto.randomUUID(),
+    actorEmail,
+    action,
+    targetType,
+    targetId,
+    targetLabel,
+    summary,
+    JSON.stringify(details),
+    new Date().toISOString(),
+  );
+};
+
 const recordAdminAudit = async (
   env: Env,
   actorEmail: string,
@@ -2483,24 +2515,16 @@ const recordAdminAudit = async (
   details: Record<string, unknown> = {},
 ) => {
   // 監査記録の失敗で本来の操作を失敗させない。旧D1にも安全にデプロイできる。
-  await env.REPORTS.prepare(
-    `INSERT INTO admin_audit_log
-     (id,actor_email,action,target_type,target_id,target_label,summary,details_json,created_at)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
-  )
-    .bind(
-      crypto.randomUUID(),
-      actorEmail,
-      action,
-      targetType,
-      targetId,
-      targetLabel,
-      summary,
-      JSON.stringify(details),
-      new Date().toISOString(),
-    )
-    .run()
-    .catch(() => undefined);
+  await adminAuditStatement(
+    env,
+    actorEmail,
+    action,
+    targetType,
+    targetId,
+    targetLabel,
+    summary,
+    details,
+  ).run().catch(() => undefined);
 };
 
 const workflowEventStatement = (
@@ -2553,6 +2577,19 @@ type WorkflowTransition = {
   label: string;
   requiredRole: "assignee" | "manager" | "reviewer";
 };
+
+const FEEDBACK_REQUEST_WITHDRAWAL_ACTION = "feedback_request_withdrawn";
+
+const isFeedbackRequestWithdrawn = async (env: Env, taskId: string) =>
+  Boolean(
+    await env.REPORTS.prepare(
+      `SELECT 1 AS withdrawn FROM workflow_transition_events
+        WHERE entity_type='task' AND entity_id=?
+          AND json_extract(metadata_json, '$.action')=? LIMIT 1`,
+    )
+      .bind(taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION)
+      .first<{ withdrawn: number }>(),
+  );
 
 /**
  * 状態遷移の正本。画面ごとに許可状態を再定義せず、APIと管理画面が
@@ -2725,6 +2762,8 @@ async function transitionTaskState(
   if (isResponse(project)) return project;
   if (!scope.isManager && !canManageProject && !taskAssignedTo(task.assignee_email, scope.email, task.task_kind) && task.created_by.toLowerCase() !== scope.email.toLowerCase())
     return json({ error: workflowTransitionPolicyError("assignee"), code: "FORBIDDEN_TRANSITION" }, 403);
+  if (task.task_kind === "feedback" && await isFeedbackRequestWithdrawn(env, taskId))
+    return json({ error: "取り下げ済みのフィードバック依頼は再開できません。", code: "FEEDBACK_REQUEST_WITHDRAWN" }, 409);
   if (replay)
     return json({ ok: true, replayed: true, transition: { entityType: "task", entityId: replay.entity_id, fromState: replay.from_state, toState: replay.to_state, createdAt: replay.created_at } });
   if (task.status !== fromState)
@@ -6958,12 +6997,33 @@ async function listEditorialDocuments(
       : Promise.resolve(new Map<string, EditorialActiveEditor[]>()),
     documentRows.length
       ? env.REPORTS.prepare(
-          `SELECT r.document_id,
-                  COALESCE(NULLIF((SELECT GROUP_CONCAT(rr.reviewer_email) FROM editorial_review_assignment_recipients rr WHERE rr.document_id = r.document_id), ''), r.reviewer_email) AS reviewer_email
-           FROM editorial_review_assignments r
-           WHERE r.document_id IN (${documentRows.map(() => "?").join(",")})`,
+          `SELECT d.id AS document_id,
+                  COALESCE(
+                    (SELECT t.assignee_email
+                       FROM editorial_feedback_task_links link
+                       JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+                      WHERE link.document_id=d.id
+                        AND NOT EXISTS (
+                          SELECT 1 FROM workflow_transition_events e
+                           WHERE e.entity_type='task' AND e.entity_id=t.id
+                             AND json_extract(e.metadata_json, '$.action')=?
+                        )
+                      ORDER BY link.created_at DESC,t.created_at DESC LIMIT 1),
+                    (SELECT COALESCE(NULLIF((SELECT GROUP_CONCAT(rr.reviewer_email)
+                                               FROM editorial_review_assignment_recipients rr
+                                              WHERE rr.document_id=r.document_id), ''), r.reviewer_email)
+                       FROM editorial_review_assignments r
+                      WHERE r.document_id=d.id
+                        AND (r.task_id IS NULL OR NOT EXISTS (
+                          SELECT 1 FROM workflow_transition_events e
+                           WHERE e.entity_type='task' AND e.entity_id=r.task_id
+                             AND json_extract(e.metadata_json, '$.action')=?
+                        )) LIMIT 1)
+                  ) AS reviewer_email
+             FROM editorial_documents d
+            WHERE d.id IN (${documentRows.map(() => "?").join(",")})`,
         )
-          .bind(...documentRows.map((document) => document.id))
+          .bind(FEEDBACK_REQUEST_WITHDRAWAL_ACTION, FEEDBACK_REQUEST_WITHDRAWAL_ACTION, ...documentRows.map((document) => document.id))
           .all<{ document_id: string; reviewer_email: string }>()
           .catch(() => ({
             results: [] as { document_id: string; reviewer_email: string }[],
@@ -14452,6 +14512,8 @@ async function updateTask(
     task.created_by.toLowerCase() !== scope.email.toLowerCase()
   )
     return json({ error: "このタスクを更新する権限がありません。" }, 403);
+  if (task.task_kind === "feedback" && await isFeedbackRequestWithdrawn(env, taskId))
+    return json({ error: "取り下げ済みのフィードバック依頼は変更できません。", code: "FEEDBACK_REQUEST_WITHDRAWN" }, 409);
   // 状態変更だけは共通Workflow APIへ委譲する。既存のリマインダー・
   // アーカイブ更新は下の互換処理を維持し、段階的に移行できるようにする。
   if (requestedStatus !== null && requestedArchived === null && !reminderAction && requestedTestData === null)
@@ -16710,7 +16772,7 @@ async function listEditorialRevisions(
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
   const document = await env.REPORTS.prepare(
-    "SELECT subject, status, publication_review_stage, current_version_id, published_version_id FROM editorial_documents WHERE id = ?",
+    "SELECT subject, status, publication_review_stage, current_version_id, published_version_id, archived_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
     .first<{
@@ -16719,6 +16781,7 @@ async function listEditorialRevisions(
       publication_review_stage: EditorialPublicationReviewStage | null;
       current_version_id: string | null;
       published_version_id: string | null;
+      archived_at: string | null;
     }>();
   if (!document || !canReviewDocument(scope, document))
     return json({ error: "この原稿を閲覧する権限がありません。" }, 403);
@@ -16757,6 +16820,14 @@ async function listEditorialRevisions(
   const feedbackRequests = await env.REPORTS.prepare(
     `SELECT t.id AS task_id, t.title, t.details, t.status, t.assignee_email,
             t.created_by, t.created_at, t.updated_at,
+            (SELECT e.created_at FROM workflow_transition_events e
+              WHERE e.entity_type='task' AND e.entity_id=t.id
+                AND json_extract(e.metadata_json, '$.action')=?
+              ORDER BY e.created_at DESC LIMIT 1) AS withdrawn_at,
+            (SELECT e.actor_email FROM workflow_transition_events e
+              WHERE e.entity_type='task' AND e.entity_id=t.id
+                AND json_extract(e.metadata_json, '$.action')=?
+              ORDER BY e.created_at DESC LIMIT 1) AS withdrawn_by,
             COALESCE(NULLIF(TRIM(profile.display_name), ''), t.created_by) AS requester_display_name
        FROM editorial_feedback_task_links link
        JOIN editorial_tasks t ON t.id = link.task_id AND t.task_kind = 'feedback'
@@ -16765,7 +16836,7 @@ async function listEditorialRevisions(
       ORDER BY link.created_at DESC, t.created_at DESC
       LIMIT 100`,
   )
-    .bind(documentId)
+    .bind(FEEDBACK_REQUEST_WITHDRAWAL_ACTION, FEEDBACK_REQUEST_WITHDRAWAL_ACTION, documentId)
     .all<{
       task_id: string;
       title: string;
@@ -16775,6 +16846,8 @@ async function listEditorialRevisions(
       created_by: string;
       created_at: string;
       updated_at: string;
+      withdrawn_at: string | null;
+      withdrawn_by: string | null;
       requester_display_name: string;
     }>();
   return json({
@@ -16785,6 +16858,13 @@ async function listEditorialRevisions(
         scope.isManager ||
         task.created_by.toLowerCase() === scope.email.toLowerCase() ||
         taskAssignedTo(task.assignee_email, scope.email, "feedback"),
+      canWithdraw:
+        !document.archived_at &&
+        document.status === "in-review" &&
+        !document.publication_review_stage &&
+        !task.withdrawn_at &&
+        task.status !== "done" &&
+        (scope.isManager || task.created_by.toLowerCase() === scope.email.toLowerCase()),
     })),
   });
 }
@@ -16831,7 +16911,19 @@ async function listEditorialReviewRequests(
   const [result, reviewerResult] = await Promise.all([
     env.REPORTS.prepare(
       `SELECT d.id, d.subject, d.category, d.title, d.updated_by, d.updated_at,
-         COALESCE(NULLIF((SELECT GROUP_CONCAT(rr.reviewer_email) FROM editorial_review_assignment_recipients rr WHERE rr.document_id = d.id), ''), r.reviewer_email) AS reviewer_email,
+         COALESCE(
+           (SELECT t.assignee_email
+              FROM editorial_feedback_task_links link
+              JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+             WHERE link.document_id=d.id
+               AND NOT EXISTS (
+                 SELECT 1 FROM workflow_transition_events e
+                  WHERE e.entity_type='task' AND e.entity_id=t.id
+                    AND json_extract(e.metadata_json, '$.action')=?
+               )
+             ORDER BY link.created_at DESC,t.created_at DESC LIMIT 1),
+           COALESCE(NULLIF((SELECT GROUP_CONCAT(rr.reviewer_email) FROM editorial_review_assignment_recipients rr WHERE rr.document_id = d.id), ''), r.reviewer_email)
+         ) AS reviewer_email,
          r.request_note,
          COALESCE(NULLIF(TRIM(requester.display_name), ''), '表示名未設定') AS requester_display_name,
          COALESCE(NULLIF((SELECT GROUP_CONCAT(COALESCE(NULLIF(TRIM(rm.display_name), ''), rr.reviewer_email)) FROM editorial_review_assignment_recipients rr LEFT JOIN editorial_member_profiles rm ON lower(rm.email) = lower(rr.reviewer_email) WHERE rr.document_id = d.id), ''), COALESCE(NULLIF(TRIM(reviewer.display_name), ''), '')) AS reviewer_display_name
@@ -16840,11 +16932,11 @@ async function listEditorialReviewRequests(
        LEFT JOIN editorial_member_profiles requester ON requester.email = d.updated_by
        LEFT JOIN editorial_member_profiles reviewer ON reviewer.email = r.reviewer_email
        WHERE d.status = 'in-review' AND d.archived_at IS NULL${subjectFilter}${documentFilter}
-       ORDER BY CASE WHEN lower(r.reviewer_email) = lower(?) THEN 0 WHEN r.reviewer_email IS NULL THEN 2 ELSE 1 END,
+       ORDER BY CASE WHEN lower(reviewer_email) = lower(?) THEN 0 WHEN reviewer_email IS NULL THEN 2 ELSE 1 END,
                 d.updated_at ASC LIMIT 100`,
     )
       // SQL内のプレースホルダー順（分野、対象原稿、担当者）に合わせる。
-      .bind(...subjectValues, ...documentValues, scope.email)
+      .bind(FEEDBACK_REQUEST_WITHDRAWAL_ACTION, ...subjectValues, ...documentValues, scope.email)
       .all<{
         id: string;
         subject: string;
@@ -16941,36 +17033,11 @@ async function updateEditorialReviewAssignment(
     .filter(Boolean)
     .filter((email, index, all) => all.indexOf(email) === index);
   const requestNote = text(payload.note, 2_000);
-  const existingAssignment = await env.REPORTS.prepare(
-    "SELECT task_id FROM editorial_review_assignments WHERE document_id = ?",
-  )
-    .bind(documentId)
-    .first<{ task_id: string | null }>();
+  if (!reviewerEmails.length)
+    return json({ error: "依頼先を1人以上選択してください。フィードバック依頼の取り下げは記事の依頼履歴から行えます。" }, 400);
   const feedbackStageGuard = env.REPORTS.prepare(
     "UPDATE editorial_documents SET updated_at = updated_at WHERE id = ? AND status = 'in-review' AND publication_review_stage IS NULL AND archived_at IS NULL",
   ).bind(documentId);
-  if (!reviewerEmails.length) {
-    const statements = [
-      feedbackStageGuard,
-      ...(existingAssignment?.task_id
-        ? [
-            env.REPORTS.prepare(
-              "UPDATE editorial_tasks SET status='done',updated_at=? WHERE id=? AND task_kind='feedback' AND EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)",
-            ).bind(new Date().toISOString(), existingAssignment.task_id, documentId),
-          ]
-        : []),
-      env.REPORTS.prepare(
-        "DELETE FROM editorial_review_assignment_recipients WHERE document_id = ? AND EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)",
-      ).bind(documentId, documentId),
-      env.REPORTS.prepare(
-        "DELETE FROM editorial_review_assignments WHERE document_id = ? AND EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)",
-      ).bind(documentId, documentId),
-    ];
-    const results = await env.REPORTS.batch(statements);
-    if (Number(results[0]?.meta?.changes ?? 0) !== 1)
-      return json({ error: "原稿の状態が変わりました。再読み込みしてから担当者を変更してください。" }, 409);
-    return json({ ok: true, reviewerEmail: null, reviewerEmails: [] });
-  }
   if (reviewerEmails.includes("*") && reviewerEmails.length > 1)
     return json(
       { error: "担当者全員と個別担当者は同時に選択できません。" },
@@ -17069,6 +17136,173 @@ async function updateEditorialReviewAssignment(
     reviewerEmails,
     taskId,
     taskKind: "feedback",
+  });
+}
+
+async function withdrawEditorialFeedbackRequest(
+  request: Request,
+  env: Env,
+  documentId: string,
+  taskId: string,
+): Promise<Response> {
+  const scope = await getAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  if (!isSameOrigin(request))
+    return json({ error: "この送信元からは受け付けられません。" }, 403);
+  let payload: { expectedUpdatedAt?: unknown };
+  try {
+    payload = (await request.json()) as typeof payload;
+  } catch {
+    return json({ error: "入力内容を読み取れませんでした。" }, 400);
+  }
+  const expectedUpdatedAt = text(payload.expectedUpdatedAt, 80);
+  if (!expectedUpdatedAt)
+    return json({ error: "記事を再読み込みしてから、依頼を取り下げてください。" }, 400);
+
+  const document = await env.REPORTS.prepare(
+    `SELECT subject,status,publication_review_stage,title,updated_at,archived_at
+       FROM editorial_documents WHERE id=?`,
+  ).bind(documentId).first<{
+    subject: string;
+    status: EditorialDocumentStatus;
+    publication_review_stage: EditorialPublicationReviewStage | null;
+    title: string;
+    updated_at: string;
+    archived_at: string | null;
+  }>();
+  if (!document) return json({ error: "原稿が見つかりません。" }, 404);
+  if (!canReviewDocument(scope, document))
+    return json({ error: "この原稿を操作する権限がありません。" }, 403);
+
+  const task = await env.REPORTS.prepare(
+    `SELECT t.title,t.created_by,t.status,t.updated_at
+       FROM editorial_feedback_task_links link
+       JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+      WHERE link.document_id=? AND t.id=?`,
+  ).bind(documentId, taskId).first<{
+    title: string;
+    created_by: string;
+    status: string;
+    updated_at: string;
+  }>();
+  if (!task) return json({ error: "この原稿のフィードバック依頼が見つかりません。" }, 404);
+  if (!scope.isManager && task.created_by.toLowerCase() !== scope.email.toLowerCase())
+    return json({ error: "依頼を取り下げられるのは依頼者または運営管理者です。" }, 403);
+
+  const previousWithdrawal = await env.REPORTS.prepare(
+    `SELECT created_at FROM workflow_transition_events
+      WHERE entity_type='task' AND entity_id=?
+        AND json_extract(metadata_json, '$.action')=?
+      ORDER BY created_at DESC LIMIT 1`,
+  ).bind(taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION).first<{ created_at: string }>();
+  if (previousWithdrawal)
+    return json({ ok: true, withdrawn: true, alreadyWithdrawn: true, documentStatus: document.status, updatedAt: document.updated_at });
+
+  if (document.status !== "in-review" || document.publication_review_stage || document.archived_at)
+    return json({ error: "フィードバック中で審査開始前の記事だけ依頼を取り下げられます。" }, 409);
+  if (document.updated_at !== expectedUpdatedAt)
+    return json({ error: "記事が先に更新されています。最新内容を読み込んでから再試行してください。", code: "STALE_STATE", updatedAt: document.updated_at }, 409);
+  if (task.status !== "open" && task.status !== "doing")
+    return json({ error: "完了済みの依頼は取り下げられません。" }, 409);
+
+  const now = new Date().toISOString();
+  const results = await env.REPORTS.batch([
+    env.REPORTS.prepare(
+      `UPDATE editorial_tasks SET status='done',updated_at=?
+        WHERE id=? AND task_kind='feedback' AND status=? AND updated_at=?
+          AND EXISTS (SELECT 1 FROM editorial_feedback_task_links WHERE task_id=? AND document_id=?)
+          AND EXISTS (SELECT 1 FROM editorial_documents
+            WHERE id=? AND status='in-review' AND publication_review_stage IS NULL
+              AND archived_at IS NULL AND updated_at=?)`,
+    ).bind(now, taskId, task.status, task.updated_at, taskId, documentId, documentId, expectedUpdatedAt),
+    workflowEventStatement(env, {
+      entityType: "task",
+      entityId: taskId,
+      fromState: task.status,
+      toState: "done",
+      actorEmail: scope.email,
+      idempotencyKey: `feedback-withdrawal-task:${taskId}`,
+      expectedUpdatedAt: task.updated_at,
+      metadata: { action: FEEDBACK_REQUEST_WITHDRAWAL_ACTION, documentId },
+      createdAt: now,
+    }, true),
+    adminAuditStatement(
+      env,
+      scope.email,
+      "feedback_request_withdrawn",
+      "task",
+      taskId,
+      task.title,
+      `フィードバック依頼を取り下げ：${task.title}`,
+      { documentId, documentTitle: document.title, previousTaskStatus: task.status },
+      true,
+    ),
+    env.REPORTS.prepare(
+      `DELETE FROM editorial_review_assignment_recipients
+        WHERE document_id=? AND EXISTS (
+          SELECT 1 FROM editorial_review_assignments
+           WHERE document_id=? AND task_id=?
+        ) AND EXISTS (
+          SELECT 1 FROM workflow_transition_events
+           WHERE entity_type='task' AND entity_id=?
+             AND json_extract(metadata_json, '$.action')=?
+        )`,
+    ).bind(documentId, documentId, taskId, taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION),
+    env.REPORTS.prepare(
+      `DELETE FROM editorial_review_assignments
+        WHERE document_id=? AND task_id=? AND EXISTS (
+          SELECT 1 FROM workflow_transition_events
+           WHERE entity_type='task' AND entity_id=?
+             AND json_extract(metadata_json, '$.action')=?
+        )`,
+    ).bind(documentId, taskId, taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION),
+    env.REPORTS.prepare(
+      `UPDATE editorial_documents SET status='draft',updated_by=?,updated_at=?
+        WHERE id=? AND status='in-review' AND publication_review_stage IS NULL
+          AND archived_at IS NULL AND updated_at=?
+          AND NOT EXISTS (
+            SELECT 1 FROM editorial_feedback_task_links link
+            JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+            WHERE link.document_id=?
+              AND NOT EXISTS (
+                SELECT 1 FROM workflow_transition_events e
+                 WHERE e.entity_type='task' AND e.entity_id=t.id
+                   AND json_extract(e.metadata_json, '$.action')=?
+              )
+          )`,
+    ).bind(scope.email, now, documentId, expectedUpdatedAt, documentId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION),
+    workflowEventStatement(env, {
+      entityType: "document",
+      entityId: documentId,
+      fromState: "in-review",
+      toState: "draft",
+      actorEmail: scope.email,
+      idempotencyKey: `feedback-withdrawal-document:${taskId}`,
+      expectedUpdatedAt,
+      metadata: { action: FEEDBACK_REQUEST_WITHDRAWAL_ACTION, taskId },
+      createdAt: now,
+    }, true),
+  ]);
+  if (Number(results[0]?.meta?.changes ?? 0) !== 1) {
+    const racedWithdrawal = await env.REPORTS.prepare(
+      `SELECT 1 AS withdrawn FROM workflow_transition_events
+        WHERE entity_type='task' AND entity_id=?
+          AND json_extract(metadata_json, '$.action')=? LIMIT 1`,
+    ).bind(taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION).first<{ withdrawn: number }>();
+    if (racedWithdrawal)
+      return json({ ok: true, withdrawn: true, alreadyWithdrawn: true, documentStatus: document.status, updatedAt: document.updated_at });
+    return json({ error: "依頼の状態が先に変わりました。履歴を再読み込みしてください。", code: "STALE_STATE" }, 409);
+  }
+  if (Number(results[1]?.meta?.changes ?? 0) !== 1)
+    throw new Error("Feedback withdrawal event was not recorded with its task update.");
+  const returnedToDraft = Number(results[5]?.meta?.changes ?? 0) === 1;
+  if (returnedToDraft && Number(results[6]?.meta?.changes ?? 0) !== 1)
+    throw new Error("Document withdrawal event was not recorded with its state update.");
+  return json({
+    ok: true,
+    withdrawn: true,
+    documentStatus: returnedToDraft ? "draft" : "in-review",
+    updatedAt: returnedToDraft ? now : document.updated_at,
   });
 }
 
@@ -21325,9 +21559,14 @@ async function editorialFeedbackTaskState(
             SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) AS done
        FROM editorial_feedback_task_links link
        JOIN editorial_tasks t ON t.id = link.task_id
-      WHERE link.document_id = ?`,
+      WHERE link.document_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM workflow_transition_events e
+           WHERE e.entity_type='task' AND e.entity_id=t.id
+             AND json_extract(e.metadata_json, '$.action')=?
+        )`,
   )
-    .bind(documentId)
+    .bind(documentId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION)
     .first<{ total: number | string | null; done: number | string | null }>();
   return {
     total: Math.max(0, Number(row?.total ?? 0)),
@@ -24810,6 +25049,16 @@ async function handleAdminRequest(
     request.method === "GET"
   )
     return listEditorialReviewRequests(request, env);
+  const editorialFeedbackWithdrawalMatch = url.pathname.match(
+    /^\/api\/admin\/editor\/review-requests\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/withdraw$/i,
+  );
+  if (editorialFeedbackWithdrawalMatch && request.method === "POST")
+    return withdrawEditorialFeedbackRequest(
+      request,
+      env,
+      editorialFeedbackWithdrawalMatch[1],
+      editorialFeedbackWithdrawalMatch[2],
+    );
   const editorialReviewAssignmentMatch = url.pathname.match(
     /^\/api\/admin\/editor\/review-requests\/([0-9a-f-]{36})$/i,
   );

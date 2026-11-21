@@ -515,7 +515,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .review-help { border-bottom:1px solid var(--border); color:var(--muted); font-size:.76rem; padding:.45rem .85rem; }.review-help summary { cursor:pointer; font-weight:800; }.review-help p { line-height:1.55; margin:.45rem 0 .1rem; }.thread-summary { justify-content:flex-end; padding:.65rem .8rem 0; }.thread-status { font-size:.68rem; }.reply-toggle { background:transparent; border:0; color:var(--accent); cursor:pointer; font-size:.76rem; font-weight:800; margin:-.15rem 0 .25rem 2.45rem; padding:.3rem .45rem; }.reply-toggle:hover { text-decoration:underline; }.comment-replies[hidden] { display:none; }.reply-actions { display:flex; gap:.4rem; justify-content:flex-end; }.reply-actions button { width:auto; }.reply-entry { gap:.55rem; }.reply-entry[hidden] { display:none; }
   .comment-context-menu { background:var(--surface); border:1px solid var(--border); border-radius:.55rem; box-shadow:0 .7rem 2rem rgb(24 32 39 / .18); display:grid; gap:.35rem; max-width:min(25rem,calc(100vw - 1.5rem)); padding:.7rem .8rem; position:fixed; z-index:80; }.comment-context-menu b { font-size:.78rem; }.comment-context-menu span { color:var(--muted); font-size:.73rem; line-height:1.45; overflow-wrap:anywhere; }
   .revision-panel { margin:1rem .85rem 0; }.revision-panel div { color:var(--muted); font-size:.8rem; padding:.7rem; }.revision-item { border-top:1px solid var(--border); padding:.45rem 0; }
-  .feedback-request-history { border-top:1px solid var(--border); margin-top:1rem; padding-top:.9rem; }.feedback-request-history h4 { font-size:.86rem; margin:0 0 .25rem; }.feedback-request-history>p { color:var(--muted); font-size:.74rem; line-height:1.5; margin:.2rem 0 .65rem; }.feedback-request-history-list { display:grid; gap:.55rem; }.feedback-request-history-item { background:var(--surface-alt); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:.45rem; display:grid; gap:.35rem; padding:.6rem .7rem; }.feedback-request-history-item>div { align-items:center; display:flex; flex-wrap:wrap; gap:.45rem; justify-content:space-between; }.feedback-request-history-item strong { font-size:.78rem; }.feedback-request-history-item small,.feedback-request-history-item p { color:var(--muted); font-size:.72rem; line-height:1.5; margin:0; overflow-wrap:anywhere; }.feedback-request-status { border:1px solid var(--border); border-radius:999px; font-size:.68rem; font-weight:800; padding:.12rem .38rem; }.feedback-request-status.is-open { background:#fff2cc; border-color:#d9a429; color:#714f00; }.feedback-request-status.is-doing { background:#e8f3fb; border-color:#72add3; color:#185c86; }.feedback-request-status.is-done { background:#e5f4ea; border-color:#74a888; color:#21623b; }.feedback-request-task-actions { align-items:center; display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.15rem; }.feedback-request-task-actions select { background:var(--surface); border:1px solid var(--border); border-radius:.35rem; color:var(--text); font:inherit; font-size:.72rem; min-height:1.95rem; padding:.25rem .4rem; }.feedback-request-task-actions button { font-size:.72rem; min-height:1.95rem; padding:.25rem .55rem; width:auto; }.feedback-request-task-actions button:disabled { cursor:wait; opacity:.65; }.feedback-request-history-empty { color:var(--muted); font-size:.78rem; margin:0; }
+  .feedback-request-history { border-top:1px solid var(--border); margin-top:1rem; padding-top:.9rem; }.feedback-request-history h4 { font-size:.86rem; margin:0 0 .25rem; }.feedback-request-history>p { color:var(--muted); font-size:.74rem; line-height:1.5; margin:.2rem 0 .65rem; }.feedback-request-history-list { display:grid; gap:.55rem; }.feedback-request-history-item { background:var(--surface-alt); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:.45rem; display:grid; gap:.35rem; padding:.6rem .7rem; }.feedback-request-history-item>div { align-items:center; display:flex; flex-wrap:wrap; gap:.45rem; justify-content:space-between; }.feedback-request-history-item strong { font-size:.78rem; }.feedback-request-history-item small,.feedback-request-history-item p { color:var(--muted); font-size:.72rem; line-height:1.5; margin:0; overflow-wrap:anywhere; }.feedback-request-status { border:1px solid var(--border); border-radius:999px; font-size:.68rem; font-weight:800; padding:.12rem .38rem; }.feedback-request-status.is-open { background:#fff2cc; border-color:#d9a429; color:#714f00; }.feedback-request-status.is-doing { background:#e8f3fb; border-color:#72add3; color:#185c86; }.feedback-request-status.is-done { background:#e5f4ea; border-color:#74a888; color:#21623b; }.feedback-request-status.is-withdrawn { background:#eceff3; border-color:#aab3be; color:#4e5965; }.feedback-request-task-actions { align-items:center; display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.15rem; }.feedback-request-task-actions select { background:var(--surface); border:1px solid var(--border); border-radius:.35rem; color:var(--text); font:inherit; font-size:.72rem; min-height:1.95rem; padding:.25rem .4rem; }.feedback-request-task-actions button { font-size:.72rem; min-height:1.95rem; padding:.25rem .55rem; width:auto; }.feedback-request-task-actions button:disabled { cursor:wait; opacity:.65; }.feedback-request-history-empty { color:var(--muted); font-size:.78rem; margin:0; }
   .sr-only { clip:rect(0 0 0 0); clip-path:inset(50%); height:1px; overflow:hidden; position:absolute; white-space:nowrap; width:1px; }
   .progress-detail-label { color:var(--muted); display:grid; font-size:.78rem; font-weight:800; gap:.35rem; margin-top:.8rem; }.progress-detail-label textarea { box-sizing:border-box; font:inherit; line-height:1.6; min-height:8rem; padding:.65rem; resize:vertical; width:100%; }
   @media (max-width: 1080px) { .editor-split { grid-template-columns: repeat(2, minmax(0, 1fr)); }.article-preview { height: auto; min-height: 28rem; }.workspace-grid { grid-template-columns: 1fr; }.workspace-header { display: grid; }.workspace-header nav { justify-content: start; }.document-toolbar { display: grid; }.toolbar-actions { justify-content: start; }.metadata-grid { grid-template-columns: 1fr; }.metadata label:nth-child(1), .metadata label:nth-child(2) { grid-column: auto; } }
@@ -4655,7 +4655,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       }
     };
     type Revision = { id: string; title: string; summary: string; body: string; status: string; saved_by: string; saved_at: string; is_current_version?: number | boolean; is_published_version?: number | boolean; saved_by_display_name?: string; saved_by_avatar_url?: string };
-    type FeedbackRequestHistory = { task_id: string; title: string; details: string; status: "open" | "doing" | "done"; assignee_email: string | null; created_at: string; requester_display_name?: string; created_by: string; canUpdate?: boolean };
+    type FeedbackRequestHistory = { task_id: string; title: string; details: string; status: "open" | "doing" | "done"; assignee_email: string | null; created_at: string; requester_display_name?: string; created_by: string; withdrawn_at?: string | null; withdrawn_by?: string | null; canUpdate?: boolean; canWithdraw?: boolean };
     type RevisionDiffLine = { kind: "unchanged" | "added" | "removed"; text: string };
     const revisionLineDiff = (before: string, after: string): RevisionDiffLine[] => {
       const left = before.split("\n"), right = after.split("\n"), output: RevisionDiffLine[] = [];
@@ -4700,8 +4700,11 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
             const recipients = item.assignee_email === "*" ? "この分野の担当者全員" : (item.assignee_email ?? "").split(",").map((email) => email.trim()).filter(Boolean).join("、") || "担当者未指定";
             const note = String(item.details ?? "").replace(/\n*記事編集画面:\s*\/admin\/editor\/\?document=[0-9a-f-]+\s*$/i, "").trim();
             const selectedStatus = (value: FeedbackRequestHistory["status"]) => value === item.status ? "selected" : "";
-            const taskActions = item.canUpdate ? `<div class="feedback-request-task-actions"><label class="sr-only" for="feedback-task-status-${esc(item.task_id)}">フィードバック依頼の状態</label><select id="feedback-task-status-${esc(item.task_id)}" data-feedback-task-status="${esc(item.task_id)}"><option value="open" ${selectedStatus("open")}>未着手</option><option value="doing" ${selectedStatus("doing")}>進行中</option><option value="done" ${selectedStatus("done")}>完了</option></select><button type="button" class="quiet-action" data-save-feedback-task="${esc(item.task_id)}">状態を保存</button></div>` : "";
-            return `<article class="feedback-request-history-item"><div><strong>${esc(item.title || "フィードバック依頼")}</strong><span class="feedback-request-status is-${esc(item.status)}">${requestStatus[item.status] ?? esc(item.status)}</span></div><small>${date(item.created_at)} ・ ${esc(item.requester_display_name || item.created_by)} から ${esc(recipients)} へ</small>${note ? `<p>${esc(note)}</p>` : ""}${taskActions}</article>`;
+            const withdrawn = Boolean(item.withdrawn_at);
+            const taskActions = item.canUpdate && !withdrawn ? `<div class="feedback-request-task-actions"><label class="sr-only" for="feedback-task-status-${esc(item.task_id)}">フィードバック依頼の状態</label><select id="feedback-task-status-${esc(item.task_id)}" data-feedback-task-status="${esc(item.task_id)}"><option value="open" ${selectedStatus("open")}>未着手</option><option value="doing" ${selectedStatus("doing")}>進行中</option><option value="done" ${selectedStatus("done")}>完了</option></select><button type="button" class="quiet-action" data-save-feedback-task="${esc(item.task_id)}">状態を保存</button>${item.canWithdraw && item.status !== "done" ? `<button type="button" class="quiet-action" data-withdraw-feedback-request="${esc(item.task_id)}">依頼を取り下げる</button>` : ""}</div>` : "";
+            const statusClass = withdrawn ? "is-withdrawn" : `is-${item.status}`;
+            const statusText = withdrawn ? "取り下げ済み" : requestStatus[item.status] ?? esc(item.status);
+            return `<article class="feedback-request-history-item"><div><strong>${esc(item.title || "フィードバック依頼")}</strong><span class="feedback-request-status ${statusClass}">${statusText}</span></div><small>${date(item.created_at)} ・ ${esc(item.requester_display_name || item.created_by)} から ${esc(recipients)} へ</small>${note ? `<p>${esc(note)}</p>` : ""}${taskActions}</article>`;
           }).join("")}</div>`
         : "<p class=\"feedback-request-history-empty\">この原稿には、まだフィードバック依頼はありません。</p>";
     };
@@ -4741,6 +4744,46 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       item.querySelector<HTMLSelectElement>("[data-feedback-task-status]")?.focus({ preventScroll: true });
     });
     feedbackRequestHistory.addEventListener("click", (event) => {
+      const withdrawButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-withdraw-feedback-request]");
+      if (withdrawButton) {
+        const taskId = withdrawButton.dataset.withdrawFeedbackRequest;
+        const documentId = (form.elements.namedItem("documentId") as HTMLInputElement).value;
+        const taskStatus = taskId ? feedbackRequestHistory.querySelector<HTMLSelectElement>(`[data-feedback-task-status="${CSS.escape(taskId)}"]`)?.value : "";
+        if (!taskId || !documentId) return;
+        if (hasUnsavedChanges || !documentConflict.hidden) {
+          saveMessage.value = "記事の編集を保存してから、フィードバック依頼を取り下げてください。";
+          return;
+        }
+        const confirmation = taskStatus === "doing"
+          ? "担当者が進行中のフィードバック依頼も取り下げ、タスクを終了します。未完了の依頼がすべて取り下げられた場合は記事を下書きに戻します。続けますか？"
+          : "このフィードバック依頼を取り下げます。未完了の依頼がすべて取り下げられた場合は記事を下書きに戻します。続けますか？";
+        if (!window.confirm(confirmation)) return;
+        withdrawButton.disabled = true;
+        saveMessage.value = "フィードバック依頼を取り下げ中…";
+        void (async () => {
+          const response = await fetch(`/api/admin/editor/review-requests/${encodeURIComponent(documentId)}/${encodeURIComponent(taskId)}/withdraw`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ expectedUpdatedAt: persistedDocumentUpdatedAt }),
+          });
+          const data = await read<{ error?: string; documentStatus?: Document["status"] }>(response);
+          if (!response.ok) throw new Error(data.error ?? "フィードバック依頼を取り下げられませんでした。");
+          try {
+            await openDocument(documentId);
+            await loadDocuments();
+            await loadRevisions(documentId);
+            saveMessage.value = data.documentStatus === "draft"
+              ? "依頼を取り下げ、記事を下書きに戻しました。"
+              : "依頼を取り下げました。ほかのフィードバック依頼は継続中です。";
+          } catch {
+            saveMessage.value = "依頼は取り下げました。最新状態を確認するため、記事を再読み込みしてください。";
+          }
+        })().catch((error: unknown) => {
+          saveMessage.value = error instanceof Error ? error.message : "フィードバック依頼を取り下げられませんでした。";
+        }).finally(() => { withdrawButton.disabled = false; });
+        return;
+      }
       const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-save-feedback-task]");
       if (!button) return;
       const taskId = button.dataset.saveFeedbackTask;
@@ -5592,6 +5635,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .feedback-request-status.is-open { background: #fff2cc; border-color: #d9a429; color: #714f00; }
   .feedback-request-status.is-doing { background: #e8f3fb; border-color: #72add3; color: #185c86; }
   .feedback-request-status.is-done { background: #e5f4ea; border-color: #74a888; color: #21623b; }
+  .feedback-request-status.is-withdrawn { background: #eceff3; border-color: #aab3be; color: #4e5965; }
   .feedback-request-history-empty { color: var(--muted); font-size: .8rem; margin: 0; }
   .revision-compare-controls { display: grid; gap: .65rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .revision-compare-controls label { color: var(--muted); display: grid; font-size: .76rem; font-weight: 800; gap: .25rem; }
@@ -5776,6 +5820,11 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     background: var(--editor-status-success-background);
     border-color: var(--editor-status-success-border);
     color: var(--editor-status-success-text);
+  }
+  [data-pref-bg="dark"] .editor-workspace .feedback-request-status.is-withdrawn {
+    background: var(--background-secondary);
+    border-color: var(--border-default);
+    color: var(--text-secondary);
   }
   [data-pref-bg="dark"] .editor-workspace .state-draft {
     background: var(--background-secondary);
