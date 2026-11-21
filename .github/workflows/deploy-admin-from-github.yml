@@ -78,6 +78,8 @@ jobs:
 
       - name: Verify ADMIN build metadata
         shell: bash
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'
@@ -85,7 +87,7 @@ jobs:
 
           const info = JSON.parse(await readFile("dist/build-info.json", "utf8"));
           if (
-            info.repository !== "Atlasez/Admin-Atlesez" ||
+            info.repository !== process.env.EXPECTED_REPOSITORY ||
             info.commit !== process.env.BUILD_SHA ||
             info.ref !== "main" ||
             info.target !== "admin"

@@ -819,7 +819,7 @@ test("公開操作は処理中の二重送信を防ぐ", async ({ page }) => {
   await publishButton.click();
   const confirm = page
     .locator("[data-approval-dialog]")
-    .getByRole("button", { name: "はい（公開する）" });
+    .locator("[data-approval-confirm]");
   await expect(confirm).toBeVisible();
   await confirm.click();
   // 公開処理の開始直後に同じ確認イベントが届いても、二重送信を
@@ -972,6 +972,9 @@ test("概念名を選ぶと内部IDが自動設定され、利用者はIDを覚�
 test("新規記事には概念IDを初期値として設定する", async ({ page }) => {
   await mockAdminApi(page);
   await page.goto("./admin/editor/?new=1");
+  await expect(
+    page.locator('[data-editor-workspace][data-editor-initialized="true"]'),
+  ).toBeVisible();
 
   const slug = page.locator('[name="slug"]');
   const draftSlug = await slug.inputValue();
@@ -1025,6 +1028,69 @@ test("フィードバック済みは公開審査の承認前に状態選択で�
   await expect(page.locator("[data-status-help]")).toContainText(
     "公開審査で承認されたときに自動で設定",
   );
+});
+
+test("未完了の依頼から状態操作へ移動し、完了後に審査ボタンが有効になる", async ({
+  page,
+}) => {
+  const feedbackRequest = {
+    task_id: "feedback-task-1",
+    title: "フィードバック依頼：記事の確認",
+    details: "本文を確認してください。",
+    status: "open",
+    assignee_email: "alice@example.com",
+    created_by: "alice@example.com",
+    created_at: "2026-08-28T00:00:00.000Z",
+    canUpdate: true,
+  };
+  let feedbackDone = false;
+  await mockAdminApi(
+    page,
+    undefined,
+    { ...documentItem, status: "in-review" },
+    [feedbackRequest],
+  );
+  await page.route(
+    "**/api/admin/editor/documents/doc-1/publication-review",
+    async (route) =>
+      route.fulfill({
+        json: {
+          canCompleteWriting: true,
+          canDecide: false,
+          feedbackTaskTotal: 1,
+          feedbackTaskDone: feedbackDone ? 1 : 0,
+          feedbackComplete: feedbackDone,
+        },
+      }),
+  );
+  await page.route(
+    "**/api/admin/operations/tasks/feedback-task-1",
+    async (route) => {
+      feedbackDone = true;
+      feedbackRequest.status = "done";
+      await route.fulfill({ json: { ok: true, status: "done" } });
+    },
+  );
+
+  await page.goto("./admin/editor/?document=doc-1");
+  const completeButton = page.locator("[data-complete-writing]");
+  const feedbackLink = page.locator("[data-feedback-task-link]");
+  await expect(
+    page.getByRole("button", { name: "追加でフィードバックを依頼" }),
+  ).toBeVisible();
+  await expect(completeButton).toBeDisabled();
+  await expect(feedbackLink).toBeVisible();
+  await feedbackLink.click();
+
+  const taskStatus = page.locator(
+    '[data-feedback-task-status="feedback-task-1"]',
+  );
+  await expect(taskStatus).toBeFocused();
+  await taskStatus.selectOption("done");
+  await page.locator('[data-save-feedback-task="feedback-task-1"]').click();
+
+  await expect(completeButton).toBeEnabled();
+  await expect(feedbackLink).toBeHidden();
 });
 
 test("公開審査段階がない原稿では運営管理者にも代理承認を表示しない", async ({
@@ -1088,6 +1154,39 @@ test("公開審査の競合エラーを審査ダイアログ内に表示する",
   await expect(dialog).toBeVisible();
 });
 
+test("連携エラーの詳細をポップアップで確認できる", async ({ page }) => {
+  await mockAdminApi(page);
+  await page.route(
+    "**/api/admin/editor/publication-integration",
+    async (route) => {
+      await route.fulfill({
+        json: {
+          ready: false,
+          automationReady: false,
+          repository: "Atlasez/Atlasez01",
+          automationError: "GitHub Appの接続を確認してください。",
+        },
+      });
+    },
+  );
+  await page.goto("./admin/editor/?document=doc-1");
+
+  const integrationTrigger = page.locator("[data-publication-integration]");
+  await expect(integrationTrigger).toHaveText("連携エラー");
+  const details = page.locator("[data-publication-details-dialog]");
+  await integrationTrigger.click();
+  await expect(details).toBeVisible();
+  await expect(
+    details.locator("[data-publication-integration-state]"),
+  ).toHaveText("要確認");
+  await expect(
+    details.locator("[data-publication-integration-message]"),
+  ).toContainText("GitHub Appの接続を確認してください。");
+  await expect(
+    details.locator("[data-publication-integration-repository]"),
+  ).toHaveText("Atlasez/Atlasez01");
+});
+
 test("公開Runの失敗原因・CIログ・再試行導線を表示する", async ({ page }) => {
   await page.setViewportSize({ width: 1367, height: 768 });
   const failedDocument = {
@@ -1122,82 +1221,39 @@ test("公開Runの失敗原因・CIログ・再試行導線を表示する", asy
   await page.goto("./admin/editor/?document=doc-1");
 
   const publicationRun = page.locator("[data-publication-run]");
-  await expect(publicationRun).toContainText(
-    "CIが失敗しました（content-check）。［原因：CI］（ci_failed）",
-  );
-  await expect(
-    publicationRun.locator("[data-publication-run-state]"),
-  ).toHaveText("自動公開失敗");
   await expect(publicationRun).toHaveAttribute(
     "aria-label",
-    /GitHub反映：自動公開失敗/,
+    /同期状態：自動公開失敗/,
   );
-  await expect(publicationRun).toHaveCSS("white-space", "normal");
-  await expect(publicationRun).toHaveCSS("overflow-wrap", "anywhere");
-  await expect(publicationRun).toHaveCSS("overflow", "visible");
-  await expect(page.locator("[data-publication-link] a")).toHaveCount(2);
-  await expect(page.locator("[data-publication-link] a").nth(0)).toHaveText(
+  await expect(publicationRun).toHaveText("同期エラー");
+  const details = page.locator("[data-publication-details-dialog]");
+  await expect(details).toBeHidden();
+  await publicationRun.click();
+  await expect(details).toBeVisible();
+  await expect(
+    details.locator("[data-publication-details-run-state]"),
+  ).toHaveText("自動公開失敗");
+  await expect(details.locator("[data-publication-run-label]")).toContainText(
+    "CIが失敗しました（content-check）。［原因：CI］（ci_failed）",
+  );
+  await expect(details.locator("[data-publication-link] a")).toHaveCount(2);
+  await expect(details.locator("[data-publication-link] a").nth(0)).toHaveText(
     "公開PRを確認",
   );
-  await expect(page.locator("[data-publication-link] a").nth(1)).toHaveText(
+  await expect(details.locator("[data-publication-link] a").nth(1)).toHaveText(
     "CIログ（content-check）",
   );
   await expect(
-    page.locator("[data-publication-link] a").nth(1),
+    details.locator("[data-publication-link] a").nth(1),
   ).toHaveAttribute(
     "href",
     "https://github.com/Atlasez/Atlasez01/actions/runs/123",
   );
-  const statusLayout = await page.evaluate(() => {
-    const statuses = document.querySelector<HTMLElement>(".document-statuses");
-    const link = document.querySelector<HTMLAnchorElement>(
-      "[data-publication-link] a",
-    );
-    return {
-      statusWidth: statuses?.clientWidth ?? 0,
-      statusScrollWidth: statuses?.scrollWidth ?? 0,
-      linkWidth: link?.getBoundingClientRect().width ?? 0,
-      linkHeight: link?.getBoundingClientRect().height ?? 0,
-      children: statuses
-        ? [...statuses.children].map((child) => ({
-            cls: child.className,
-            rect: child.getBoundingClientRect().toJSON(),
-            scrollWidth: (child as HTMLElement).scrollWidth,
-            cssWidth: getComputedStyle(child).width,
-            position: getComputedStyle(child).position,
-          }))
-        : [],
-    };
-  });
-  expect(statusLayout.statusScrollWidth).toBeLessThanOrEqual(
-    statusLayout.statusWidth,
+  const publicationDiagnostic = details.locator(
+    "[data-publication-diagnostic]",
   );
-  expect(statusLayout.linkWidth).toBeGreaterThan(60);
-  expect(statusLayout.linkHeight).toBeLessThan(44);
-  const publicationRunPseudo = await publicationRun.evaluate((element) => ({
-    before: getComputedStyle(element, "::before").display,
-    after: getComputedStyle(element, "::after").display,
-    beforeContent: getComputedStyle(element, "::before").content,
-    afterContent: getComputedStyle(element, "::after").content,
-  }));
-  expect(publicationRunPseudo.before).toBe("none");
-  expect(publicationRunPseudo.after).toBe("none");
-  expect(publicationRunPseudo.beforeContent).toBe("none");
-  expect(publicationRunPseudo.afterContent).toBe("none");
-  const publicationDiagnostic = page.locator("[data-publication-diagnostic]");
   await expect(publicationDiagnostic).toBeVisible();
-  // 診断欄は後続の「記事設定」と重ならないよう、状態表示の通常フローに置く。
-  await expect(publicationDiagnostic).toHaveCSS("position", "static");
-  const documentActions = page.locator(".document-actions");
-  const beforeOpen = await documentActions.boundingBox();
   await publicationDiagnostic.locator("summary").click();
-  const afterOpen = await documentActions.boundingBox();
-  expect(afterOpen?.x).toBe(beforeOpen?.x);
-  // 詳細欄は通常フローにあるため、開いたときは後続操作が下へ移動する。
-  expect(afterOpen?.y).toBeGreaterThanOrEqual(beforeOpen?.y ?? 0);
-  const diagnosticBox = await publicationDiagnostic.boundingBox();
-  expect(diagnosticBox?.width).toBeLessThanOrEqual(440);
-  expect(diagnosticBox?.height).toBeLessThanOrEqual(270);
   await expect(publicationDiagnostic).toContainText(
     "node scripts/validate-content.mjs",
   );
@@ -1209,7 +1265,7 @@ test("公開Runの失敗原因・CIログ・再試行導線を表示する", asy
   );
   await expect(publicationDiagnostic).toContainText("登録済みの概念IDへ修正");
   await expect(
-    page.getByRole("button", { name: "公開処理を再試行" }),
+    page.getByRole("button", { name: "公開を再試行" }),
   ).toBeVisible();
 });
 
@@ -1234,22 +1290,25 @@ test("公開PRのCI確認中を視覚表示し、最終更新時刻を示す", a
 
   const publicationRun = page.locator("[data-publication-run]");
   await expect(publicationRun).toHaveAttribute("aria-busy", "true");
-  await expect(
-    publicationRun.locator("[data-publication-run-label]"),
-  ).toContainText("CIを自動確認しています");
-  await expect(
-    publicationRun.locator("[data-publication-run-state]"),
-  ).toHaveText("自動検証中");
-  await expect(publicationRun).toHaveCSS("display", "grid");
-  await expect(
-    publicationRun.locator("[data-publication-run-updated]"),
-  ).toContainText("最終更新：");
+  await expect(publicationRun).toHaveAttribute(
+    "aria-label",
+    /同期状態：自動検証中/,
+  );
+  await expect(publicationRun).toHaveText("同期中");
   await expect(
     publicationRun.locator(".publication-run-indicator"),
   ).toBeVisible();
-  await expect(publicationRun.locator(".publication-run-indicator")).toHaveCSS(
-    "width",
-    "16px",
+  const details = page.locator("[data-publication-details-dialog]");
+  await publicationRun.click();
+  await expect(details).toBeVisible();
+  await expect(
+    details.locator("[data-publication-details-run-state]"),
+  ).toHaveText("自動検証中");
+  await expect(details.locator("[data-publication-run-label]")).toContainText(
+    "CIを自動確認しています",
+  );
+  await expect(details.locator("[data-publication-run-updated]")).toContainText(
+    "最終更新：",
   );
 });
 
@@ -1351,10 +1410,10 @@ test("公開済み記事の未反映変更は運営サイトから再公開で�
     "自動公開失敗",
   );
   await expect(page.locator("[data-workflow-help]")).toContainText(
-    "最新の変更は学習サイトに未反映",
+    "公開中の版は維持されています",
   );
   await expect(
-    page.getByRole("button", { name: "公開内容を更新して再試行" }),
+    page.getByRole("button", { name: "更新公開を再試行" }),
   ).toBeVisible();
 });
 
@@ -2087,7 +2146,7 @@ test("画像参照を含む未保存の変更を公開前に保存してからPR
   await page.getByRole("button", { name: "公開する" }).click();
   await page
     .locator("[data-approval-dialog]")
-    .getByRole("button", { name: "はい（公開する）" })
+    .locator("[data-approval-confirm]")
     .click();
 
   await expect
@@ -2181,7 +2240,7 @@ test("LaTeXの自動保存中に公開すると最新の数式を保存してか
   await page.getByRole("button", { name: "公開する" }).click();
   await page
     .locator("[data-approval-dialog]")
-    .getByRole("button", { name: "はい（公開する）" })
+    .locator("[data-approval-confirm]")
     .click();
 
   releaseFirstPatch();
@@ -2422,181 +2481,167 @@ test("既存記事を承認へ自動保存すると公開操作と版履歴を�
   await expect.poll(() => revisionLoads).toBe(2);
 });
 
-test("公開済み記事の本文は更新案を作成するまでロックする", async ({ page }) => {
-  const publishedDocument = {
+test("公開済み記事を編集すると新しい版を保存し公開版を保持する", async ({
+  page,
+}) => {
+  let currentDocument: Omit<typeof documentItem, "published_at" | "status"> & {
+    status: "draft" | "approved";
+    published_at: string;
+    current_version_id: string;
+    published_version_id: string;
+  } = {
     ...documentItem,
     status: "approved" as const,
     published_at: "2026-08-30T01:34:00.000Z",
+    current_version_id: "version-public",
+    published_version_id: "version-public",
   };
-  await mockAdminApi(page, undefined, publishedDocument);
-  await page.route(
-    "**/api/admin/editor/documents/doc-1/update-proposal",
-    async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          ok: true,
-          id: "doc-1-update-proposal",
-          baseDocumentId: "doc-1",
-        }),
-      });
-    },
-  );
-  await page.route(
-    "**/api/admin/editor/documents/doc-1-update-proposal",
-    async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          document: {
-            ...publishedDocument,
-            id: "doc-1-update-proposal",
-            document_kind: "update-proposal",
-            base_document_id: "doc-1",
-            base_document_updated_at: publishedDocument.updated_at,
-            status: "draft",
-            published_at: null,
-          },
-          comments: [],
-        }),
-      });
-    },
-  );
-  await page.goto("./admin/editor/?document=doc-1");
-
-  const body = page.locator("[data-body]");
-  const bodySurface = page.locator("[data-body-surface]");
-  const bodyEditor = page.locator(".body-codemirror").first();
-  const bodyEditorContent = bodyEditor.locator(".cm-content");
-  await expect(page.locator("[data-create-update-proposal]")).toBeVisible();
-  await expect(body).toHaveAttribute("readonly", "");
-  if (await bodyEditorContent.count()) {
-    await expect(bodyEditor).toHaveAttribute("data-readonly", "true");
-    await expect(bodyEditorContent).toHaveAttribute("contenteditable", "false");
-    await bodyEditor.click({ position: { x: 180, y: 80 } });
-  } else await bodySurface.click({ position: { x: 180, y: 80 } });
-  await expect(page.locator("[data-save-message]")).toContainText(
-    "公開中の記事を編集するには「更新案を作成」を押してください",
-  );
-  await page.screenshot({
-    path: "test-results/editor-published-body-locked.png",
-    fullPage: true,
-  });
-
-  await page.locator("[data-create-update-proposal]").click();
-  await expect(body).not.toHaveAttribute("readonly");
-  if (await bodyEditorContent.count()) {
-    await expect(bodyEditor).toHaveAttribute("data-readonly", "false");
-    await expect(bodyEditorContent).toHaveAttribute("contenteditable", "true");
-    await page.screenshot({
-      path: "test-results/editor-published-update-proposal.png",
-      fullPage: true,
-    });
-  }
-});
-
-test("更新案の保存成功と現行版への切り替えを独立して扱う", async ({ page }) => {
-  const canonical = {
-    ...documentItem,
-    status: "approved" as const,
-    published_at: "2026-08-30T01:34:00.000Z",
-  };
-  const proposal = {
-    ...canonical,
-    id: "doc-1-update-proposal",
-    document_kind: "update-proposal",
-    base_document_id: "doc-1",
-    base_document_updated_at: canonical.updated_at,
-    status: "draft" as const,
-    published_at: null,
-    body: `${canonical.body}\n\n更新案の本文です。`,
-  };
-  await mockAdminApi(page, undefined, canonical);
-  let proposalCreated = false;
-  await page.route(/\/api\/admin\/editor\/documents\/doc-1$/, async (route) => {
-    await route.fulfill({
-      json: {
-        document: canonical,
-        comments: [],
-        ...(proposalCreated
-          ? { versions: { canonicalId: canonical.id, proposalId: proposal.id } }
-          : {}),
-      },
-    });
-  });
-  await page.route(
-    /\/api\/admin\/editor\/documents\/doc-1\/update-proposal$/,
-    async (route) => {
-      proposalCreated = true;
-      await route.fulfill({
-        json: { ok: true, id: proposal.id, baseDocumentId: canonical.id },
-      });
-    },
-  );
-  await page.route(
-    /\/api\/admin\/editor\/documents\/doc-1-update-proposal$/,
-    async (route) => {
-      if (route.request().method() === "PATCH")
-        return route.fulfill({
-          json: { ok: true, updatedAt: "2026-08-20T00:05:00.000Z" },
-        });
+  const savedPayloads: Record<string, unknown>[] = [];
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/admin/editor/documents") {
       await route.fulfill({
         json: {
-          document: proposal,
-          comments: [],
-          versions: { canonicalId: canonical.id, proposalId: proposal.id },
+          documents: [currentDocument],
+          mentionNames: ["Alice", "Bob"],
+          scope: {
+            email: "alice@example.com",
+            subjects: ["mathematics"],
+            isManager: true,
+          },
         },
       });
-    },
-  );
-  await page.route(
-    /\/api\/admin\/editor\/documents\/doc-1-update-proposal\/revisions$/,
-    async (route) => {
+      return;
+    }
+    if (url.pathname === "/api/admin/editor/documents/doc-1") {
+      if (request.method() === "PATCH") {
+        const payload = request.postDataJSON() as Record<string, unknown>;
+        savedPayloads.push(payload);
+        currentDocument = {
+          ...currentDocument,
+          body: String(payload.body ?? currentDocument.body),
+          status: "draft",
+          updated_at: "2026-08-31T01:34:00.000Z",
+          current_version_id: "version-next",
+        };
+        await route.fulfill({
+          json: {
+            ok: true,
+            status: "draft",
+            updatedAt: currentDocument.updated_at,
+            versionId: "version-next",
+            currentVersionId: "version-next",
+          },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: { document: currentDocument, comments: [] },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/editor/documents/doc-1/revisions") {
       await route.fulfill({
         json: {
           revisions: [
             {
-              id: "base-doc-1",
-              title: canonical.title,
-              summary: canonical.summary,
-              body: canonical.body,
-              status: "published",
-              saved_by: canonical.updated_by,
-              saved_at: canonical.updated_at,
+              id: "version-next",
+              title: currentDocument.title,
+              summary: currentDocument.summary,
+              body: currentDocument.body,
+              status: "draft",
+              saved_by: "alice@example.com",
+              saved_at: currentDocument.updated_at,
+              is_current_version: 1,
+              is_published_version: 0,
+            },
+            {
+              id: "version-public",
+              title: documentItem.title,
+              summary: documentItem.summary,
+              body: documentItem.body,
+              status: "approved",
+              saved_by: "alice@example.com",
+              saved_at: documentItem.updated_at,
+              is_current_version: 0,
+              is_published_version: 1,
             },
           ],
           feedbackRequests: [],
         },
       });
-    },
-  );
-  await page.route(
-    /\/api\/admin\/editor\/documents\/doc-1-update-proposal\/publication-review$/,
-    async (route) => {
+      return;
+    }
+    if (url.pathname.endsWith("/publication-review")) {
       await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "一時的に取得できません" }),
+        json: {
+          stage: null,
+          canCompleteWriting: false,
+          canDecide: false,
+          feedbackTaskTotal: 0,
+          feedbackTaskDone: 0,
+          feedbackComplete: false,
+        },
       });
-    },
-  );
+      return;
+    }
+    if (url.pathname.endsWith("/assets")) {
+      await route.fulfill({ json: { assets: [] } });
+      return;
+    }
+    if (url.pathname === "/api/admin/article-reports") {
+      await route.fulfill({
+        json: {
+          reports: [],
+          pagination: { limit: 200, hasMore: false, nextCursor: null },
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/editor/taxonomy") {
+      await route.fulfill({ json: { catalog: [] } });
+      return;
+    }
+    if (url.pathname === "/api/admin/editor/catalog") {
+      await route.fulfill({ json: { catalog: [] } });
+      return;
+    }
+    if (url.pathname === "/api/admin/personal-workspace") {
+      await route.fulfill({ json: { privateNote: "", updatedAt: null } });
+      return;
+    }
+    await route.fulfill({ json: {} });
+  });
+
   await page.goto("./admin/editor/?document=doc-1");
-  await page.locator("[data-create-update-proposal]").click();
-  await expect(page.locator("[data-document-version-switcher]")).toBeVisible();
-  const bodyEditor = page.locator(".body-codemirror .cm-content").first();
-  if (await bodyEditor.count())
-    await bodyEditor.fill(`${proposal.body}\n\n保存確認`);
-  else await page.locator("[data-body]").fill(`${proposal.body}\n\n保存確認`);
+  await expect(page.locator("[data-create-update-proposal]")).toHaveCount(0);
+  const body = page.locator("[data-body]");
+  await expect(body).not.toHaveAttribute("readonly", "");
+  const bodyEditorContent = page
+    .locator(".body-codemirror .cm-content")
+    .first();
+  const nextBody = `${documentItem.body}\n\n保存版への追記`;
+  if (await bodyEditorContent.count()) await bodyEditorContent.fill(nextBody);
+  else await body.fill(nextBody);
+
+  await expect.poll(() => savedPayloads.length).toBe(1);
+  await expect
+    .poll(() => currentDocument.current_version_id)
+    .toBe("version-next");
   await expect(page.locator("[data-save-message]")).toContainText(
-    "入力内容を自動保存しました",
+    "修正を自動保存しました",
   );
-  await expect(page.locator("[data-open-current-version]")).toBeVisible();
-  await page.locator("[data-open-current-version]").click();
   await expect(page.locator("[data-document-version-label]")).toContainText(
-    "更新案あり",
+    "公開版のまま保持",
   );
+  await expect(page.locator('[name="status"]')).toHaveValue("draft");
+  await expect(page.locator("[data-revision-list]")).toContainText(
+    "最新保存版",
+  );
+  await expect(page.locator("[data-revision-list]")).toContainText("公開版");
+  expect(currentDocument.published_version_id).toBe("version-public");
+  expect(savedPayloads[0]?.body).toBe(nextBody);
 });
 
 test("連続入力中の自動保存は同じ原稿を重複更新しない", async ({ page }) => {
@@ -4457,12 +4502,20 @@ test("公開Runの状態・CI失敗詳細を再読込なしでリアルタイム
   await expect(page.locator("[data-publication-state]")).toHaveText(
     "自動公開失敗",
   );
-  await expect(page.locator("[data-publication-diagnostic]")).toBeVisible();
-  await expect(page.locator("[data-publication-diagnostic]")).toContainText(
+  const publicationRun = page.locator("[data-publication-run]");
+  await expect(publicationRun).toHaveText("同期エラー");
+  const details = page.locator("[data-publication-details-dialog]");
+  await publicationRun.click();
+  await expect(details).toBeVisible();
+  await expect(details.locator("[data-publication-run-label]")).toContainText(
+    "CIが失敗しました（verify）。",
+  );
+  await expect(details.locator("[data-publication-diagnostic]")).toBeVisible();
+  await expect(details.locator("[data-publication-diagnostic]")).toContainText(
     "npm run check:math-directives",
   );
   await expect(
-    page.getByRole("button", { name: "公開処理を再試行" }),
+    page.getByRole("button", { name: "公開を再試行" }),
   ).toBeVisible();
   expect(documentReads).toBe(readsAfterInitialLoad);
 });

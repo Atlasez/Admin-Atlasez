@@ -77,6 +77,8 @@ type RealtimeDocumentChange = {
   publicationStage: string | null;
   publishedAt: boolean;
   publishedAtValue: string | null;
+  currentVersionId: string | null;
+  publishedVersionId: string | null;
   updatedAt: string;
   publicationPrNumber: number | null;
   publicationPrUrl: string | null;
@@ -193,7 +195,7 @@ const readDocumentChange = async (
 ): Promise<RealtimeDocumentChange | null> => {
   const document = await database
     .prepare(
-      `SELECT status, publication_review_stage, published_at, updated_at,
+      `SELECT status, publication_review_stage, published_at, current_version_id, published_version_id, updated_at,
               publication_pr_number, publication_pr_url, publication_branch,
               publication_action, publication_requested_at
        FROM editorial_documents WHERE id = ?`,
@@ -203,6 +205,8 @@ const readDocumentChange = async (
       status: string;
       publication_review_stage: string | null;
       published_at: string | null;
+      current_version_id: string | null;
+      published_version_id: string | null;
       updated_at: string;
       publication_pr_number: number | null;
       publication_pr_url: string | null;
@@ -233,6 +237,8 @@ const readDocumentChange = async (
     publicationStage: document.publication_review_stage,
     publishedAt: Boolean(document.published_at),
     publishedAtValue: document.published_at,
+    currentVersionId: document.current_version_id,
+    publishedVersionId: document.published_version_id,
     updatedAt: document.updated_at,
     publicationPrNumber: document.publication_pr_number,
     publicationPrUrl: document.publication_pr_url,
@@ -493,6 +499,8 @@ export class EditorialCollaborationRoom {
         changeVersion?: unknown;
         publishedAt?: unknown;
         publishedAtValue?: unknown;
+        currentVersionId?: unknown;
+        publishedVersionId?: unknown;
         updatedAt?: unknown;
         publicationPrNumber?: unknown;
         publicationPrUrl?: unknown;
@@ -521,6 +529,14 @@ export class EditorialCollaborationRoom {
         publishedAtValue:
           typeof payload.publishedAtValue === "string"
             ? payload.publishedAtValue
+            : null,
+        currentVersionId:
+          typeof payload.currentVersionId === "string"
+            ? payload.currentVersionId
+            : null,
+        publishedVersionId:
+          typeof payload.publishedVersionId === "string"
+            ? payload.publishedVersionId
             : null,
         updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : "",
         publicationPrNumber:

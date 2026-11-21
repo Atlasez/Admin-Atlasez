@@ -6,13 +6,13 @@
 
 `created_by`は従来から権限判定にも使う登録担当者の記録として保持する。`updated_by`、編集履歴、カタログの`registered_by`、本文、状態、権限は変更しない。個人の執筆数・個人作業一覧には組織の記事を含めない。
 
-公開記事を新規に運営へ取り込む際は`organization`を保存する。個人の新規原稿・更新案は既定値`person`とし、既存原稿へのリンクはその作成主体を維持する。カタログ観測・同じ原稿への再登録は取り込み方式の証跡を保持する。
+公開記事を新規に運営へ取り込む際は`organization`を保存する。個人の新規原稿と旧方式の修正原稿は既定値`person`とし、既存原稿へのリンクはその作成主体を維持する。カタログ観測・同じ原稿への再登録は取り込み方式の証跡を保持する。
 
 ## 既存記事の識別
 
 migration `0124_editorial_document_creator_kind.sql`は、カタログ取り込み専用の決定的IDを持つ正規原稿を対象とする。UUIDのversion形状だけを証拠にしない。適用前に、全候補のIDが元のカタログ`identity_key`のSHA-256から生成したIDに完全一致することを検証する。
 
-現在の記事分類が変更されていても、取り込み時のカタログidentityで検証する。`registration_method`は過去の観測で上書きされているため、それだけでは判定しない。出典IDがある個人原稿、更新案、由来を確定できない旧UUIDv4原稿は組織へ変更しない。
+現在の記事分類が変更されていても、取り込み時のカタログidentityで検証する。`registration_method`は過去の観測で上書きされているため、それだけでは判定しない。出典IDがある個人原稿、旧方式の修正原稿、由来を確定できない旧UUIDv4原稿は組織へ変更しない。
 
 追加調査で旧方式のUUIDv4取り込み3件を確定した。作成以前の公開main祖先commit `fae16b9828c8f9942c41b77d9230c6f0722229f7`の記事と、sourceArticleId・元identity・本文（当時の保存処理と同じJS trim）が一致した。1件は初期revisionも一致し、他2件はrevisionがない。旧editor/Workerはこの公開本文をUUIDv4と操作者created_byで保存していた。`scripts/editorial-legacy-imports.json`に公開情報だけの証拠と3件の固定IDを保存し、migration0125はcanonical・固定ID・sourceArticleId・作成時刻を全て一致させて作成主体だけ補正する。sourceArticleIdがNULLの旧原稿15件は変更しない。
 

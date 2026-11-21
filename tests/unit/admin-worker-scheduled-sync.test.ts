@@ -31,6 +31,8 @@ class SyncStatement {
   }
 
   async first<T>() {
+    if (this.query.includes("COUNT(*) AS total"))
+      return { total: 9, published: 4 } as T;
     return null as T | null;
   }
 
@@ -64,39 +66,22 @@ describe("admin scheduled GitHub syncs", () => {
     expect(databaseCalls).toBe(0);
   });
 
-  it("limits editorial publication status sync to one resumable page", async () => {
-    const executed: { query: string; values: unknown[] }[] = [];
+  it("uses D1 version pointers for publication status without rewriting them from GitHub", async () => {
     const requests: string[] = [];
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       requests.push(String(input));
-      return new Response(
-        JSON.stringify({
-          content: btoa("---\nstatus: published\n---\n"),
-        }),
+      throw new Error(
+        "publication status must not be inferred from GitHub source files",
       );
     });
     try {
       await runScheduled("*/2 * * * *", {
-        GITHUB_PUBLISH_TOKEN: "test-token",
         REPORTS: {
-          prepare: (query: string) =>
-            new SyncStatement(query, (statement, values) =>
-              executed.push({ query: statement, values }),
-            ),
+          prepare: (query: string) => new SyncStatement(query, () => undefined),
         },
       });
 
-      expect(requests).toHaveLength(8);
-      expect(requests.every((url) => url.includes("/contents/"))).toBe(true);
-      expect(
-        executed.find((entry) =>
-          entry.query.includes("admin_worker_sync_checkpoints"),
-        )?.values,
-      ).toEqual([
-        "editorial-publication-status",
-        "document-08",
-        expect.any(String),
-      ]);
+      expect(requests).toHaveLength(0);
     } finally {
       vi.unstubAllGlobals();
     }

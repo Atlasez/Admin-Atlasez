@@ -432,24 +432,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     border-color: color-mix(in srgb, var(--accent-primary) 48%, var(--border-default));
     color: var(--accent-primary);
   }
-  .proposal-action {
-    align-items: center;
-    background: var(--background-secondary);
-    border: 1px solid var(--accent-primary);
-    border-radius: 0.45rem;
-    color: var(--accent-primary);
-    display: inline-flex;
-    font-size: 0.76rem;
-    font-weight: 800;
-    justify-content: center;
-    padding: 0.4rem 0.55rem;
-    text-decoration: none;
-    white-space: nowrap;
-  }
-  .proposal-action:hover {
-    background: var(--accent-primary);
-    color: #fff;
-  }
   @media (max-width: 600px) {
     .admin-page {
       padding: 0 0.8rem 3rem;
@@ -997,7 +979,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
   .article-status-group .badge.draft { color: var(--text-secondary); }
   .article-presence { font-size: 0.64rem; grid-column: 2; grid-row: 2; margin: 0.1rem 0 0; }
   .article-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 0.35rem; grid-column: 2; grid-row: 1; justify-content: end; }
-  .article-actions > .proposal-action { font-size: 0.66rem; padding: 0.3rem 0.45rem; }
   .article-actions .article-action { font-size: 0.66rem; padding: 0.28rem 0.4rem; }
   .article-group__more {
     background: transparent;
@@ -1054,7 +1035,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
   import { createAdminLoadRetry } from "../../scripts/admin-load-retry";
   import { readAdminApiJson } from "../../lib/admin-api";
   import { isTestArticleTitle } from "../../lib/article-test-classification";
-  type Article={id:string;source_article_id?:string|null;subject:string;category:string;slug?:string;title:string;status:"draft"|"in-review"|"on-hold"|"approved";updated_at:string;published_at:string|null;scheduled_publish_at?:string|null;archived_at?:string|null;archive_expires_at?:string|null;created_by?:string;updated_by?:string;reviewer_email?:string|null;active_editors?:Array<{sessionId:string;email:string;displayName:string;field:string}>};
+  type Article={id:string;source_article_id?:string|null;subject:string;category:string;slug?:string;title:string;status:"draft"|"in-review"|"on-hold"|"approved";updated_at:string;published_at:string|null;current_version_id?:string|null;published_version_id?:string|null;scheduled_publish_at?:string|null;publication_review_stage?:"subject-coordinator"|"project-leader"|null;archived_at?:string|null;archive_expires_at?:string|null;created_by?:string;updated_by?:string;reviewer_email?:string|null;active_editors?:Array<{sessionId:string;email:string;displayName:string;field:string}>};
   type ArticleFilterState={query:string;subject:string;category:string;status:string;publication:string;test:string;workflow:string;archive:string};
   type ArticleScope={email:string;subjects?:string[];coordinatorSubjects?:string[];allSubjects?:boolean;isManager?:boolean;isProjectLeader?:boolean};
   type ArticlePagination={limit:number;nextCursor:string|null;hasMore:boolean};
@@ -1252,11 +1233,9 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       }
       subjectBrowserAll.hidden = subject.value === "all";
     };
-    const hasUnpublishedPublicationChanges = (article: Pick<Article, "published_at" | "updated_at">) => {
+    const hasUnpublishedPublicationChanges = (article: Pick<Article, "published_at" | "current_version_id" | "published_version_id">) => {
       if (!article.published_at) return false;
-      const updatedAt = Date.parse(article.updated_at);
-      const publishedAt = Date.parse(article.published_at);
-      return Number.isFinite(updatedAt) && Number.isFinite(publishedAt) && updatedAt > publishedAt;
+      return !article.current_version_id || !article.published_version_id || article.current_version_id !== article.published_version_id;
     };
     const render = () => {
       list.classList.remove("loading-state", "error-state");
@@ -1269,7 +1248,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
         if (archive.value === "active" && isArchived(article)) return false;
         if (archive.value === "archived" && !isArchived(article)) return false;
         if (mode === "review" && article.status === "approved") return false;
-        if (mode === "request" && !([article.created_by, article.updated_by].includes(scopeEmail) && article.status !== "approved" && !article.published_at)) return false;
+        const hasUnpublishedVersion = Boolean(article.published_at && hasUnpublishedPublicationChanges(article));
+        if (mode === "request" && !([article.created_by, article.updated_by].includes(scopeEmail) && article.status !== "approved" && (!article.published_at || hasUnpublishedVersion))) return false;
         if (!ignoreSelectedSubject && subject.value !== "all" && rowSubject(row) !== subject.value) return false;
         if (category.value !== "all" && rowCategory(row) !== category.value) return false;
         if (status.value !== "all" && article.status !== status.value) return false;
@@ -1314,10 +1294,11 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
         const article = row.article;
         const title = rowTitle(row);
         const editedAt = formatDate(rowUpdatedAt(row));
+        const hasUnpublishedVersion = Boolean(article.published_at && hasUnpublishedPublicationChanges(article));
         const publicState = row.publicArticle
-          ? '<span class="badge public-live">公開中</span>'
+          ? `<span class="badge public-live">${hasUnpublishedVersion ? "公開中・未公開の版あり" : "公開中"}</span>`
           : article.published_at
-            ? '<span class="badge public-live">公開中</span>'
+            ? `<span class="badge public-live">${hasUnpublishedVersion ? "公開中・未公開の版あり" : "公開中"}</span>`
             : article.scheduled_publish_at
               ? `<span class="badge public-scheduled">公開予約・${esc(formatSchedule(article.scheduled_publish_at))}</span>`
               : '<span class="badge public-draft">未公開</span>';
@@ -1325,12 +1306,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
         const updatedLabel = "最終更新";
         const archiveBadge = article && isArchived(article) ? '<span class="badge archived">アーカイブ済み</span>' : "";
         const testBadge = isTestArticleTitle(title) ? '<span class="badge">テスト原稿</span>' : "";
-        const updateInProgress = Boolean(article.published_at && hasUnpublishedPublicationChanges(article));
-        const updateActionLabel = updateInProgress ? "更新案作成中" : "更新案を作成";
-        const updateAction = article.published_at
-          ? `<a class="proposal-action" href="/admin/editor/?document=${encodeURIComponent(article.id)}&mode=update&from=articles" aria-label="${esc(title || "無題の記事")}の${updateActionLabel}" data-update-proposal-state="${updateInProgress ? "in-progress" : "available"}">${updateActionLabel}</a>`
-          : "";
-        const archiveAction = article && article.status === "draft" && !article.published_at
+        const canArchiveArticle = article && (article.status === "draft" || article.status === "in-review") && !article.publication_review_stage && !article.published_version_id && !article.published_at && !article.scheduled_publish_at;
+        const archiveAction = canArchiveArticle
           ? isArchived(article)
             ? archiveExpired(article)
               ? '<button type="button" class="article-action" disabled title="アーカイブ期限を過ぎています">期限切れ</button>'
@@ -1346,7 +1323,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
           ? `<span class="article-presence" data-active-editors="${esc(article.id)}"><span class="presence-dot" aria-hidden="true"></span>${esc(editingSummary)}</span>`
           : "";
         const clickAttributes = ` role="link" tabindex="0" data-document-id="${esc(article.id)}" data-href="/admin/editor/?document=${encodeURIComponent(article.id)}"`;
-        return `<article class="article"${clickAttributes} aria-label="${esc(title)}"><div class="article-main"><div class="article-identity"><h2>${esc(title || "無題の原稿")}</h2><p class="article-meta"><span class="article-meta__updated">${updatedLabel} ${editedAt}</span></p></div>${statusMarkup}${presenceMarkup}</div><div class="article-actions">${archiveAction}${updateAction}</div></article>`;
+        return `<article class="article"${clickAttributes} aria-label="${esc(title)}"><div class="article-main"><div class="article-identity"><h2>${esc(title || "無題の原稿")}</h2><p class="article-meta"><span class="article-meta__updated">${updatedLabel} ${editedAt}</span></p></div>${statusMarkup}${presenceMarkup}</div><div class="article-actions">${archiveAction}</div></article>`;
       };
       if (shown.length) {
         const groups = new Map<string, { subject: string; category: string; rows: CatalogRow[] }>();

@@ -44,9 +44,11 @@ Markdownが `status: published` となる。draft / in-review はビルドから
 
 ## 4. 公開
 
-公開審査の完了後、原稿は「公開準備完了」になり、運営管理者へ公開待ち通知が届く。運営管理者が編集画面の「公開する」を押すと、Workerが
-`Atlasez/Atlasez01` に公開用PRを作成する。公開ボタンはmainやCloudflareへ直接書き込まない。
-公開側の専用GitHub App連携が設定されている場合、対象PRのCI成功後にシステムが公開用技術処理を行います。公開サイト本番は同リポジトリの`main`をProduction branchとするCloudflare Workers Buildsが配信し、ADMIN側の公開Runはbuild-infoと記事URLの反映を確認します。公開状態は定期同期でもGitHub `main`を照合します。CI失敗、SHA不一致、App/権限エラーは運営画面で確認が必要な状態として止め、手動merge・branch protection変更で回避しません。
+公開審査の完了後、原稿は「公開準備完了」になり、運営管理者へ公開待ち通知が届く。運営管理者が編集画面の「公開する」を押すと、WorkerがD1上の対象版IDを固定して`Atlasez/Atlasez01` に公開用PRを作成する。PR本文はその版の保存スナップショットから作るので、公開処理中に新しい編集版を保存しても対象は変わらない。公開ボタンはmainやCloudflareへ直接書き込まない。
+
+公開側の専用GitHub App連携が設定されている場合、対象PRのCI成功後にシステムが公開用技術処理を行う。main merge後のCloudflare Workers Buildsは候補Versionをアップロードし、候補に含まれる記事と版IDをD1へ保存する。D1保存の成功を確認した後だけCloudflareで100%配信へ切り替える。ADMIN WorkerはCloudflare最新DeploymentのVersion IDと100%配信を照合した後に、公開版ポインターと公開履歴をD1へ記録する。候補保存に失敗した場合は本番切替せず、切替後の履歴記録に失敗した場合はCloudflareの現行VersionとD1候補記録を定期照合して記録を補修する。
+
+CI失敗、版ID不一致、候補保存失敗、Cloudflare Version不一致、App/権限エラーは運営画面で確認が必要な状態として止め、手動merge・branch protection変更・本文のコピーで回避しない。GitHub PRはレビューと公開内容の証跡として残す。
 
 ## 5. 修正・報告対応
 

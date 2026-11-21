@@ -378,9 +378,7 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     expect(listLayout.gridTemplateColumns.split(" ")).toHaveLength(1);
   });
 
-  test("D-3c: 公開済み記事の更新案作成中を一覧のボタンで示す", async ({
-    page,
-  }) => {
+  test("D-3c: 公開中の未公開版を版IDで一覧に表示する", async ({ page }) => {
     await page.route("**/api/admin/editor/documents**", async (route) => {
       const requestUrl = new URL(route.request().url());
       if (requestUrl.pathname !== "/api/admin/editor/documents")
@@ -394,10 +392,12 @@ test.describe("A/D 原稿一覧の作業導線", () => {
               subject: "mathematics",
               category: "group-theory",
               slug: "group-definition",
-              title: "更新案作成中の記事",
+              title: "未公開版がある記事",
               status: "draft",
               published_at: "2026-08-30T01:34:00.000Z",
               updated_at: "2026-09-01T01:34:00.000Z",
+              current_version_id: "version-current",
+              published_version_id: "version-public",
             },
           ],
         },
@@ -410,18 +410,17 @@ test.describe("A/D 原稿一覧の作業導線", () => {
       "すべての分野（全権限）",
     );
     const card = page.locator('[data-document-id="update-progress-doc"]');
-    await expect(
-      card.locator('[data-update-proposal-state="in-progress"]'),
-    ).toHaveText("更新案作成中");
+    await expect(card.locator("[data-update-proposal-state]")).toHaveCount(0);
     await expect(card.locator(".article-status-group")).toContainText([
       "編集",
       "学習サイト",
     ]);
     await expect(card).not.toContainText("運営連携");
     await expect(card).toContainText("公開中");
-    await expect(card).toContainText("更新案作成中");
+    await expect(card).toContainText("公開中・未公開の版あり");
+    await expect(card).not.toContainText("更新案を作成");
     await page.screenshot({
-      path: "test-results/admin-articles-update-proposal-in-progress.png",
+      path: "test-results/admin-articles-unpublished-version.png",
       fullPage: true,
     });
   });
@@ -1097,6 +1096,82 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(page.locator("[data-list]")).toContainText("保管中の下書き");
     await expect(page.locator("[data-list]")).not.toContainText(
       "整理前の下書き",
+    );
+  });
+
+  test("D-5: フィードバック中はアーカイブでき、公開審査中はできない", async ({
+    page,
+  }) => {
+    const feedbackId = "33333333-3333-4333-8333-333333333333";
+    const reviewId = "44444444-4444-4444-8444-444444444444";
+    let archived = false;
+    const feedbackDocument = {
+      id: feedbackId,
+      subject: "mathematics",
+      category: "algebra",
+      title: "フィードバック中の記事",
+      status: "in-review",
+      publication_review_stage: null,
+      created_by: "alice@example.com",
+      updated_at: "2026-08-28T00:00:00.000Z",
+      published_at: null,
+      archived_at: null,
+    };
+    await page.route("**/api/admin/editor/documents**", async (route) => {
+      await route.fulfill({
+        json: {
+          scope: { email: "alice@example.com" },
+          documents: [
+            ...(archived
+              ? [
+                  {
+                    ...feedbackDocument,
+                    archived_at: "2026-08-28T01:00:00.000Z",
+                  },
+                ]
+              : [feedbackDocument]),
+            {
+              id: reviewId,
+              subject: "mathematics",
+              category: "algebra",
+              title: "公開審査中の記事",
+              status: "in-review",
+              publication_review_stage: "subject-coordinator",
+              created_by: "alice@example.com",
+              updated_at: "2026-08-27T00:00:00.000Z",
+              published_at: null,
+              archived_at: null,
+            },
+          ],
+        },
+      });
+    });
+    await page.route(
+      `**/api/admin/editor/documents/${feedbackId}/archive`,
+      async (route) => {
+        archived = true;
+        await route.fulfill({
+          json: {
+            ok: true,
+            archived: true,
+            archived_at: "2026-08-28T01:00:00.000Z",
+            archive_expires_at: "2026-09-27T01:00:00.000Z",
+          },
+        });
+      },
+    );
+
+    await page.goto("admin/articles/?verify=feedback-archive");
+    const feedbackRow = page.locator(`[data-document-id="${feedbackId}"]`);
+    const reviewRow = page.locator(`[data-document-id="${reviewId}"]`);
+    await expect(
+      feedbackRow.locator('[data-archive-action="archive"]'),
+    ).toBeVisible();
+    await expect(reviewRow.locator("[data-archive-action]")).toHaveCount(0);
+
+    await feedbackRow.locator('[data-archive-action="archive"]').click();
+    await expect(page.locator("[data-list]")).not.toContainText(
+      "フィードバック中の記事",
     );
   });
 
