@@ -125,7 +125,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     </header>
 
     <section class="workflow-guide" data-status-workflow aria-label="開いている原稿の進捗">
-      <p>現在の状態：<strong data-workflow-current>記事を選択してください</strong><small data-workflow-help>保存済みの記事を開くか、新規記事を作成します。</small><button type="button" class="workflow-feedback-task-link" data-feedback-task-link hidden>未完了の依頼を確認</button></p>
+      <p>現在の状態：<strong data-workflow-current>記事を選択してください</strong><small data-workflow-help>保存済みの記事を開くか、新規記事を作成します。</small><button type="button" class="workflow-feedback-task-link" data-feedback-task-link hidden>未完了の依頼を管理・取り下げ</button></p>
       <ol aria-label="原稿の公開までの進捗">
         <li data-workflow-step="draft"><b>1</b><span>執筆・保存</span></li>
         <li data-workflow-step="in-review"><b>2</b><span>フィードバック</span></li>
@@ -198,6 +198,12 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
               <p class="document-version-note" data-document-version-label hidden aria-live="polite"></p>
             </div>
           </section>
+
+          <details class="feedback-request-history" data-feedback-request-history-panel>
+            <summary id="feedback-request-history-heading">フィードバック依頼の履歴・取り下げ</summary>
+            <p>同じ担当者への未完了依頼は重複して数えません。依頼者または運営管理者は、未完了の依頼をここから取り下げられます。</p>
+            <div data-feedback-request-history>原稿を選ぶと、依頼履歴を確認できます。</div>
+          </details>
 
           <details class="metadata" data-metadata>
             <summary><span class="metadata-summary-title">記事設定</span><span class="metadata-summary-value" data-metadata-summary>必須項目を確認</span><span class="metadata-summary-action">編集</span></summary>
@@ -299,11 +305,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
             <h3 id="revision-heading">版履歴・差分確認</h3>
             <p>保存した版を独立して確認できます。</p>
             <div data-revision-list>原稿を保存すると履歴が残ります。</div>
-            <section class="feedback-request-history" aria-labelledby="feedback-request-history-heading">
-              <h4 id="feedback-request-history-heading">フィードバック依頼の履歴</h4>
-              <p>記事に紐づく依頼を確認できます。担当タスクは、この画面から進行中・完了へ更新できます。</p>
-              <div data-feedback-request-history>原稿を選ぶと、依頼履歴を確認できます。</div>
-            </section>
           </section>
         </form>
       </section>
@@ -396,7 +397,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       <form method="dialog" data-review-request-form>
         <p class="eyebrow">フィードバック依頼</p>
         <h2 id="review-request-title">フィードバックを誰に依頼しますか？</h2>
-        <label>依頼先<select data-review-request-assignee multiple size="7" required aria-describedby="review-request-assignee-help"><option value="" disabled>担当者を選択</option><option value="*">この分野の担当者全員</option></select><small id="review-request-assignee-help">チェックを入れて複数人を選択できます。「担当者全員」と個別担当者は同時に選べません。</small></label>
+        <label>依頼先<select data-review-request-assignee multiple size="7" required aria-describedby="review-request-assignee-help"><option value="" disabled>担当者を選択</option><option value="*">この分野の担当者全員</option></select><small id="review-request-assignee-help">チェックを入れて複数人を選択できます。「担当者全員」と個別担当者は同時に選べません。未完了の依頼がある担当者には重ねて依頼できません。</small></label>
         <label>依頼内容・備考<textarea data-review-request-note maxlength="2000" rows="5" placeholder="重点的に確認してほしい点や期限など"></textarea></label>
         <output data-review-request-message aria-live="polite"></output>
         <div class="approval-actions"><button type="button" data-review-request-cancel class="quiet-action">キャンセル</button><button type="submit" value="request" class="primary-action">フィードバックを依頼する</button></div>
@@ -516,7 +517,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .review-help { border-bottom:1px solid var(--border); color:var(--muted); font-size:.76rem; padding:.45rem .85rem; }.review-help summary { cursor:pointer; font-weight:800; }.review-help p { line-height:1.55; margin:.45rem 0 .1rem; }.thread-summary { justify-content:flex-end; padding:.65rem .8rem 0; }.thread-status { font-size:.68rem; }.reply-toggle { background:transparent; border:0; color:var(--accent); cursor:pointer; font-size:.76rem; font-weight:800; margin:-.15rem 0 .25rem 2.45rem; padding:.3rem .45rem; }.reply-toggle:hover { text-decoration:underline; }.comment-replies[hidden] { display:none; }.reply-actions { display:flex; gap:.4rem; justify-content:flex-end; }.reply-actions button { width:auto; }.reply-entry { gap:.55rem; }.reply-entry[hidden] { display:none; }
   .comment-context-menu { background:var(--surface); border:1px solid var(--border); border-radius:.55rem; box-shadow:0 .7rem 2rem rgb(24 32 39 / .18); display:grid; gap:.35rem; max-width:min(25rem,calc(100vw - 1.5rem)); padding:.7rem .8rem; position:fixed; z-index:80; }.comment-context-menu b { font-size:.78rem; }.comment-context-menu span { color:var(--muted); font-size:.73rem; line-height:1.45; overflow-wrap:anywhere; }
   .revision-panel { margin:1rem .85rem 0; }.revision-panel div { color:var(--muted); font-size:.8rem; padding:.7rem; }.revision-item { border-top:1px solid var(--border); padding:.45rem 0; }
-  .feedback-request-history { border-top:1px solid var(--border); margin-top:1rem; padding-top:.9rem; }.feedback-request-history h4 { font-size:.86rem; margin:0 0 .25rem; }.feedback-request-history>p { color:var(--muted); font-size:.74rem; line-height:1.5; margin:.2rem 0 .65rem; }.feedback-request-history-list { display:grid; gap:.55rem; }.feedback-request-history-item { background:var(--surface-alt); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:.45rem; display:grid; gap:.35rem; padding:.6rem .7rem; }.feedback-request-history-item>div { align-items:center; display:flex; flex-wrap:wrap; gap:.45rem; justify-content:space-between; }.feedback-request-history-item strong { font-size:.78rem; }.feedback-request-history-item small,.feedback-request-history-item p { color:var(--muted); font-size:.72rem; line-height:1.5; margin:0; overflow-wrap:anywhere; }.feedback-request-status { border:1px solid var(--border); border-radius:999px; font-size:.68rem; font-weight:800; padding:.12rem .38rem; }.feedback-request-status.is-open { background:#fff2cc; border-color:#d9a429; color:#714f00; }.feedback-request-status.is-doing { background:#e8f3fb; border-color:#72add3; color:#185c86; }.feedback-request-status.is-done { background:#e5f4ea; border-color:#74a888; color:#21623b; }.feedback-request-status.is-withdrawn { background:#eceff3; border-color:#aab3be; color:#4e5965; }.feedback-request-task-actions { align-items:center; display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.15rem; }.feedback-request-task-actions select { background:var(--surface); border:1px solid var(--border); border-radius:.35rem; color:var(--text); font:inherit; font-size:.72rem; min-height:1.95rem; padding:.25rem .4rem; }.feedback-request-task-actions button { font-size:.72rem; min-height:1.95rem; padding:.25rem .55rem; width:auto; }.feedback-request-task-actions button:disabled { cursor:wait; opacity:.65; }.feedback-request-history-empty { color:var(--muted); font-size:.78rem; margin:0; }
+  .feedback-request-history { border-top:1px solid var(--border); margin-top:1rem; padding-top:.9rem; }.feedback-request-history>summary { cursor:pointer; font-size:.85rem; font-weight:800; list-style:none; }.feedback-request-history>summary::-webkit-details-marker { display:none; }.feedback-request-history>summary::before { color:var(--accent); content:"▶"; display:inline-block; font-size:.7em; margin-right:.45rem; transition:transform .15s ease; }.feedback-request-history[open]>summary::before { transform:rotate(90deg); }.feedback-request-history h4 { font-size:.86rem; margin:0 0 .25rem; }.feedback-request-history>p { color:var(--muted); font-size:.74rem; line-height:1.5; margin:.2rem 0 .65rem; }.feedback-request-history-list { display:grid; gap:.55rem; }.feedback-request-history-item { background:var(--surface-alt); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:.45rem; display:grid; gap:.35rem; padding:.6rem .7rem; }.feedback-request-history-item>div { align-items:center; display:flex; flex-wrap:wrap; gap:.45rem; justify-content:space-between; }.feedback-request-history-item strong { font-size:.78rem; }.feedback-request-history-item small,.feedback-request-history-item p { color:var(--muted); font-size:.72rem; line-height:1.5; margin:0; overflow-wrap:anywhere; }.feedback-request-status { border:1px solid var(--border); border-radius:999px; font-size:.68rem; font-weight:800; padding:.12rem .38rem; }.feedback-request-status.is-open { background:#fff2cc; border-color:#d9a429; color:#714f00; }.feedback-request-status.is-doing { background:#e8f3fb; border-color:#72add3; color:#185c86; }.feedback-request-status.is-done { background:#e5f4ea; border-color:#74a888; color:#21623b; }.feedback-request-status.is-withdrawn { background:#eceff3; border-color:#aab3be; color:#4e5965; }.feedback-request-task-actions { align-items:center; display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.15rem; }.feedback-request-task-actions select { background:var(--surface); border:1px solid var(--border); border-radius:.35rem; color:var(--text); font:inherit; font-size:.72rem; min-height:1.95rem; padding:.25rem .4rem; }.feedback-request-task-actions button { font-size:.72rem; min-height:1.95rem; padding:.25rem .55rem; width:auto; }.feedback-request-task-actions button:disabled { cursor:wait; opacity:.65; }.feedback-request-history-empty { color:var(--muted); font-size:.78rem; margin:0; }
   .sr-only { clip:rect(0 0 0 0); clip-path:inset(50%); height:1px; overflow:hidden; position:absolute; white-space:nowrap; width:1px; }
   .progress-detail-label { color:var(--muted); display:grid; font-size:.78rem; font-weight:800; gap:.35rem; margin-top:.8rem; }.progress-detail-label textarea { box-sizing:border-box; font:inherit; line-height:1.6; min-height:8rem; padding:.65rem; resize:vertical; width:100%; }
   @media (max-width: 1080px) { .editor-split { grid-template-columns: repeat(2, minmax(0, 1fr)); }.article-preview { height: auto; min-height: 28rem; }.workspace-grid { grid-template-columns: 1fr; }.workspace-header { display: grid; }.workspace-header nav { justify-content: start; }.document-toolbar { display: grid; }.toolbar-actions { justify-content: start; }.metadata-grid { grid-template-columns: 1fr; }.metadata label:nth-child(1), .metadata label:nth-child(2) { grid-column: auto; } }
@@ -1613,6 +1614,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const reviewRequestNote = root.querySelector<HTMLTextAreaElement>("[data-review-request-note]")!;
     const reviewRequestMessage = root.querySelector<HTMLOutputElement>("[data-review-request-message]")!;
     const reviewRequestCancel = root.querySelector<HTMLButtonElement>("[data-review-request-cancel]")!;
+    let activeReviewRequestRecipients = new Set<string>();
+    let hasActiveAllReviewRequest = false;
     const headingOutline = root.querySelector<HTMLElement>("[data-heading-outline]")!;
     const previewExpandButton = root.querySelector<HTMLButtonElement>("[data-preview-expand]")!;
     const approvalDialog = root.querySelector<HTMLDialogElement>("[data-approval-dialog]")!;
@@ -1640,6 +1643,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const progressBody = root.querySelector<HTMLTextAreaElement>("[data-progress-body]")!;
     const revisions = root.querySelector<HTMLElement>("[data-revision-list]")!;
     const feedbackRequestHistory = root.querySelector<HTMLElement>("[data-feedback-request-history]")!;
+    const feedbackRequestHistoryPanel = root.querySelector<HTMLDetailsElement>("[data-feedback-request-history-panel]")!;
     const newDocumentButton = root.querySelector<HTMLButtonElement>("[data-new-document]")!;
     const personalNote = root.querySelector<HTMLTextAreaElement>("[data-personal-note]")!;
     const personalNoteMessage = root.querySelector<HTMLOutputElement>("[data-personal-note-message]")!;
@@ -2485,7 +2489,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       reviewButton.disabled = (Boolean(item.published_at) && !hasNewVersion) || Boolean(item.publication_pr_url);
       reviewButton.title = item.published_at && !hasNewVersion
         ? "フィードバックを依頼するには、記事を編集して新しい版を保存してください。"
-        : "複数回、別の担当者へフィードバックを依頼できます。";
+        : "未完了の依頼がある担当者には重複して依頼できません。別の担当者への依頼は追加できます。";
       setDocumentVersionLabel(item);
       syncPublishedVersionControls();
     };
@@ -4719,6 +4723,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       }
       const requestStatus = { open: "未着手", doing: "進行中", done: "完了" } as const;
       const requests = data.feedbackRequests ?? [];
+      if (requests.some((item) => !item.withdrawn_at && item.status !== "done"))
+        feedbackRequestHistoryPanel.open = true;
       feedbackRequestHistory.innerHTML = requests.length
         ? `<div class="feedback-request-history-list">${requests.map((item) => {
             const recipients = item.assignee_email === "*" ? "この分野の担当者全員" : (item.assignee_email ?? "").split(",").map((email) => email.trim()).filter(Boolean).join("、") || "担当者未指定";
@@ -4755,6 +4761,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       title.focus({ preventScroll: true });
     });
     feedbackTaskLink.addEventListener("click", () => {
+      feedbackRequestHistoryPanel.open = true;
       const item = feedbackRequestHistory
         .querySelector<HTMLElement>(
           ".feedback-request-status.is-open, .feedback-request-status.is-doing",
@@ -4765,7 +4772,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         return;
       }
       item.scrollIntoView({ behavior: "smooth", block: "center" });
-      item.querySelector<HTMLSelectElement>("[data-feedback-task-status]")?.focus({ preventScroll: true });
+      (item.querySelector<HTMLButtonElement>("[data-withdraw-feedback-request]")
+        ?? item.querySelector<HTMLSelectElement>("[data-feedback-task-status]"))?.focus({ preventScroll: true });
     });
     feedbackRequestHistory.addEventListener("click", (event) => {
       const withdrawButton = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-withdraw-feedback-request]");
@@ -4896,15 +4904,28 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       reviewRequestMessage.value = "依頼先を読み込み中…";
       const documentId = (form.elements.namedItem("documentId") as HTMLInputElement).value;
       const response = await fetch(`/api/admin/editor/review-requests?documentId=${encodeURIComponent(documentId)}`, { credentials: "same-origin", cache: "no-store" });
-      const data = await read<{ reviewers?: Array<{ email:string; displayName:string; subjects:string[] }>; requests?: Array<{ id:string; reviewer_email?:string|null }>; error?:string }>(response);
+      const data = await read<{ reviewers?: Array<{ email:string; displayName:string; subjects:string[] }>; requests?: Array<{ id:string; reviewer_email?:string|null; activeReviewerEmails?:string[]; hasActiveAllReviewerRequest?:boolean }>; error?:string }>(response);
       if (!response.ok) throw new Error(data.error ?? "依頼先を読み込めませんでした。");
       const currentSubject = subject.value;
       const reviewers = (data.reviewers ?? []).filter((reviewer) => reviewer.subjects.includes("*") || reviewer.subjects.includes(currentSubject));
       reviewRequestAssignee.innerHTML = '<option value="" disabled>担当者を選択</option><option value="*">この分野の担当者全員</option>' + reviewers.map((reviewer) => `<option value="${esc(reviewer.email)}">${esc(reviewer.displayName)}</option>`).join("");
       const currentRequest = data.requests?.find((item) => item.id === documentId);
-      const selectedEmails = new Set((currentRequest?.reviewer_email ?? "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean));
-      [...reviewRequestAssignee.options].forEach((option) => { option.selected = selectedEmails.has(option.value.toLowerCase()); });
-      reviewRequestMessage.value = "";
+      activeReviewRequestRecipients = new Set((currentRequest?.activeReviewerEmails ?? []).map((email) => email.toLowerCase()));
+      hasActiveAllReviewRequest = Boolean(currentRequest?.hasActiveAllReviewerRequest);
+      [...reviewRequestAssignee.options].forEach((option) => {
+        option.selected = false;
+        if (!option.value) return;
+        const alreadyRequested = option.value === "*"
+          ? hasActiveAllReviewRequest || activeReviewRequestRecipients.size > 0
+          : hasActiveAllReviewRequest || activeReviewRequestRecipients.has(option.value.toLowerCase());
+        option.disabled = alreadyRequested;
+        if (alreadyRequested) {
+          option.textContent = `${option.textContent?.replace(/（依頼中）$/, "")}（依頼中）`;
+        }
+      });
+      reviewRequestMessage.value = hasActiveAllReviewRequest || activeReviewRequestRecipients.size
+        ? "未完了の依頼がある担当者は選べません。上部の「未完了の依頼を管理・取り下げ」から依頼を確認できます。"
+        : "";
       reviewRequestDialog.showModal();
     })().catch((error:unknown) => { saveMessage.value = error instanceof Error ? error.message : "依頼先を読み込めませんでした。"; }); });
     reviewRequestCancel.addEventListener("click", () => {
@@ -4920,6 +4941,13 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       const id = (form.elements.namedItem("documentId") as HTMLInputElement).value;
       const reviewerEmails = [...reviewRequestAssignee.selectedOptions].map((option) => option.value).filter(Boolean);
       if (!id || !reviewerEmails.length) { reviewRequestMessage.value = "依頼先を1人以上選択してください。"; return; }
+      const duplicateSelection = reviewerEmails.includes("*")
+        ? hasActiveAllReviewRequest || activeReviewRequestRecipients.size > 0
+        : hasActiveAllReviewRequest || reviewerEmails.some((email) => activeReviewRequestRecipients.has(email.toLowerCase()));
+      if (duplicateSelection) {
+        reviewRequestMessage.value = "選択した担当者には未完了の依頼があります。依頼履歴から取り下げるか、未依頼の担当者を選んでください。";
+        return;
+      }
       submitter.disabled = true;
       reviewRequestMessage.value = "フィードバック依頼を保存中…";
       void (async () => {
@@ -5650,6 +5678,10 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .revision-workspace h3 { margin: 0; }
   .revision-workspace > p { color: var(--muted); margin: .35rem 0 .75rem; }
   .feedback-request-history { border-top: 1px solid var(--border); margin-top: 1rem; padding-top: 1rem; }
+  .feedback-request-history > summary { cursor: pointer; font-size: .85rem; font-weight: 800; list-style: none; }
+  .feedback-request-history > summary::-webkit-details-marker { display: none; }
+  .feedback-request-history > summary::before { color: var(--accent); content: "▶"; display: inline-block; font-size: .7em; margin-right: .45rem; transition: transform .15s ease; }
+  .feedback-request-history[open] > summary::before { transform: rotate(90deg); }
   .feedback-request-history h4 { font-size: .9rem; margin: 0; }
   .feedback-request-history > p { color: var(--muted); font-size: .78rem; margin: .3rem 0 .65rem; }
   .feedback-request-history-item { background: var(--background-inset); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: .45rem; display: grid; gap: .3rem; margin-top: .5rem; padding: .6rem .7rem; }

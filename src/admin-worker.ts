@@ -16932,7 +16932,17 @@ async function listEditorialReviewRequests(
          ) AS reviewer_email,
          r.request_note,
          COALESCE(NULLIF(TRIM(requester.display_name), ''), '表示名未設定') AS requester_display_name,
-         COALESCE(NULLIF((SELECT GROUP_CONCAT(COALESCE(NULLIF(TRIM(rm.display_name), ''), rr.reviewer_email)) FROM editorial_review_assignment_recipients rr LEFT JOIN editorial_member_profiles rm ON lower(rm.email) = lower(rr.reviewer_email) WHERE rr.document_id = d.id), ''), COALESCE(NULLIF(TRIM(reviewer.display_name), ''), '')) AS reviewer_display_name
+         COALESCE(NULLIF((SELECT GROUP_CONCAT(COALESCE(NULLIF(TRIM(rm.display_name), ''), rr.reviewer_email)) FROM editorial_review_assignment_recipients rr LEFT JOIN editorial_member_profiles rm ON lower(rm.email) = lower(rr.reviewer_email) WHERE rr.document_id = d.id), ''), COALESCE(NULLIF(TRIM(reviewer.display_name), ''), '')) AS reviewer_display_name,
+         (SELECT GROUP_CONCAT(DISTINCT t.assignee_email)
+            FROM editorial_feedback_task_links active_link
+            JOIN editorial_tasks t ON t.id=active_link.task_id AND t.task_kind='feedback'
+           WHERE active_link.document_id=d.id
+             AND t.status IN ('open','doing')
+             AND NOT EXISTS (
+               SELECT 1 FROM workflow_transition_events e
+                WHERE e.entity_type='task' AND e.entity_id=t.id
+                  AND json_extract(e.metadata_json, '$.action')=?
+             )) AS active_reviewer_assignments
        FROM editorial_documents d
        LEFT JOIN editorial_review_assignments r ON r.document_id = d.id
        LEFT JOIN editorial_member_profiles requester ON requester.email = d.updated_by
@@ -16942,7 +16952,7 @@ async function listEditorialReviewRequests(
                 d.updated_at ASC LIMIT 100`,
     )
       // SQL内のプレースホルダー順（分野、対象原稿、担当者）に合わせる。
-      .bind(FEEDBACK_REQUEST_WITHDRAWAL_ACTION, ...subjectValues, ...documentValues, scope.email)
+      .bind(FEEDBACK_REQUEST_WITHDRAWAL_ACTION, FEEDBACK_REQUEST_WITHDRAWAL_ACTION, ...subjectValues, ...documentValues, scope.email)
       .all<{
         id: string;
         subject: string;
@@ -16954,6 +16964,7 @@ async function listEditorialReviewRequests(
         requester_display_name: string;
         reviewer_display_name: string;
         request_note: string;
+        active_reviewer_assignments: string | null;
       }>(),
     env.REPORTS.prepare(
       `SELECT p.email,
@@ -16970,6 +16981,17 @@ async function listEditorialReviewRequests(
   return json({
     requests: (result.results ?? []).map((item) => ({
       ...item,
+      activeReviewerEmails: [
+        ...new Set(
+          (item.active_reviewer_assignments ?? "")
+            .split(",")
+            .map((email) => email.trim().toLowerCase())
+            .filter((email) => email && email !== "*"),
+        ),
+      ],
+      hasActiveAllReviewerRequest: (item.active_reviewer_assignments ?? "")
+        .split(",")
+        .some((email) => email.trim() === "*"),
       reviewerDisplayName:
         item.reviewer_email === "*"
           ? "分野担当者全員"
@@ -17041,9 +17063,6 @@ async function updateEditorialReviewAssignment(
   const requestNote = text(payload.note, 2_000);
   if (!reviewerEmails.length)
     return json({ error: "依頼先を1人以上選択してください。フィードバック依頼の取り下げは記事の依頼履歴から行えます。" }, 400);
-  const feedbackStageGuard = env.REPORTS.prepare(
-    "UPDATE editorial_documents SET updated_at = updated_at WHERE id = ? AND status = 'in-review' AND publication_review_stage IS NULL AND archived_at IS NULL",
-  ).bind(documentId);
   if (reviewerEmails.includes("*") && reviewerEmails.length > 1)
     return json(
       { error: "担当者全員と個別担当者は同時に選択できません。" },
@@ -17075,6 +17094,78 @@ async function updateEditorialReviewAssignment(
       },
       400,
     );
+  const activeFeedbackAssignments = await env.REPORTS.prepare(
+    `SELECT t.assignee_email
+       FROM editorial_feedback_task_links link
+       JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+      WHERE link.document_id=?
+        AND t.status IN ('open','doing')
+        AND NOT EXISTS (
+          SELECT 1 FROM workflow_transition_events e
+           WHERE e.entity_type='task' AND e.entity_id=t.id
+             AND json_extract(e.metadata_json, '$.action')=?
+        )`,
+  )
+    .bind(documentId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION)
+    .all<{ assignee_email: string | null }>();
+  const activeAssigneeSets = (activeFeedbackAssignments.results ?? []).map(
+    (assignment) =>
+      new Set(
+        (assignment.assignee_email ?? "")
+          .split(",")
+          .map((email) => email.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+  );
+  const duplicateAssignment = reviewerEmails.includes("*")
+    ? activeAssigneeSets.length > 0
+    : activeAssigneeSets.some(
+        (assignees) =>
+          assignees.has("*") ||
+          reviewerEmails.some((email) => assignees.has(email)),
+      );
+  if (duplicateAssignment)
+    return json(
+      {
+        error:
+          "選択した担当者には未完了のフィードバック依頼があります。依頼履歴で取り下げるか、未依頼の担当者を選んでください。",
+      },
+      409,
+    );
+  const duplicateAssigneePredicate = reviewerEmails.includes("*")
+    ? "1=1"
+    : `(
+        lower(trim(COALESCE(t.assignee_email, '')))='*'
+        OR ${reviewerEmails
+          .map(
+            () =>
+              "instr(',' || replace(lower(COALESCE(t.assignee_email, '')), ' ', '') || ',', ',' || ? || ',') > 0",
+          )
+          .join(" OR ")}
+      )`;
+  const feedbackStageBindings = [
+    documentId,
+    ...reviewerEmails.filter((email) => email !== "*"),
+    FEEDBACK_REQUEST_WITHDRAWAL_ACTION,
+  ];
+  const feedbackStageCondition = `status = 'in-review'
+    AND publication_review_stage IS NULL
+    AND archived_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM editorial_feedback_task_links link
+      JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+      WHERE link.document_id=?
+        AND t.status IN ('open','doing')
+        AND ${duplicateAssigneePredicate}
+        AND NOT EXISTS (
+          SELECT 1 FROM workflow_transition_events e
+          WHERE e.entity_type='task' AND e.entity_id=t.id
+            AND json_extract(e.metadata_json, '$.action')=?
+        )
+    )`;
+  const feedbackStageGuard = env.REPORTS.prepare(
+    `UPDATE editorial_documents SET updated_at = updated_at WHERE id = ? AND ${feedbackStageCondition}`,
+  ).bind(documentId, ...feedbackStageBindings);
   const now = new Date().toISOString();
   // 各フィードバック依頼は、記事に紐づく独立した共通タスクとして残す。
   // 最新の依頼だけは既存の assignment テーブルにも保持し、旧一覧との互換を維持する。
@@ -17085,7 +17176,7 @@ async function updateEditorialReviewAssignment(
   const taskDetails = requestNote
     ? `${requestNote}\n\n記事編集画面: /admin/editor/?document=${documentId}`
     : `記事のフィードバックをお願いします。\n\n記事編集画面: /admin/editor/?document=${documentId}`;
-  const isFeedbackStage = `EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND status='in-review' AND publication_review_stage IS NULL AND archived_at IS NULL)`;
+  const isFeedbackStage = `EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND ${feedbackStageCondition})`;
   const results = await env.REPORTS.batch([
     feedbackStageGuard,
     env.REPORTS.prepare(
@@ -17102,6 +17193,7 @@ async function updateEditorialReviewAssignment(
       requestNote,
       taskId,
       documentId,
+      ...feedbackStageBindings,
     ),
     env.REPORTS.prepare(
       `INSERT INTO editorial_tasks (id,project_id,subject,assignee_email,title,details,status,created_by,created_at,updated_at,task_kind)
@@ -17117,21 +17209,22 @@ async function updateEditorialReviewAssignment(
       now,
       now,
       documentId,
+      ...feedbackStageBindings,
     ),
     env.REPORTS.prepare(
       `INSERT INTO editorial_feedback_task_links (task_id, document_id, created_at)
        SELECT ?, ?, ? WHERE ${isFeedbackStage}`,
-    ).bind(taskId, documentId, now, documentId),
+    ).bind(taskId, documentId, now, documentId, ...feedbackStageBindings),
     env.REPORTS.prepare(
       `DELETE FROM editorial_review_assignment_recipients WHERE document_id = ? AND ${isFeedbackStage}`,
-    ).bind(documentId, documentId),
+    ).bind(documentId, documentId, ...feedbackStageBindings),
     ...reviewerEmails
       .filter((email) => email !== "*")
       .map((email) =>
         env.REPORTS.prepare(
           `INSERT INTO editorial_review_assignment_recipients (document_id, reviewer_email, requested_at, updated_at)
            SELECT ?, ?, ?, ? WHERE ${isFeedbackStage}`,
-        ).bind(documentId, email, now, now, documentId),
+        ).bind(documentId, email, now, now, documentId, ...feedbackStageBindings),
       ),
   ]);
   if (Number(results[0]?.meta?.changes ?? 0) !== 1)
@@ -21721,9 +21814,8 @@ async function editorialFeedbackTaskState(
   env: Env,
   documentId: string,
 ): Promise<EditorialFeedbackTaskState> {
-  const row = await env.REPORTS.prepare(
-    `SELECT COUNT(*) AS total,
-            SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) AS done
+  const result = await env.REPORTS.prepare(
+    `SELECT t.id AS task_id, t.assignee_email, t.status
        FROM editorial_feedback_task_links link
        JOIN editorial_tasks t ON t.id = link.task_id
       WHERE link.document_id = ?
@@ -21734,10 +21826,30 @@ async function editorialFeedbackTaskState(
         )`,
   )
     .bind(documentId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION)
-    .first<{ total: number | string | null; done: number | string | null }>();
+    .all<{
+      task_id: string;
+      assignee_email: string | null;
+      status: string;
+    }>();
+  const recipientCompletion = new Map<string, boolean>();
+  for (const task of result.results ?? []) {
+    const recipients = (task.assignee_email ?? "")
+      .split(",")
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean);
+    const uniqueRecipients = recipients.length
+      ? [...new Set(recipients)]
+      : [`task:${task.task_id}`];
+    for (const recipient of uniqueRecipients) {
+      recipientCompletion.set(
+        recipient,
+        (recipientCompletion.get(recipient) ?? true) && task.status === "done",
+      );
+    }
+  }
   return {
-    total: Math.max(0, Number(row?.total ?? 0)),
-    done: Math.max(0, Number(row?.done ?? 0)),
+    total: recipientCompletion.size,
+    done: [...recipientCompletion.values()].filter(Boolean).length,
   };
 }
 
