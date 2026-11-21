@@ -2376,6 +2376,7 @@ describe("admin worker editor APIs", () => {
     expect(documentQuery).toContain("AND d.id = ?");
     expect(documentBindings).toEqual([
       "feedback_request_withdrawn",
+      "feedback_request_withdrawn",
       "mathematics",
       "doc-1",
       "member@example.com",
@@ -3328,12 +3329,30 @@ describe("admin worker editor APIs", () => {
       async first<T>() {
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
-        if (this.query.includes("FROM editorial_feedback_task_links"))
-          return { total: 2, done: 1 } as T;
         return null as T | null;
       }
 
       async all<T>() {
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            results: [
+              {
+                task_id: "task-1",
+                assignee_email: "reviewer@example.com",
+                status: "done",
+              },
+              {
+                task_id: "task-2",
+                assignee_email: "reviewer@example.com",
+                status: "doing",
+              },
+              {
+                task_id: "task-3",
+                assignee_email: "second@example.com",
+                status: "done",
+              },
+            ] as T[],
+          };
         if (this.query.includes("FROM editorial_workflow_roles"))
           return { results: [] as T[] };
         return { results: [] as T[] };
@@ -3527,11 +3546,88 @@ describe("admin worker editor APIs", () => {
     expect(response.status).toBe(409);
     expect(batchQueries[0]).toContain("archived_at IS NULL");
     expect(batchQueries.slice(1)).toHaveLength(5);
+    const recipientDeleteIndex = batchQueries.findIndex((query) =>
+      query.includes("DELETE FROM editorial_review_assignment_recipients"),
+    );
+    const recipientInsertIndex = batchQueries.findIndex((query) =>
+      query.includes("INSERT INTO editorial_review_assignment_recipients"),
+    );
+    const taskLinkInsertIndex = batchQueries.findIndex((query) =>
+      query.includes("INSERT INTO editorial_feedback_task_links"),
+    );
+    expect(recipientDeleteIndex).toBeGreaterThan(0);
+    expect(recipientInsertIndex).toBeGreaterThan(recipientDeleteIndex);
+    expect(taskLinkInsertIndex).toBeGreaterThan(recipientInsertIndex);
     expect(
       batchQueries
         .slice(1)
         .every((query) => query.includes("archived_at IS NULL")),
     ).toBe(true);
+    expect(batchQueries[0]).toContain("editorial_feedback_task_links");
+    expect(batchQueries[0]).toContain("assignee_email");
+  });
+
+  it("rejects a second active feedback request for the same reviewer", async () => {
+    const documentId = "66666666-6666-4666-8666-666666666666";
+    const document = {
+      subject: "mathematics",
+      status: "in-review",
+      publication_review_stage: null,
+      title: "フィードバック重複テスト",
+      created_by: "local-editor@atlasez.test",
+      archived_at: null,
+    };
+    let batchCalled = false;
+    class DuplicateAssignmentStatement extends EmptyStatement {
+      async first<T>() {
+        if (this.query.includes("FROM editorial_documents"))
+          return document as T;
+        if (this.query.includes("FROM report_admin_permissions"))
+          return { found: 1 } as T;
+        return null as T | null;
+      }
+
+      async all<T>() {
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            results: [
+              { assignee_email: "Reviewer@Example.com" },
+              { assignee_email: "other@example.com, reviewer@example.com" },
+            ] as T[],
+          };
+        return { results: [] as T[] };
+      }
+    }
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/review-requests/${documentId}`,
+        {
+          method: "PATCH",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ reviewerEmails: ["reviewer@example.com"] }),
+        },
+      ),
+      {
+        ...emptyEnv,
+        REPORTS: {
+          ...emptyEnv.REPORTS,
+          prepare: (query: string) => new DuplicateAssignmentStatement(query),
+          batch: async () => {
+            batchCalled = true;
+            return [];
+          },
+        },
+      } as never,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("未完了のフィードバック依頼があります"),
+    });
+    expect(batchCalled).toBe(false);
   });
 
   it("withdraws the requester's active feedback task and returns its article to draft when it was the last request", async () => {
@@ -3836,12 +3932,30 @@ describe("admin worker editor APIs", () => {
       async first<T>() {
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
-        if (this.query.includes("FROM editorial_feedback_task_links"))
-          return { total: 2, done: 1 } as T;
         return null as T | null;
       }
 
       async all<T>() {
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            results: [
+              {
+                task_id: "task-1",
+                assignee_email: "reviewer@example.com",
+                status: "done",
+              },
+              {
+                task_id: "task-2",
+                assignee_email: "reviewer@example.com",
+                status: "doing",
+              },
+              {
+                task_id: "task-3",
+                assignee_email: "second@example.com",
+                status: "done",
+              },
+            ] as T[],
+          };
         if (this.query.includes("FROM editorial_workflow_roles"))
           return { results: [] as T[] };
         return { results: [] as T[] };
@@ -3956,12 +4070,20 @@ describe("admin worker editor APIs", () => {
       async first<T>() {
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
-        if (this.query.includes("FROM editorial_feedback_task_links"))
-          return { total: 1, done: 1 } as T;
         return null as T | null;
       }
 
       async all<T>() {
+        if (this.query.includes("FROM editorial_feedback_task_links link"))
+          return {
+            results: [
+              {
+                task_id: "task-1",
+                assignee_email: "reviewer@example.com",
+                status: "done",
+              },
+            ] as T[],
+          };
         if (this.query.includes("role = 'subject-coordinator'"))
           return { results: [{ email: "coordinator@example.com" }] as T[] };
         if (this.query.includes("role = 'project-leader'"))
