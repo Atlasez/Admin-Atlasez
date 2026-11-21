@@ -7,7 +7,7 @@
       "name": "atlasez-admin",
       "config": "wrangler.admin.jsonc",
       "production": {
-        "id": "5b90960b-9a96-42c4-873d-fef539de9b8f",
+        "id": "6600c747-b523-4c1f-856f-641885e5aafb",
         "source": "wrangler",
         "strategy": "percentage",
         "author_email": "ukyoukay0@gmail.com",
@@ -16,15 +16,15 @@
         },
         "versions": [
           {
-            "version_id": "fb0c7455-d6ac-43f9-9c20-fcaf01645087",
+            "version_id": "0c90bd6f-cc61-4624-8d82-ceb77178aaa1",
             "percentage": 100
           }
         ],
-        "created_on": "2026-10-03T09:56:11.155206Z"
+        "created_on": "2026-11-21T13:25:52.670513Z"
       },
       "recentDeployments": [
         {
-          "id": "918e24aa-0a18-44ad-b733-1bb5742e8983",
+          "id": "932696f1-c329-41c2-8277-e80b58dcd73b",
           "source": "wrangler",
           "strategy": "percentage",
           "author_email": "ukyoukay0@gmail.com",
@@ -33,14 +33,14 @@
           },
           "versions": [
             {
-              "version_id": "22412322-f64c-4519-a40f-f67e6ea402a7",
+              "version_id": "2d7783c3-a0d8-4c57-842f-60d900e3be22",
               "percentage": 100
             }
           ],
-          "created_on": "2026-09-29T04:14:16.683607Z"
+          "created_on": "2026-11-21T07:11:53.831143Z"
         },
         {
-          "id": "59accb03-8823-4117-94ce-04afe3f2076a",
+          "id": "b1a5d85f-2c44-486e-832a-9e69a8e85e1b",
           "source": "wrangler",
           "strategy": "percentage",
           "author_email": "ukyoukay0@gmail.com",
@@ -49,14 +49,14 @@
           },
           "versions": [
             {
-              "version_id": "dfafbcb5-d914-45e8-bca5-d07f8941a84e",
+              "version_id": "8b8b148e-96e6-4070-aae5-51b210433a51",
               "percentage": 100
             }
           ],
-          "created_on": "2026-09-29T04:31:20.282598Z"
+          "created_on": "2026-11-21T07:37:02.270183Z"
         },
         {
-          "id": "6ece7528-227b-4ac0-8729-3c3c9fed8bdc",
+          "id": "1ce66950-52b3-4200-b617-a74c057c757d",
           "source": "wrangler",
           "strategy": "percentage",
           "author_email": "ukyoukay0@gmail.com",
@@ -65,14 +65,14 @@
           },
           "versions": [
             {
-              "version_id": "0a82ed26-eac9-4cf9-930a-479e28200b4d",
+              "version_id": "9148d32b-d1a9-4771-b9dd-7700f6ec7476",
               "percentage": 100
             }
           ],
-          "created_on": "2026-09-29T06:33:52.794047Z"
+          "created_on": "2026-11-21T08:38:00.030024Z"
         },
         {
-          "id": "925736f0-aefd-488d-b4ff-ca4473fd5bab",
+          "id": "467fb4d8-02c3-4b1c-acd1-f38a53b856b4",
           "source": "wrangler",
           "strategy": "percentage",
           "author_email": "ukyoukay0@gmail.com",
@@ -81,14 +81,14 @@
           },
           "versions": [
             {
-              "version_id": "3cdea8cd-74c1-4ea8-bad0-a9e3e0b62ebd",
+              "version_id": "c8695f75-11b3-452d-a7c1-c9f7f2ac662e",
               "percentage": 100
             }
           ],
-          "created_on": "2026-09-29T06:42:08.763764Z"
+          "created_on": "2026-11-21T09:10:48.16713Z"
         },
         {
-          "id": "1e0b048d-2eaf-450a-98b1-a4f58569f114",
+          "id": "81be8844-d38f-4708-b723-8d458c91b077",
           "source": "wrangler",
           "strategy": "percentage",
           "author_email": "ukyoukay0@gmail.com",
@@ -97,14 +97,14 @@
           },
           "versions": [
             {
-              "version_id": "0f53dd1e-0ad8-476c-a389-7ba667c9ca86",
+              "version_id": "02fc7d48-e26e-4cd9-bd43-0906cc9c526a",
               "percentage": 100
             }
           ],
-          "created_on": "2026-09-29T08:31:06.517523Z"
+          "created_on": "2026-11-21T09:42:35.636132Z"
         },
         {
-          "id": "a30227a9-bec9-46ff-bb71-c538e420b740",
+          "id": "daca325c-53c6-43d0-a086-fcfde2513df4",
           "source": "wrangler",
           "strategy": "percentage",
           "author_email": "ukyoukay0@gmail.com",
@@ -113,14 +113,14 @@
           },
           "versions": [
             {
-              "version_id": "c5687738-a898-4250-bc66-8a22427da8e0",
+              "version_id": "8d907c82-12b5-41b4-82c3-158cbe86931f",
               "percentage": 100
             }
           ],
-          "created_on": "2026-09-29T08:57:17.911378Z"
+          "created_on": "2026-11-21T10:21:35.119079Z"
         },
         {
-          "id": "a859e353-b64d-4087-b109-10e2070a8f47",
+          "id": "5a65c8ce-5706-4d7a-aa25-3ebf680a7d2e",
           "source": "wrangler",
           "strategy": "percentage",
           "author_email": "ukyoukay0@gmail.com",
@@ -129,14 +129,14 @@
           },
           "versions": [
             {
-              "version_id": "2f9440ea-e4e3-4689-89d0-c8d27ac7d95f",
+              "version_id": "77664042-abf4-4bf1-98ef-1a759a6b18dc",
               "percentage": 100
             }
           ],
-          "created_on": "2026-09-29T10:57:59.445802Z"
+          "created_on": "2026-11-21T10:45:10.183077Z"
         },
         {
-          "id": "35b6c33c-4408-4447-9dcc-01ec2ecb3658",
+          "id": "89f35649-f35f-44fa-bab4-38ba97474bd9",
           "source": "wrangler",
           "strategy": "percentage",
           "author_email": "ukyoukay0@gmail.com",
@@ -145,14 +145,14 @@
           },
           "versions": [
             {
-              "version_id": "31b63b74-b814-47b9-9f9e-ea1becd47d6a",
+              "version_id": "9f559430-53da-42ef-a38b-e7a12e9ed4a3",
               "percentage": 100
             }
           ],
-          "created_on": "2026-10-02T19:47:44.838495Z"
+          "created_on": "2026-11-21T11:14:26.682316Z"
         },
         {
-          "id": "d43a851e-bb0d-4daf-8846-90b62ec7f13a",
+          "id": "73173613-d780-4c89-b6b5-c6fb57586187",
           "source": "wrangler",
           "strategy": "percentage",
           "author_email": "ukyoukay0@gmail.com",
@@ -161,14 +161,14 @@
           },
           "versions": [
             {
-              "version_id": "9ff091cb-6cfb-46d6-a168-0e519722026e",
+              "version_id": "136077f5-5a57-4587-a23d-e61eabcf3426",
               "percentage": 100
             }
           ],
-          "created_on": "2026-10-03T09:04:46.562459Z"
+          "created_on": "2026-11-21T12:46:55.50457Z"
         },
         {
-          "id": "5b90960b-9a96-42c4-873d-fef539de9b8f",
+          "id": "6600c747-b523-4c1f-856f-641885e5aafb",
           "source": "wrangler",
           "strategy": "percentage",
           "author_email": "ukyoukay0@gmail.com",
@@ -177,27 +177,27 @@
           },
           "versions": [
             {
-              "version_id": "fb0c7455-d6ac-43f9-9c20-fcaf01645087",
+              "version_id": "0c90bd6f-cc61-4624-8d82-ceb77178aaa1",
               "percentage": 100
             }
           ],
-          "created_on": "2026-10-03T09:56:11.155206Z"
+          "created_on": "2026-11-21T13:25:52.670513Z"
         }
       ],
       "buildInfo": {
         "url": "https://admin.atlasez.org/build-info.json",
         "status": 200,
-        "sha": "2f5c09cd7e07de70ceabb6ca354b0e080439a7b9",
+        "sha": "ee360c85935fe9cb424f1195d2fdf02b82b629d9",
         "ref": "main",
         "target": "admin",
-        "builtAt": "2026-10-03T09:54:44.301Z"
+        "builtAt": "2026-11-21T13:25:28.338Z"
       }
     },
     {
       "name": "atlasez01",
       "config": "wrangler.jsonc",
       "production": {
-        "id": "50ea2594-c9d5-41e3-a07f-9e1c0b7cbf6f",
+        "id": "31200357-fd2e-4818-8072-39e80bc1fa8c",
         "source": "wrangler",
         "strategy": "percentage",
         "author_email": "atlasez.adm@gmail.com",
@@ -206,45 +206,13 @@
         },
         "versions": [
           {
-            "version_id": "5e4b4853-0c38-4a4a-967e-15179b426dab",
+            "version_id": "2fa6da6b-0910-46cb-850f-385f1928b055",
             "percentage": 100
           }
         ],
-        "created_on": "2026-09-13T14:34:26.190406Z"
+        "created_on": "2026-11-13T17:34:51.8011Z"
       },
       "recentDeployments": [
-        {
-          "id": "35d3d57a-d7d9-44bf-96ed-a1a30fb90366",
-          "source": "wrangler",
-          "strategy": "percentage",
-          "author_email": "atlasez.adm@gmail.com",
-          "annotations": {
-            "workers/triggered_by": "deployment"
-          },
-          "versions": [
-            {
-              "version_id": "942b5455-d4d0-4881-b79b-07e08fafb0c0",
-              "percentage": 100
-            }
-          ],
-          "created_on": "2026-09-02T15:48:58.247779Z"
-        },
-        {
-          "id": "86c2a1c2-c5d3-4910-bb7a-40e1df127cc1",
-          "source": "wrangler",
-          "strategy": "percentage",
-          "author_email": "atlasez.adm@gmail.com",
-          "annotations": {
-            "workers/triggered_by": "deployment"
-          },
-          "versions": [
-            {
-              "version_id": "653306a8-8a67-446d-9159-97f29e38811d",
-              "percentage": 100
-            }
-          ],
-          "created_on": "2026-09-02T17:49:48.984646Z"
-        },
         {
           "id": "93cc902b-8470-4734-8663-3d92e25987ef",
           "source": "wrangler",
@@ -372,15 +340,48 @@
             }
           ],
           "created_on": "2026-09-13T14:34:26.190406Z"
+        },
+        {
+          "id": "9cef222c-b5e9-466e-b985-80316c977b3e",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "ukyoukay0@gmail.com",
+          "annotations": {
+            "workers/message": "GitHub main 2592d72ed31a47cf13780eb22c577e66e350fbe3",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "2acac521-9c51-46d1-a4cd-d282397b11df",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-11-11T23:01:55.685764Z"
+        },
+        {
+          "id": "31200357-fd2e-4818-8072-39e80bc1fa8c",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "atlasez.adm@gmail.com",
+          "annotations": {
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "2fa6da6b-0910-46cb-850f-385f1928b055",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-11-13T17:34:51.8011Z"
         }
       ],
       "buildInfo": {
         "url": "https://atlasez.org/build-info.json",
         "status": 200,
-        "sha": "17abea4ed6eeb97719dee60f57bc6b26d5d2d53a",
+        "sha": "f8f97a4375a67e6c6b44a96839d0c50784d928e8",
         "ref": "main",
         "target": null,
-        "builtAt": "2026-09-13T14:33:52.643Z"
+        "builtAt": "2026-11-13T17:34:01.313Z"
       }
     }
   ]
