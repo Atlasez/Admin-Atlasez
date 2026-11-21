@@ -17,7 +17,7 @@
 ### ADMIN Worker `atlasez-admin`
 
 - `EDITORIAL_RELEASE_WEBHOOK_SECRET`: 公開Workers Buildsと共有する署名鍵。
-- `CLOUDFLARE_WORKERS_READ_TOKEN`: 固定Accountの`atlasez01` Deployment/Version確認専用。Cloudflare API TokenはWorkers Scripts Readのみとする。
+- `CLOUDFLARE_WORKERS_READ_TOKEN`: 固定Accountの`atlasez01` Deployment/Version確認専用。Cloudflare API Tokenは`atlasez01`だけに割り当てる`Individual Workers Metadata Read-Only`とする。これはDeployment APIで受け付けられる最小の読み取りロールで、WorkerのソースやSecret値を読む権限はありません。
 
 ### 公開Worker `atlasez01` のWorkers Builds
 
@@ -27,7 +27,7 @@
 
 Build用Token、`EDITORIAL_RELEASE_WEBHOOK_SECRET`、`CLOUDFLARE_WORKERS_READ_TOKEN`は、用途と権限の異なる資格情報です。Build用TokenはWorkers BuildsのAPI token欄だけで選び、他のSecretやBuild variableへコピーしません。Secret値やAPI Token値はGit、PR、Issue、チャットへ記録しません。設定を変更する前に、対象名、権限、影響、復旧方法をPRで確認します。
 
-Cloudflareの[Workers Builds設定](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)はBuild用TokenをWorkerのアップロード・デプロイ認証に使います。[Workersの権限表](https://developers.cloudflare.com/workers/authorization/workers/)では、Version uploadに対象Workerの`Editor`が必要です。Tokenを作る際はCloudflareが提示する広い初期権限をそのまま使わず、`atlasez01`に限定します。
+Cloudflareの[Workers Builds設定](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)はBuild用TokenをWorkerのアップロード・デプロイ認証に使います。[Workersの権限表](https://developers.cloudflare.com/workers/authorization/workers/)では、Version uploadに対象Workerの`Editor`が必要です。Tokenを作る際はCloudflareが提示する広い初期権限をそのまま使わず、`atlasez01`に限定します。[Deployment一覧API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/deployments/methods/list/)は`Individual Workers Metadata Read-Only`を受け付けるため、ADMIN用読み取りTokenに書き込み権限やWorker Content権限は与えません。
 
 ## 2026-11-21の本番確認
 
@@ -43,7 +43,7 @@ Cloudflareの[Workers Builds設定](https://developers.cloudflare.com/workers/ci
 
 1. 最新mainのコードと本番migration一覧が一致し、候補APIに必要なmigrationが適用済みであることを確認する。未適用なら、バックアップ・migrationレビュー・明示した適用手順を先に完了する。
 2. 本番設定変更のレビューを完了してから、Cloudflare上でBuild用ユーザーAPI Tokenを作成し、Worker単位の`Editor`を`atlasez01`だけに付与して、公開WorkerのWorkers Builds API tokenとして選択する。`atlasez01`のProduction branchは`main`、Build/Deploy commandはリポジトリの検証済み設定を維持する。
-3. ADMIN Workerへ`EDITORIAL_RELEASE_WEBHOOK_SECRET`と`CLOUDFLARE_WORKERS_READ_TOKEN`を登録する。読み取りTokenは固定Account内の`atlasez01` Deployment/Version参照に必要な読み取り権限だけにする。
+3. ADMIN Workerへ`EDITORIAL_RELEASE_WEBHOOK_SECRET`と`CLOUDFLARE_WORKERS_READ_TOKEN`を登録する。読み取りTokenは固定Account内の`atlasez01`だけに`Individual Workers Metadata Read-Only`を付与する。
 4. 公開Workers Buildsに上記Endpointと共有Secretを登録する。Admin側の署名鍵が先に登録されていることを確かめてからBuild設定を保存する。設定変更はWorker Versionを作る場合があるため、Workers BuildsとDeployment履歴をその都度照合する。
 5. `atlasez01`のWorkers Buildsが`main`をcheckoutし、Build checkout SHA、Build結果、候補APIのD1登録、公開Versionの100%配信を記録したことを確認する。別経路のWrangler deployや手動Version切替は行わない。
 6. `https://atlasez.org/build-info.json`のSHA、CloudflareのVersion/Deployment、ADMIN D1の公開候補・公開履歴を突き合わせる。

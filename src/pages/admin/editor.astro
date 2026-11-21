@@ -2343,7 +2343,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
           const item = document.createElement("li");
           const descriptions: Record<string, string> = {
             EDITORIAL_RELEASE_WEBHOOK_SECRET: "候補保存の署名鍵。ADMIN WorkerとWorkers Buildsの両方に同じ値が必要です。",
-            CLOUDFLARE_WORKERS_READ_TOKEN: "atlasez01のDeployment/Versionを読むWorkers Scripts Read専用Tokenです。",
+            CLOUDFLARE_WORKERS_READ_TOKEN: "atlasez01のDeployment/Versionを読む、atlasez01限定のMetadata Read-Only Tokenです。",
           };
           item.textContent = `${requirement} — ${descriptions[requirement] ?? "設定を確認してください。"}`;
           return item;
