@@ -85,6 +85,38 @@ for (const width of [1440, 800, 390]) {
   });
 }
 
+test("受付処理の復旧が必要な応募を一覧で知らせる", async ({ page }) => {
+  await page.route("**/api/admin/**", async (route) => {
+    const url = new URL(route.request().url());
+    await route.fulfill({
+      json:
+        url.pathname === "/api/admin/applications"
+          ? {
+              applications: [
+                {
+                  id: "application-needs-reconciliation",
+                  family_name: "確認",
+                  given_name: "必要",
+                  status: "new",
+                  created_at: "2026-11-18T09:00:00Z",
+                  intake_reconciliation_required: true,
+                },
+              ],
+            }
+          : {},
+    });
+  });
+
+  await page.goto("./admin/applications/?project=atlas");
+
+  await expect(page.locator(".provisioning-error")).toContainText(
+    "受付処理の一部を照合できておらず",
+  );
+  await expect(
+    page.getByRole("link", { name: "応募者対応を開く →" }),
+  ).toBeVisible();
+});
+
 test("最初の50件にない応募者もURLから復元する", async ({ page }) => {
   const requestedId = "older-applicant";
   let requestedApplicant = false;
