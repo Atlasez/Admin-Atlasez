@@ -167,12 +167,15 @@ describe("ADMIN Workers Builds-only production policy", () => {
       steps.find((step) => step.name === "Verify ADMIN build metadata")?.run ??
       "";
     for (const invariant of [
-      'info.repository !== "Atlasez/Admin-Atlesez"',
+      "info.repository !== process.env.EXPECTED_REPOSITORY",
       "info.commit !== process.env.BUILD_SHA",
       'info.ref !== "main"',
       'info.target !== "admin"',
     ])
       expect(identity).toContain(invariant);
+    expect(
+      steps.find((step) => step.name === "Verify ADMIN build metadata")?.env,
+    ).toMatchObject({ EXPECTED_REPOSITORY: "${{ github.repository }}" });
     expect(
       steps.find((step) => step.uses === "actions/upload-artifact@v6")?.with,
     ).toMatchObject({
