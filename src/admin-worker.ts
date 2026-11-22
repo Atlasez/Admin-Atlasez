@@ -20734,8 +20734,12 @@ async function verifyEditorialReleaseRequest(
   return null;
 }
 
-const editorialReleaseDocumentArticleId = (document: Pick<EditorialDocument, "source_article_id" | "locale" | "subject" | "category" | "slug">) =>
-  document.source_article_id ?? `${document.locale}-${document.subject}-${document.category}-${document.slug}`;
+const editorialReleaseDocumentArticlePath = (
+  document: Pick<EditorialDocument, "locale" | "subject" | "category" | "slug">,
+) => editorialArticlePath(document);
+const editorialReleaseDocumentArticleIdentity = (
+  document: Pick<EditorialDocument, "locale" | "subject" | "category" | "slug">,
+) => editorialArticleIdentity(document);
 
 async function linkEditorialPublicationRunsToCandidate(
   env: Env,
@@ -20796,6 +20800,22 @@ async function registerEditorialReleaseCandidate(
   const repository = env.GITHUB_REPOSITORY ?? "Atlasez/Atlasez01";
   if (payload.repository !== repository)
     return json({ error: "公開候補のrepositoryが公開連携設定と一致しません。" }, 409);
+
+  // Cloudflare切替後ではなく、候補Versionへ進む前に読み取り資格情報を
+  // 検証する。未設定・権限不足・API障害のまま本番だけ切り替わるのを防ぐ。
+  try {
+    await getCurrentEditorialWorkerDeployment(env);
+  } catch (error) {
+    const failure = publicationFailureDetails(error);
+    return json(
+      {
+        error: `公開Workerの配信状況を事前確認できないため、切替を停止しました。${failure.message}`,
+        code: failure.code,
+      },
+      publicationFailureStatus(failure),
+    );
+  }
+
   const normalizedCommit = payload.commitSha.toLowerCase();
   const manifestHash = await editorialReleaseManifestHash(normalizedCommit, manifest);
   const existing = await env.REPORTS.prepare(
@@ -20839,15 +20859,137 @@ async function registerEditorialReleaseCandidate(
       `SELECT id, source_article_id, locale, subject, category, slug, current_version_id, published_version_id
          FROM editorial_documents`,
     ).all<Pick<EditorialDocument, "id" | "source_article_id" | "locale" | "subject" | "category" | "slug" | "current_version_id" | "published_version_id">>();
-    const docsByArticleId = new Map<string, EditorialDocument>();
+    const documentsById = new Map<string, EditorialDocument>();
+    const documentsByPath = new Map<string, EditorialDocument[]>();
     for (const document of documents.results ?? []) {
-      const articleId = editorialReleaseDocumentArticleId(document);
-      if (docsByArticleId.has(articleId))
-        return json({ error: "D1で同じarticleIdの原稿が複数見つかりました。", code: "release_article_ambiguous" }, 409);
-      docsByArticleId.set(articleId, document as EditorialDocument);
+      const typedDocument = document as EditorialDocument;
+      documentsById.set(typedDocument.id, typedDocument);
+      const articlePath = editorialReleaseDocumentArticlePath(typedDocument);
+      documentsByPath.set(articlePath, [
+        ...(documentsByPath.get(articlePath) ?? []),
+        typedDocument,
+      ]);
     }
+    const catalogPaths = [...new Set(manifest.map((entry) => entry.path))];
+    const catalogIdentities = [
+      ...new Set(
+        manifest.flatMap((entry) =>
+          (documentsByPath.get(entry.path) ?? []).map(
+            editorialReleaseDocumentArticleIdentity,
+          ),
+        ),
+      ),
+    ];
+    const catalogRows: Array<{
+      path: string;
+      identity_key: string;
+      source_article_id: string | null;
+      document_id: string | null;
+    }> = [];
+    const catalogChunkSize = editorialReleaseD1MaxBoundParameters - 1;
+    for (const [column, values] of [
+      ["path", catalogPaths],
+      ["identity_key", catalogIdentities],
+    ] as const) {
+      for (let offset = 0; offset < values.length; offset += catalogChunkSize) {
+        const chunk = values.slice(offset, offset + catalogChunkSize);
+        const rows = await env.REPORTS.prepare(
+          `SELECT path, identity_key, source_article_id, document_id
+             FROM editorial_article_catalog
+            WHERE repository = ? AND ${column} IN (${chunk.map(() => "?").join(",")})`,
+        )
+          .bind(repository, ...chunk)
+          .all<{
+            path: string;
+            identity_key: string;
+            source_article_id: string | null;
+            document_id: string | null;
+          }>();
+        catalogRows.push(...(rows.results ?? []));
+      }
+    }
+    const catalogByPath = new Map(
+      catalogRows.map((row) => [row.path, row]),
+    );
+    const catalogByIdentity = new Map(
+      catalogRows.map((row) => [row.identity_key, row]),
+    );
     const resolved = manifest.map((entry) => {
-      const document = docsByArticleId.get(entry.articleId);
+      const pathDocuments = documentsByPath.get(entry.path) ?? [];
+      const catalog =
+        catalogByPath.get(entry.path) ??
+        pathDocuments
+          .map((document) =>
+            catalogByIdentity.get(
+              editorialReleaseDocumentArticleIdentity(document),
+            ),
+          )
+          .find((row) => row !== undefined);
+      if (
+        catalog?.source_article_id &&
+        catalog.source_article_id !== entry.articleId
+      )
+        return {
+          ...entry,
+          documentId: null,
+          versionId: null,
+          identityError: json(
+            {
+              error: `公開記事「${entry.articleId}」のパスとD1カタログのarticleIdが一致しません（${entry.path}）。`,
+              code: "release_article_identity_mismatch",
+            },
+            409,
+          ),
+        };
+      const catalogDocument = catalog?.document_id
+        ? documentsById.get(catalog.document_id)
+        : undefined;
+      if (
+        catalogDocument &&
+        editorialReleaseDocumentArticlePath(catalogDocument) !== entry.path
+      )
+        return {
+          ...entry,
+          documentId: null,
+          versionId: null,
+          identityError: json(
+            {
+              error: `公開記事「${entry.articleId}」のパスとD1カタログの原稿が一致しません（${entry.path}）。`,
+              code: "release_article_identity_mismatch",
+            },
+            409,
+          ),
+        };
+      if (!catalogDocument && pathDocuments.length > 1)
+        return {
+          ...entry,
+          documentId: null,
+          versionId: null,
+          identityError: json(
+            {
+              error: `公開記事「${entry.articleId}」に一致する運営原稿が複数あります（${entry.path}）。`,
+              code: "release_article_ambiguous",
+            },
+            409,
+          ),
+        };
+      const document = catalogDocument ?? pathDocuments[0];
+      if (
+        document?.source_article_id &&
+        document.source_article_id !== entry.articleId
+      )
+        return {
+          ...entry,
+          documentId: null,
+          versionId: null,
+          identityError: json(
+            {
+              error: `公開記事「${entry.articleId}」と運営原稿のarticleIdが一致しません（${entry.path}）。`,
+              code: "release_article_identity_mismatch",
+            },
+            409,
+          ),
+        };
       const versionId = entry.versionId ?? (
         entry.status === "published"
           ? document?.published_version_id
@@ -20855,6 +20997,9 @@ async function registerEditorialReleaseCandidate(
       ) ?? null;
       return { ...entry, documentId: document?.id ?? null, versionId };
     });
+    const identityFailure = resolved.find((entry) => "identityError" in entry);
+    if (identityFailure && "identityError" in identityFailure)
+      return identityFailure.identityError;
     const versionIds = [...new Set(resolved.map((entry) => entry.versionId).filter((id): id is string => Boolean(id)))];
     const versionDocuments = new Map<string, string>();
     for (
