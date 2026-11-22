@@ -66,12 +66,21 @@ class ReleaseDatabase {
     {
       id: documentId,
       source_article_id: article.articleId,
-      locale: "jpn",
+      locale: "ja",
       subject: "mathematics",
       category: "set-theory",
       slug: "sets",
       current_version_id: articleVersionId,
       published_version_id: articleVersionId,
+    },
+  ];
+  catalogRows: Array<Record<string, unknown>> = [
+    {
+      path: article.path,
+      identity_key: "ja/mathematics/set-theory/sets",
+      repository: "Atlasez/Atlasez01",
+      source_article_id: article.articleId,
+      document_id: documentId,
     },
   ];
   revisionRows: Array<Record<string, unknown>> = [
@@ -123,6 +132,14 @@ class ReleaseDatabase {
     this.queryBindingCounts.push(bindings.length);
     if (bindings.length > 100)
       throw new Error("D1 permits at most 100 bound parameters per query");
+    if (query.includes("FROM editorial_article_catalog")) {
+      const keys = new Set(bindings.slice(1));
+      return {
+        results: this.catalogRows.filter(
+          (row) => keys.has(row.path) || keys.has(row.identity_key),
+        ) as T[],
+      };
+    }
     if (query.includes("FROM editorial_documents"))
       return { results: this.documentRows as T[] };
     if (query.includes("FROM editorial_document_revisions"))
@@ -225,6 +242,56 @@ describe("記事公開候補の永続化と切替復旧", () => {
     expect(cloudflareFetch).not.toHaveBeenCalled();
   });
 
+  it("同じarticleIdの別原稿が残っていても公開パスのカタログ紐付けで解決する", async () => {
+    const database = new ReleaseDatabase();
+    database.catalogRows[0].path =
+      "src/content/articles/ja/mathematics/set-theory/sets.md";
+    const duplicateDocumentId = "33333333-3333-4333-8333-333333333333";
+    const duplicateVersionId = "e3aa94a0-fd78-4d4a-bf88-7284c5cebf57";
+    database.documentRows.push({
+      id: duplicateDocumentId,
+      source_article_id: article.articleId,
+      locale: "ja",
+      subject: "mathematics",
+      category: "abstract-algebra",
+      slug: "groups",
+      current_version_id: duplicateVersionId,
+      published_version_id: duplicateVersionId,
+    });
+    database.revisionRows.push({
+      id: duplicateVersionId,
+      document_id: duplicateDocumentId,
+    });
+    const body = JSON.stringify(candidatePayload());
+    vi.stubGlobal("fetch", vi.fn());
+
+    const response = await worker.fetch(
+      new Request(
+        "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+        {
+          method: "POST",
+          headers: await signedHeaders(body),
+          body,
+        },
+      ),
+      {
+        REPORTS: database,
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        GITHUB_REPOSITORY: "Atlasez/Atlasez01",
+      } as never,
+    );
+
+    const responseBody = await response.json();
+    expect(response.status, JSON.stringify(responseBody)).toBe(200);
+    const savedArticle = database.batches
+      .flat()
+      .find(({ query }) =>
+        query.includes("INSERT INTO editorial_release_candidate_articles"),
+      );
+    expect(savedArticle?.bindings).toContain(documentId);
+    expect(savedArticle?.bindings).not.toContain(duplicateDocumentId);
+  });
+
   it("41件を超える記事版をD1の100 bind上限内で候補登録する", async () => {
     const entries = Array.from({ length: 201 }, (_, index) => {
       const sequence = String(index + 1).padStart(12, "0");
@@ -239,7 +306,7 @@ describe("記事公開候補の永続化と切替復旧", () => {
     database.documentRows = entries.map((entry, index) => ({
       id: `22222222-2222-4222-8222-${String(index + 1).padStart(12, "0")}`,
       source_article_id: entry.articleId,
-      locale: "jpn",
+      locale: "ja",
       subject: "mathematics",
       category: "set-theory",
       slug: `article-${index + 1}`,
@@ -249,6 +316,13 @@ describe("記事公開候補の永続化と切替復旧", () => {
     database.revisionRows = database.documentRows.map((document) => ({
       id: document.current_version_id,
       document_id: document.id,
+    }));
+    database.catalogRows = entries.map((entry, index) => ({
+      path: entry.path,
+      identity_key: `ja/mathematics/set-theory/article-${index + 1}`,
+      repository: "Atlasez/Atlasez01",
+      source_article_id: entry.articleId,
+      document_id: database.documentRows[index].id,
     }));
     const body = JSON.stringify(candidatePayload(entries));
     vi.stubGlobal("fetch", vi.fn());
