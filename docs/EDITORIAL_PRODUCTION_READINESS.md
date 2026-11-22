@@ -19,6 +19,8 @@
 - `EDITORIAL_RELEASE_WEBHOOK_SECRET`: 公開Workers Buildsと共有する署名鍵。
 - `CLOUDFLARE_WORKERS_READ_TOKEN`: 固定Accountの`atlasez01` Deployment/Version確認専用。Cloudflare API Tokenは`atlasez01`だけに割り当てる`Individual Workers Metadata Read-Only`とする。これはDeployment APIで受け付けられる最小の読み取りロールで、WorkerのソースやSecret値を読む権限はありません。
 
+候補APIはD1へ候補を書き込む前にこのTokenで現在のDeployment APIを照会します。Tokenが未設定・無効・権限不足、またはCloudflare APIが利用できない場合は候補APIを失敗させ、Workers Builds側の`wrangler versions deploy`へ進ませません。未設定のまま公開だけが切り替わる状態を作らないため、再試行前にADMIN Workerの設定を確認してください。
+
 ### 公開Worker `atlasez01` のWorkers Builds
 
 - Workers Buildsの`Settings > Builds > API token`: ここで選ぶのはBuild実行時にWorkerをアップロード・配信するためのBuild用トークン。Cloudflareは現在user tokenをサポートし、`Create new token`の初期設定はAccount Settings read、Workers Scripts edit、KV edit、R2 edit、全ZoneのWorkers Routes edit、User Details read、Memberships readを含む。初期権限のまま使わず、My Profile > API Tokensで固定Accountの`Workers Scripts:Edit`だけに絞る。これはユーザーが承認した全Worker向け権限であり、`atlasez01`に限定されず同じAccount内の全Workerを更新・配信できる。`atlasez01`のWorkers Buildsにだけ割り当てる。初回デプロイが追加権限を要求した場合は自動でscopeを追加せず、必要scopeとWorker設定を再確認する。
@@ -38,6 +40,13 @@ Cloudflareの[Workers Builds設定](https://developers.cloudflare.com/workers/ci
 - 正しいAccountとD1を指定して本番migration一覧を読み取り、`No migrations to apply!`を確認しました。`0139_editorial_release_candidates.sql`の追加適用は不要です。
 - 最新の読み取り確認ではADMINの`build-info.json`がmain commit `71baddae5550dfa1d6571b9887f0e091c2c60db9`を返し、CloudflareのADMIN Build/Versionは成功・100%配信でした。公開サイトの`build-info.json`は`f8f97a4375a67e6c6b44a96839d0c50784d928e8`のままです。
 - 現時点では公開Workerの自動リリース設定が未完了です。実際の記事を公開・取り消ししての受入確認はまだ行っていません。
+
+## 2026-11-22の追加確認
+
+- ADMIN修正PR #627は`main`へマージされ、ADMIN Worker `atlasez-admin`のBuildはmain SHA `2f3c2ec7186e14387a401e1b5bb7d9a4d9549d76`で成功・100%配信されています。`https://admin.atlasez.org/build-info.json`も同じSHAを返します。
+- 公開Worker `atlasez01`の最新Build `ef66113c-4666-405a-a404-9e8e9e50391c`（main SHA `9eb801ca86eab67f5a6c51212f9ff7d8fc43e46e`）は候補Version `a745728d`を作成しましたが、候補登録時の`release_article_ambiguous`で失敗しました。Cloudflare Deploymentsでは候補は0%のまま、既存Version `2fa6da6b`が100%配信中です。`https://atlasez.org/build-info.json`も既存main SHA `f8f97a4375a67e6c6b44a96839d0c50784d928e8`を返しており、公開配信は変わっていません。
+- `atlasez-admin`には`CLOUDFLARE_WORKERS_READ_TOKEN`が未設定です。PR #627のパス解決修正だけで公開Buildを再試行すると、履歴照合に失敗する可能性があるため、読み取り資格情報を候補登録前に検証するガードを追加しています。このガードが本番反映されるまでは公開Buildを再試行しません。
+- 公開候補Webhookは`release_article_ambiguous`を返すところまで到達しており、Endpointと署名鍵は候補API通信に使われています。残る設定ブロッカーは`atlasez01`限定のMetadata Read-Only Tokenです。読み取りTokenがCloudflareで作成・設定されるまで、記事の公開・取り消し受入試験は行いません。
 
 ## 適用順と受入確認
 

@@ -20800,6 +20800,22 @@ async function registerEditorialReleaseCandidate(
   const repository = env.GITHUB_REPOSITORY ?? "Atlasez/Atlasez01";
   if (payload.repository !== repository)
     return json({ error: "公開候補のrepositoryが公開連携設定と一致しません。" }, 409);
+
+  // Cloudflare切替後ではなく、候補Versionへ進む前に読み取り資格情報を
+  // 検証する。未設定・権限不足・API障害のまま本番だけ切り替わるのを防ぐ。
+  try {
+    await getCurrentEditorialWorkerDeployment(env);
+  } catch (error) {
+    const failure = publicationFailureDetails(error);
+    return json(
+      {
+        error: `公開Workerの配信状況を事前確認できないため、切替を停止しました。${failure.message}`,
+        code: failure.code,
+      },
+      publicationFailureStatus(failure),
+    );
+  }
+
   const normalizedCommit = payload.commitSha.toLowerCase();
   const manifestHash = await editorialReleaseManifestHash(normalizedCommit, manifest);
   const existing = await env.REPORTS.prepare(

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/admin-worker";
 
 const secret = "editorial-release-secret";
+const cloudflareReadToken = "worker-metadata-read-token";
 const versionId = "c3aa94a0-fd78-4d4a-bf88-7284c5cebf57";
 const articleVersionId = "d3aa94a0-fd78-4d4a-bf88-7284c5cebf57";
 const commitSha = "a".repeat(40);
@@ -193,6 +194,25 @@ function candidatePayload(entries = [article]) {
   };
 }
 
+function currentDeploymentResponse() {
+  return Response.json({
+    success: true,
+    result: {
+      deployments: [
+        {
+          id: "deployment-current",
+          versions: [
+            {
+              version_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              percentage: 100,
+            },
+          ],
+        },
+      ],
+    },
+  });
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -201,7 +221,10 @@ describe("記事公開候補の永続化と切替復旧", () => {
   it("候補に含まれる記事とD1版IDを切替前に一括保存する", async () => {
     const database = new ReleaseDatabase();
     const body = JSON.stringify(candidatePayload());
-    const cloudflareFetch = vi.fn();
+    const cloudflareFetch = vi.fn(
+      (_input: RequestInfo | URL, _init?: RequestInit) =>
+        currentDeploymentResponse(),
+    );
     vi.stubGlobal("fetch", cloudflareFetch);
 
     const response = await worker.fetch(
@@ -216,6 +239,7 @@ describe("記事公開候補の永続化と切替復旧", () => {
       {
         REPORTS: database,
         EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
         GITHUB_REPOSITORY: "Atlasez/Atlasez01",
       } as never,
     );
@@ -239,7 +263,15 @@ describe("記事公開候補の永続化と切替復旧", () => {
           bindings.includes(articleVersionId),
       ),
     ).toBe(true);
-    expect(cloudflareFetch).not.toHaveBeenCalled();
+    expect(cloudflareFetch).toHaveBeenCalledOnce();
+    expect(cloudflareFetch.mock.calls[0][0]).toBe(
+      "https://api.cloudflare.com/client/v4/accounts/812021e62fa20465950b61be55dfe064/workers/scripts/atlasez01/deployments?per_page=1",
+    );
+    expect(cloudflareFetch.mock.calls[0][1]).toMatchObject({
+      headers: {
+        authorization: `Bearer ${cloudflareReadToken}`,
+      },
+    });
   });
 
   it("同じarticleIdの別原稿が残っていても公開パスのカタログ紐付けで解決する", async () => {
@@ -263,7 +295,7 @@ describe("記事公開候補の永続化と切替復旧", () => {
       document_id: duplicateDocumentId,
     });
     const body = JSON.stringify(candidatePayload());
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(currentDeploymentResponse));
 
     const response = await worker.fetch(
       new Request(
@@ -277,6 +309,7 @@ describe("記事公開候補の永続化と切替復旧", () => {
       {
         REPORTS: database,
         EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
         GITHUB_REPOSITORY: "Atlasez/Atlasez01",
       } as never,
     );
@@ -325,7 +358,7 @@ describe("記事公開候補の永続化と切替復旧", () => {
       document_id: database.documentRows[index].id,
     }));
     const body = JSON.stringify(candidatePayload(entries));
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(currentDeploymentResponse));
 
     const response = await worker.fetch(
       new Request(
@@ -339,6 +372,7 @@ describe("記事公開候補の永続化と切替復旧", () => {
       {
         REPORTS: database,
         EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
         GITHUB_REPOSITORY: "Atlasez/Atlasez01",
       } as never,
     );
@@ -406,6 +440,70 @@ describe("記事公開候補の永続化と切替復旧", () => {
       } as never,
     );
     expect(malformedEntryResponse.status).toBe(400);
+  });
+
+  it("読み取りTokenが未設定なら候補をD1へ記録せず配信前に止める", async () => {
+    const database = new ReleaseDatabase();
+    const body = JSON.stringify(candidatePayload());
+    const cloudflareFetch = vi.fn();
+    vi.stubGlobal("fetch", cloudflareFetch);
+
+    const response = await worker.fetch(
+      new Request(
+        "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+        {
+          method: "POST",
+          headers: await signedHeaders(body),
+          body,
+        },
+      ),
+      {
+        REPORTS: database,
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        GITHUB_REPOSITORY: "Atlasez/Atlasez01",
+      } as never,
+    );
+
+    const responseBody = await response.json();
+    expect(response.status, JSON.stringify(responseBody)).toBe(503);
+    expect(responseBody.code).toBe("cloudflare_read_token_missing");
+    expect(database.batches).toHaveLength(0);
+    expect(cloudflareFetch).not.toHaveBeenCalled();
+  });
+
+  it("読み取りTokenがCloudflareに拒否された場合も候補登録前に止める", async () => {
+    const database = new ReleaseDatabase();
+    const body = JSON.stringify(candidatePayload());
+    const cloudflareFetch = vi.fn(() =>
+      Response.json(
+        { success: false, errors: [{ code: 10000 }] },
+        { status: 403 },
+      ),
+    );
+    vi.stubGlobal("fetch", cloudflareFetch);
+
+    const response = await worker.fetch(
+      new Request(
+        "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+        {
+          method: "POST",
+          headers: await signedHeaders(body),
+          body,
+        },
+      ),
+      {
+        REPORTS: database,
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+        GITHUB_REPOSITORY: "Atlasez/Atlasez01",
+      } as never,
+    );
+
+    const responseBody = await response.json();
+    expect(response.status, JSON.stringify(responseBody)).toBe(503);
+    expect(responseBody.code).toBe("cloudflare_deployment_lookup_failed");
+    expect(database.batches).toHaveLength(0);
+    expect(cloudflareFetch).toHaveBeenCalledOnce();
   });
 
   it("D1の公開履歴書き込みが一時失敗してもCronが現行Versionを照合して補修する", async () => {
