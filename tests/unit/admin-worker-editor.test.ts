@@ -2580,6 +2580,210 @@ describe("admin worker editor APIs", () => {
     },
   );
 
+  it("lets project leaders inspect a pending deletion request and its revisions read-only", async () => {
+    const documentId = "22222222-2222-4222-8222-222222222222";
+    const requester = "author@example.test";
+    const article = {
+      id: documentId,
+      creator_kind: "person",
+      source_article_id: null,
+      subject: "mathematics",
+      category: "algebra",
+      locale: "ja",
+      slug: "deletion-review",
+      title: "削除審査の記事",
+      summary: "審査用の要約",
+      concept_id: "",
+      concept_name: null,
+      concept_name_en: null,
+      concept_is_new: 0,
+      body: "削除申請の対象本文",
+      writing_memo: "編集メモ",
+      latex_engine: "katex",
+      status: "draft",
+      created_by: requester,
+      updated_by: requester,
+      created_at: "2026-10-12T00:00:00.000Z",
+      updated_at: "2026-10-12T00:00:00.000Z",
+      reviewed_at: null,
+      published_at: null,
+      deleted_at: null,
+      deleted_by: null,
+      current_version_id: "version-current",
+      published_version_id: null,
+      scheduled_publish_at: null,
+      scheduled_publish_claimed_at: null,
+      publication_review_stage: null,
+      publication_review_round: 0,
+      publication_pr_number: null,
+      publication_pr_url: null,
+      publication_branch: null,
+      publication_action: null,
+      publication_requested_at: null,
+      locked_ranges: "[]",
+      article_references: "[]",
+    };
+    class DeletionReviewStatement extends EmptyStatement {
+      private values: unknown[] = [];
+
+      bind(...values: unknown[]) {
+        super.bind(...values);
+        this.values = values;
+        return this;
+      }
+
+      async all<T>() {
+        if (this.query.includes("SELECT subject FROM report_admin_permissions"))
+          return { results: [] as T[] };
+        if (
+          this.query.includes(
+            "SELECT role, subject FROM editorial_workflow_roles",
+          )
+        )
+          return {
+            results: [{ role: "project-leader", subject: "" }] as T[],
+          };
+        if (this.query.includes("FROM editorial_document_revisions r"))
+          return {
+            results: [
+              {
+                id: "version-current",
+                title: "削除審査の記事",
+                summary: "審査用の要約",
+                body: "削除申請の対象本文",
+                status: "draft",
+                saved_by: requester,
+                saved_at: "2026-10-12T00:00:00.000Z",
+                snapshot_json: null,
+                is_current_version: 1,
+                is_published_version: 0,
+                saved_by_display_name: requester,
+                saved_by_avatar_url: "",
+              },
+            ] as T[],
+          };
+        return { results: [] as T[] };
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM atlasez_project_member_lifecycle"))
+          return null as T | null;
+        if (this.query.includes("FROM editorial_document_deletion_requests r"))
+          return this.values[1] === requester
+            ? (null as T | null)
+            : ({ can_read: 1 } as T);
+        if (this.query.includes("FROM editorial_documents WHERE id = ?"))
+          return article as T;
+        return null as T | null;
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      ADMIN_AUTH_MODE: "cloudflare-access",
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new DeletionReviewStatement(query),
+      },
+    };
+    const headers = {
+      "Cf-Access-Authenticated-User-Email": "leader@example.test",
+    };
+
+    const documentResponse = await worker.fetch(
+      new Request(
+        `https://admin.example/api/admin/editor/documents/${documentId}`,
+        { headers },
+      ),
+      env as never,
+    );
+    expect(documentResponse.status).toBe(200);
+    await expect(documentResponse.json()).resolves.toMatchObject({
+      document: {
+        id: documentId,
+        body: "削除申請の対象本文",
+        read_only: true,
+      },
+      comments: [],
+    });
+
+    const revisionsResponse = await worker.fetch(
+      new Request(
+        `https://admin.example/api/admin/editor/documents/${documentId}/revisions`,
+        { headers },
+      ),
+      env as never,
+    );
+    expect(revisionsResponse.status).toBe(200);
+    await expect(revisionsResponse.json()).resolves.toMatchObject({
+      revisions: [{ id: "version-current", body: "削除申請の対象本文" }],
+      feedbackRequests: [],
+    });
+  });
+
+  it("does not grant deletion-review article access to the requester", async () => {
+    const documentId = "22222222-2222-4222-8222-222222222222";
+    class RequesterStatement extends EmptyStatement {
+      private values: unknown[] = [];
+
+      bind(...values: unknown[]) {
+        super.bind(...values);
+        this.values = values;
+        return this;
+      }
+
+      async all<T>() {
+        if (
+          this.query.includes(
+            "SELECT role, subject FROM editorial_workflow_roles",
+          )
+        )
+          return {
+            results: [{ role: "project-leader", subject: "" }] as T[],
+          };
+        return { results: [] as T[] };
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM atlasez_project_member_lifecycle"))
+          return null as T | null;
+        if (this.query.includes("FROM editorial_document_deletion_requests r"))
+          return this.values[1] === "requester@example.test"
+            ? (null as T | null)
+            : ({ can_read: 1 } as T);
+        if (this.query.includes("FROM editorial_documents WHERE id = ?"))
+          return {
+            id: documentId,
+            subject: "physics",
+            status: "draft",
+            publication_review_stage: null,
+            created_by: "requester@example.test",
+            deleted_at: null,
+          } as T;
+        return null as T | null;
+      }
+    }
+    const response = await worker.fetch(
+      new Request(
+        `https://admin.example/api/admin/editor/documents/${documentId}`,
+        {
+          headers: {
+            "Cf-Access-Authenticated-User-Email": "requester@example.test",
+          },
+        },
+      ),
+      {
+        ...emptyEnv,
+        ADMIN_AUTH_MODE: "cloudflare-access",
+        REPORTS: {
+          ...emptyEnv.REPORTS,
+          prepare: (query: string) => new RequesterStatement(query),
+        },
+      } as never,
+    );
+
+    expect(response.status).toBe(403);
+  });
+
   it("returns all article scope for the designated primary operator", async () => {
     const documentQueries: string[] = [];
     class GlobalStatement extends EmptyStatement {

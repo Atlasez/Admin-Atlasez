@@ -6328,6 +6328,25 @@ const canReviewDocument = (
     scope.isProjectLeader) ||
   (scope.isManager && document.status === "in-review");
 
+async function canReadEditorialDocumentForDeletionReview(
+  env: Env,
+  scope: AdminScope,
+  documentId: string,
+): Promise<boolean> {
+  if (!scope.isManager && !scope.isProjectLeader) return false;
+  const request = await env.REPORTS.prepare(
+    `SELECT 1 AS can_read
+       FROM editorial_document_deletion_requests r
+       JOIN editorial_documents d ON d.id=r.document_id
+      WHERE r.document_id=? AND r.status='pending'
+        AND lower(r.requested_by)<>lower(?) AND d.deleted_at IS NULL
+      LIMIT 1`,
+  )
+    .bind(documentId, scope.email)
+    .first<{ can_read: number }>();
+  return Boolean(request);
+}
+
 const canCoordinateSubject = (scope: AdminScope, subject: string) =>
   Boolean(
     scope.allSubjects ||
@@ -6494,7 +6513,7 @@ const editorialAssetDocument = async (
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
   const document = await env.REPORTS.prepare(
-    "SELECT id, subject, status, publication_review_stage, created_by FROM editorial_documents WHERE id = ?",
+    "SELECT id, subject, status, publication_review_stage, created_by, deleted_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
     .first<
@@ -6505,12 +6524,19 @@ const editorialAssetDocument = async (
         | "status"
         | "publication_review_stage"
         | "created_by"
+        | "deleted_at"
       >
       >();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (!canReviewDocument(scope, document))
+  if (document.deleted_at)
+    return json({ error: "削除済みの記事の素材は扱えません。" }, 410);
+  const canReview = canReviewDocument(scope, document);
+  const readOnly =
+    !canReview &&
+    (await canReadEditorialDocumentForDeletionReview(env, scope, documentId));
+  if (!canReview && !readOnly)
     return json({ error: "この原稿の素材を扱う権限がありません。" }, 403);
-  return { scope, document };
+  return { scope, document, readOnly };
 };
 
 async function listEditorialAssets(
@@ -6547,6 +6573,8 @@ async function uploadEditorialAsset(
 ): Promise<Response> {
   const access = await editorialAssetDocument(request, env, documentId);
   if (access instanceof Response) return access;
+  if (access.readOnly)
+    return json({ error: "削除申請の審査中は素材を変更できません。" }, 403);
   if (!isSameOrigin(request))
     return json({ error: "この送信元からは受け付けられません。" }, 403);
   if (
@@ -6721,7 +6749,20 @@ async function serveEditorialAsset(
         deleted_at: string | null;
       }
     >();
-  if (!asset || asset.deleted_at || !canReviewDocument(scope, asset))
+  const canReview = asset ? canReviewDocument(scope, asset) : false;
+  const canReadForDeletionReview =
+    asset &&
+    !canReview &&
+    (await canReadEditorialDocumentForDeletionReview(
+      env,
+      scope,
+      asset.document_id,
+    ));
+  if (
+    !asset ||
+    asset.deleted_at ||
+    (!canReview && !canReadForDeletionReview)
+  )
     return new Response("Not found", { status: 404 });
   // D1 は環境によって BLOB を Uint8Array または ArrayBuffer として返す。
   // D1 の返却型を Response が確実に扱える ArrayBuffer に正規化する。
@@ -16052,9 +16093,32 @@ async function getEditorialDocument(
     .bind(documentId)
     .first<EditorialDocument>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (!canReviewDocument(scope, document))
-    return json({ error: "この分野の原稿を閲覧する権限がありません。" }, 403);
   if (document.deleted_at) return json({ error: "削除済みの記事です。" }, 410);
+  const canReview = canReviewDocument(scope, document);
+  const readOnly =
+    !canReview &&
+    (await canReadEditorialDocumentForDeletionReview(env, scope, documentId));
+  if (!canReview && !readOnly)
+    return json({ error: "この分野の原稿を閲覧する権限がありません。" }, 403);
+  if (readOnly) {
+    const publicationRun = await hydrateEditorialPublicationDiagnostic(
+      env,
+      await getLatestEditorialPublicationRun(env, documentId),
+    );
+    return json({
+      document: {
+        ...document,
+        publication_run: publicationRun,
+        read_only: true,
+      },
+      publicationRun,
+      comments: [],
+      comment_action_summary: {
+        counts: { acknowledge: 0, unacknowledge: 0, resolve: 0, reopen: 0 },
+        actors: { acknowledge: [], unacknowledge: [], resolve: [], reopen: [] },
+      },
+    });
+  }
   const comments = await env.REPORTS.prepare(
     `SELECT id, document_id, parent_comment_id, body, created_by, created_at, selection_start, selection_end, selection_text,
       acknowledged_at, acknowledged_by, resolved_at, resolved_by
@@ -17008,9 +17072,15 @@ async function listEditorialRevisions(
       published_version_id: string | null;
       deleted_at: string | null;
     }>();
-  if (!document || !canReviewDocument(scope, document))
+  if (!document)
     return json({ error: "この原稿を閲覧する権限がありません。" }, 403);
   if (document.deleted_at) return json({ error: "削除済みの記事です。" }, 410);
+  const canReview = canReviewDocument(scope, document);
+  const readOnly =
+    !canReview &&
+    (await canReadEditorialDocumentForDeletionReview(env, scope, documentId));
+  if (!canReview && !readOnly)
+    return json({ error: "この原稿を閲覧する権限がありません。" }, 403);
   const result = await env.REPORTS.prepare(
     `SELECT r.id, r.title, r.summary, r.body, r.status, r.saved_by, r.saved_at, r.snapshot_json,
             r.id = d.current_version_id AS is_current_version,
@@ -17081,10 +17151,11 @@ async function listEditorialRevisions(
     feedbackRequests: (feedbackRequests.results ?? []).map((task) => ({
       ...task,
       canUpdate:
-        scope.isManager ||
+        !readOnly && (scope.isManager ||
         task.created_by.toLowerCase() === scope.email.toLowerCase() ||
-        taskAssignedTo(task.assignee_email, scope.email, "feedback"),
+        taskAssignedTo(task.assignee_email, scope.email, "feedback")),
       canWithdraw:
+        !readOnly &&
         !document.deleted_at &&
         document.status === "in-review" &&
         !document.publication_review_stage &&

@@ -164,6 +164,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
                 </button>
               </div>
               <h2 data-document-heading>新規原稿</h2>
+              <p class="editor-read-only-notice" data-read-only-notice role="status" hidden>削除申請の審査のため、読み取り専用で表示しています。本文と版履歴を確認できます。</p>
               <div class="document-provenance" aria-label="原稿の作成者と編集履歴">
                 <span class="document-creator" data-document-creator>初回作成者：—</span>
                 <span class="document-updated" data-document-updated>最終更新：—</span>
@@ -477,6 +478,19 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .editor-workspace .empty-state { align-items: stretch; color: var(--muted); display: flex; flex-direction: column; justify-content: center; margin: 5rem auto; max-width: 38rem; text-align: center; }
   .editor-workspace .empty-state[hidden] { display: none !important; }
   .document-form { display:grid; flex:1 1 auto; gap:1rem; min-height:0; }.document-form[hidden]{display:none!important}
+  .editor-read-only-notice { background:var(--surface-alt); border-left:3px solid var(--accent); color:var(--text); font-size:.78rem; line-height:1.5; margin:.4rem 0; padding:.45rem .6rem; }
+  .editor-workspace[data-read-only="true"] .document-actions,
+  .editor-workspace[data-read-only="true"] .feedback-request-history,
+  .editor-workspace[data-read-only="true"] .personal-notebook,
+  .editor-workspace[data-read-only="true"] .editor-test-tools,
+  .editor-workspace[data-read-only="true"] .article-reports-panel,
+  .editor-workspace[data-read-only="true"] .writing-tools,
+  .editor-workspace[data-read-only="true"] .editor-lock-bar,
+  .editor-workspace[data-read-only="true"] .media-area,
+  .editor-workspace[data-read-only="true"] .review-panel,
+  .editor-workspace[data-read-only="true"] .memo-area,
+  .editor-workspace[data-read-only="true"] .revision-restore-action,
+  .editor-workspace[data-read-only="true"] .revision-restore-help { display:none!important; }
   .directive-completion-hint, .latex-completion-hint { color:var(--muted); font-size:.72rem; line-height:1.5; margin:0; }.directive-completion-hint code, .latex-completion-hint code { background:var(--surface-alt); border:1px solid var(--border); border-radius:.25rem; padding:.05rem .2rem; }.directive-completion-hint kbd, .latex-completion-hint kbd { background:var(--surface-alt); border:1px solid var(--border); border-radius:.25rem; font:inherit; margin-left:.18rem; padding:.05rem .25rem; }
   .pane-layout-controls{align-items:center;display:flex;flex-wrap:wrap;gap:.3rem;margin:.35rem 0}.pane-layout-controls>span:not(.pane-layout-control){color:var(--muted);font-size:.72rem;font-weight:800;margin-right:.15rem}.pane-layout-control{display:inline-flex}.pane-layout-controls button{background:var(--surface);border:1px solid var(--border);color:var(--muted);cursor:pointer;font:inherit;font-size:.72rem;font-weight:800;min-height:1.9rem;padding:.2rem .5rem}.pane-layout-control>button:first-child{border-radius:.35rem 0 0 .35rem}.pane-layout-control>.pane-popout-toggle{border-left-color:var(--border);border-radius:0 .35rem .35rem 0;font-size:.9rem;line-height:1;min-width:1.7rem;padding:.2rem .35rem}.pane-layout-controls button:hover,.pane-layout-controls button.is-selected,.pane-layout-controls button[aria-pressed="true"],.pane-layout-control.is-popped-out>button{background:var(--accent-subtle);border-color:var(--accent);color:var(--accent)}.pane-layout-control>.pane-popout-toggle:hover{background:var(--accent);color:var(--surface)}
   .document-toolbar, .pane-heading { align-items: start; display: flex; gap: 1rem; justify-content: space-between; }
@@ -1356,7 +1370,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   type CustomMathPreset = { id: string; label: string; group?: string; macros: Record<string, string> };
   type ArticleReference = { id: string; title: string; authors?: string; year?: string; publisher?: string; url?: string; note?: string };
   type PublicationRun = { id: string; state: string; action: "publish" | "unpublish"; attempt: number; pull_request_number?: number | null; pull_request_url?: string | null; branch?: string | null; head_sha?: string | null; merge_sha?: string | null; last_check_at?: string | null; next_attempt_at?: string | null; error_code?: string | null; error_message?: string | null; failure_kind?: string | null; check_name?: string | null; check_url?: string | null; diagnostic_url?: string | null; snapshot_version_id?: string | null; failure_detail?: string | null; failure_step?: string | null; failure_file?: string | null; failure_line?: number | null; failure_column?: number | null; failure_suggestion?: string | null; failure_history?: string; updated_at?: string };
-  type Document = { id: string; current_version_id?: string | null; published_version_id?: string | null; source_article_id: string | null; subject: string; category: string; locale: string; slug: string; title: string; summary: string; concept_id: string; concept_name: string | null; concept_name_en: string | null; concept_is_new: number | boolean; body: string; writing_memo?: string; references?: string | ArticleReference[]; latex_engine: "uplatex" | "pdflatex" | "xelatex" | "lualatex" | "mathjax" | "katex"; status: "draft" | "in-review" | "on-hold" | "approved"; creator_kind?: "person" | "organization"; created_by: string; updated_by: string; created_at: string; updated_at: string; reviewed_at: string | null; published_at: string | null; scheduled_publish_at?: string | null; publication_review_stage?: "subject-coordinator" | "project-leader" | null; publication_review_round?: number; publication_pr_number?: number | null; publication_pr_url?: string | null; publication_branch?: string | null; publication_action?: "publish" | "unpublish" | null; publication_requested_at?: string | null; publication_run?: PublicationRun | null; locked_ranges?: string | LockedRange[]; created_by_display_name?: string; updated_by_display_name?: string; created_by_avatar_url?: string; updated_by_avatar_url?: string };
+  type Document = { id: string; current_version_id?: string | null; published_version_id?: string | null; read_only?: boolean; source_article_id: string | null; subject: string; category: string; locale: string; slug: string; title: string; summary: string; concept_id: string; concept_name: string | null; concept_name_en: string | null; concept_is_new: number | boolean; body: string; writing_memo?: string; references?: string | ArticleReference[]; latex_engine: "uplatex" | "pdflatex" | "xelatex" | "lualatex" | "mathjax" | "katex"; status: "draft" | "in-review" | "on-hold" | "approved"; creator_kind?: "person" | "organization"; created_by: string; updated_by: string; created_at: string; updated_at: string; reviewed_at: string | null; published_at: string | null; scheduled_publish_at?: string | null; publication_review_stage?: "subject-coordinator" | "project-leader" | null; publication_review_round?: number; publication_pr_number?: number | null; publication_pr_url?: string | null; publication_branch?: string | null; publication_action?: "publish" | "unpublish" | null; publication_requested_at?: string | null; publication_run?: PublicationRun | null; locked_ranges?: string | LockedRange[]; created_by_display_name?: string; updated_by_display_name?: string; created_by_avatar_url?: string; updated_by_avatar_url?: string };
   type SelectedRange = { start: number | null; end: number | null; text: string; source: "本文" | "プレビュー" | "記事" };
   type CommentSelection = { id?: string; position?: number; selection_start: number | null; selection_end: number | null; selection_text: string };
   type CommentAction = "acknowledge" | "unacknowledge" | "resolve" | "reopen";
@@ -2265,16 +2279,17 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
         : "";
     };
     const syncPublishedVersionControls = () => {
+      const readOnly = Boolean(currentDocument?.read_only);
       const published = Boolean(currentDocument?.published_at);
       const hasNewVersion = currentDocument ? hasUnpublishedPublicationChanges(currentDocument) : false;
-      body.readOnly = false;
-      bodySurface.dataset.publishedLocked = "false";
-      bodySurface.setAttribute("aria-disabled", "false");
+      body.readOnly = readOnly;
+      bodySurface.dataset.publishedLocked = String(readOnly);
+      bodySurface.setAttribute("aria-disabled", String(readOnly));
       form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input, select, textarea").forEach((field) => {
-        if (field.name === "documentId") return;
-        field.disabled = false;
+        if (field.name === "documentId" || field.matches("[data-revision-before], [data-revision-after]")) return;
+        field.disabled = readOnly && field !== body;
       });
-      reviewButton.disabled = deletionRequestPending || (published && !hasNewVersion);
+      reviewButton.disabled = readOnly || deletionRequestPending || (published && !hasNewVersion);
       reviewButton.title = published && !hasNewVersion
         ? "フィードバックを依頼するには、記事を編集して新しい版を保存してください。"
         : "複数回、別の担当者へフィードバックを依頼できます。";
@@ -4076,6 +4091,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const saveCurrentDocument = (showProgress = true, autoSave = false, guard?: AutosaveGuard) => withDocumentSaveLock(async () => {
       window.clearTimeout(autosaveTimer);
       if (!autosaveGuardIsCurrent(guard)) return "";
+      if (currentDocument?.read_only) return "";
       const requestedId = documentIdForRequest();
       try {
         saveMessage.value = autoSave ? "入力内容を自動保存中…" : "保存中…";
@@ -4622,6 +4638,13 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const setDocument = (item: Document, commentsForDocument: Comment[] = []) => {
       cancelAutosave();
       currentDocument = item;
+      root.dataset.readOnly = String(Boolean(item.read_only));
+      const readOnlyNotice = root.querySelector<HTMLElement>("[data-read-only-notice]");
+      if (readOnlyNotice) readOnlyNotice.hidden = !item.read_only;
+      root.querySelector<HTMLElement>(".document-actions")!.hidden = Boolean(item.read_only);
+      root.querySelector<HTMLElement>("[data-feedback-request-history-panel]")!.hidden = Boolean(item.read_only);
+      root.querySelector<HTMLElement>("[data-personal-notebook]")!.hidden = Boolean(item.read_only);
+      root.querySelector<HTMLElement>(".editor-test-tools")!.hidden = Boolean(item.read_only);
       slugEdited = Boolean(item.id);
       empty.hidden = true; form.hidden = false;
       latestPublicationRealtimeVersion = 0;
@@ -4650,12 +4673,10 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       documentConflict.hidden = true;
       documentConflict.dataset.documentId = item.id;
       renderDocumentProvenance(item);
-      const reviewOnly = false;
-      form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input, select, textarea").forEach((field) => { if (field.name !== "documentId" && field.name !== "status") field.disabled = reviewOnly; });
       syncMetadataSummary(); metadata.open = !item.id || metadataMissingCount() > 0;
       setDocumentVersionLabel(item);
       syncPublishedVersionControls();
-      heading.textContent = item.title || "新規原稿"; state.textContent = statusLabel[item.status]; setPublicationState(item); monitorPublicationRun(item); updateWorkflow(item.status, Boolean(item.published_at), item.publication_review_stage, hasUnpublishedPublicationChanges(item)); currentComments = commentsForDocument; renderComments(); renderHeadingOutline(); void renderPreview(); void loadMediaAssets(item.id); updatePublicationActions(item); completeWritingButton.hidden = true; publicationReviewButton.hidden = true; deletionRequestPending = false; deletionRequestButton.hidden = !item.id; deletionRequestState.hidden = true; saveMessage.value = item.id ? "保存済み" : "未保存の新規原稿"; setUnsavedChanges(false); connectCollaboration(item.id); if (item.id) void loadDeletionRequest(item.id).then(() => loadPublicationReview(item.id, item)).catch((error: unknown) => { saveMessage.value = error instanceof Error ? error.message : "記事の削除・公開状態を読み込めませんでした。"; });
+      heading.textContent = item.title || "新規原稿"; state.textContent = statusLabel[item.status]; setPublicationState(item); monitorPublicationRun(item); updateWorkflow(item.status, Boolean(item.published_at), item.publication_review_stage, hasUnpublishedPublicationChanges(item)); currentComments = commentsForDocument; renderComments(); renderHeadingOutline(); void renderPreview(); void loadMediaAssets(item.id); updatePublicationActions(item); completeWritingButton.hidden = true; publicationReviewButton.hidden = true; deletionRequestPending = false; deletionRequestButton.hidden = !item.id; deletionRequestState.hidden = true; saveMessage.value = item.read_only ? "削除申請の審査用に読み取り専用で表示中" : item.id ? "保存済み" : "未保存の新規原稿"; setUnsavedChanges(false); if (item.read_only) { disconnectCollaboration(); collaborationStatus.hidden = true; } else connectCollaboration(item.id); if (item.id) void loadDeletionRequest(item.id).then(() => item.read_only ? undefined : loadPublicationReview(item.id, item)).catch((error: unknown) => { saveMessage.value = error instanceof Error ? error.message : "記事の削除・公開状態を読み込めませんでした。"; });
     };
     const emptyDocument = (seed?: DraftSeed) => {
       activeDocumentId = "";
@@ -4816,6 +4837,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       else {
         const options = history.map((item, index) => `<option value="${index}">${date(item.saved_at)}・${esc(item.saved_by_display_name?.trim() || personLabel(item.saved_by))}・${esc(revisionStatusLabel(item))}</option>`).join("");
         revisions.innerHTML = `<div class="revision-compare-controls"><label>比較元<select data-revision-before>${options}</select></label><label>比較先<select data-revision-after><option value="current">現在の入力内容</option>${options}</select></label><button type="button" class="quiet-action revision-restore-action" data-revision-restore>選択した版を入力へ反映</button></div><p class="revision-restore-help">選択した版は入力欄へ反映され、自動保存されます。</p><pre class="revision-diff" data-revision-diff></pre>`;
+        revisions.querySelector<HTMLButtonElement>("[data-revision-restore]")!.hidden = Boolean(currentDocument?.read_only);
+        revisions.querySelector<HTMLElement>(".revision-restore-help")!.hidden = Boolean(currentDocument?.read_only);
         const before = revisions.querySelector<HTMLSelectElement>("[data-revision-before]")!;
         const after = revisions.querySelector<HTMLSelectElement>("[data-revision-after]")!;
         const output = revisions.querySelector<HTMLElement>("[data-revision-diff]")!;
@@ -4845,7 +4868,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     };
     revisions.addEventListener("click", (event) => {
       const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-revision-restore]");
-      if (!button) return;
+      if (!button || currentDocument?.read_only) return;
       const before = revisions.querySelector<HTMLSelectElement>("[data-revision-before]");
       const revision = before ? loadedRevisionHistory[Number(before.value)] : undefined;
       if (!revision) return;
