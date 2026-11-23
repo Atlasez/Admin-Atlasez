@@ -33,6 +33,9 @@ CREATE INDEX idx_editorial_tasks_cancelled
 
 -- Existing archive was only a temporary list filter. Do not turn those rows
 -- into deleted articles without a deletion request; make them visible again.
+-- Keep the legacy columns through this rollout: the currently-serving Worker
+-- still selects them until the replacement Worker is deployed. Remove the
+-- columns in a later migration after that Worker has been retired.
 UPDATE editorial_documents
    SET archived_at = NULL, archived_by = NULL, archive_expires_at = NULL
  WHERE archived_at IS NOT NULL;
@@ -40,6 +43,3 @@ UPDATE editorial_documents
 DROP INDEX IF EXISTS idx_editorial_documents_archived;
 DROP INDEX IF EXISTS idx_editorial_documents_archive;
 DROP INDEX IF EXISTS idx_editorial_documents_base_proposal;
-ALTER TABLE editorial_documents DROP COLUMN archive_expires_at;
-ALTER TABLE editorial_documents DROP COLUMN archived_by;
-ALTER TABLE editorial_documents DROP COLUMN archived_at;

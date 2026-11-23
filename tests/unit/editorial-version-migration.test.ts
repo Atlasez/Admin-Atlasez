@@ -269,9 +269,20 @@ it("統合migrationは公開版を保持し更新案の履歴と関連データ�
       "archived_by",
       "archive_expires_at",
     ])
-      expect(
-        migratedDocumentColumns.map((column) => column.name),
-      ).not.toContain(archiveColumn);
+      expect(migratedDocumentColumns.map((column) => column.name)).toContain(
+        archiveColumn,
+      );
+    expect(
+      db
+        .prepare(
+          "SELECT archived_at,archived_by,archive_expires_at FROM editorial_documents WHERE id=?",
+        )
+        .get(publishedId),
+    ).toEqual({
+      archived_at: null,
+      archived_by: null,
+      archive_expires_at: null,
+    });
     expect(
       db
         .prepare("SELECT deleted_at FROM editorial_documents WHERE id=?")

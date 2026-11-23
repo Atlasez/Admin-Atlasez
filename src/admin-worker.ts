@@ -20078,7 +20078,7 @@ const claimEditorialPublicationRun = async (
     ? `${documentId}:${action}:${snapshot.updatedAt}:${snapshot.hash}`
     : `${documentId}:${action}:${id}`;
   const deletionGuard = action === "publish"
-    ? " AND NOT EXISTS(SELECT 1 FROM editorial_document_deletion_requests WHERE document_id=? AND status='pending')"
+    ? " AND EXISTS(SELECT 1 FROM editorial_documents d WHERE d.id=? AND d.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM editorial_document_deletion_requests r WHERE r.document_id=d.id AND r.status='pending'))"
     : "";
   const result = (await env.REPORTS.prepare(
     `INSERT OR IGNORE INTO editorial_publication_runs
@@ -20127,8 +20127,11 @@ const claimEditorialPublicationRun = async (
   }
   const racedDeletion = action === "publish"
     ? await env.REPORTS.prepare(
-        "SELECT 1 AS pending FROM editorial_document_deletion_requests WHERE document_id=? AND status='pending' LIMIT 1",
-      ).bind(documentId).first<{ pending: number }>()
+        `SELECT 1 AS blocked FROM editorial_documents d
+          WHERE d.id=? AND (d.deleted_at IS NOT NULL OR EXISTS(
+            SELECT 1 FROM editorial_document_deletion_requests r
+             WHERE r.document_id=d.id AND r.status='pending')) LIMIT 1`,
+      ).bind(documentId).first<{ blocked: number }>()
     : null;
   if (racedDeletion) return { run: null, created: false, blockedByDeletion: true };
   const run = await getLatestEditorialPublicationRun(env, documentId);

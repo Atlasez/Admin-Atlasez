@@ -4757,10 +4757,12 @@ describe("admin worker editor APIs", () => {
       publication_branch: null,
       publication_action: null,
       publication_requested_at: null,
+      deleted_at: null,
       locked_ranges: "[]",
       article_references: "[]",
     };
     const executed: { query: string; values: unknown[] }[] = [];
+    let publicationRunInsertCount = 0;
     const publicationRun = {
       id: "33333333-3333-4333-8333-333333333333",
       document_id: documentId,
@@ -4799,6 +4801,8 @@ describe("admin worker editor APIs", () => {
       async first<T>() {
         if (this.query.includes("FROM editorial_document_revisions"))
           return publicationRevision({ ...document, status: "draft" }) as T;
+        if (this.query.includes("SELECT 1 AS blocked FROM editorial_documents"))
+          return null as T | null;
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
         if (this.query.includes("FROM editorial_publication_runs"))
@@ -4812,8 +4816,12 @@ describe("admin worker editor APIs", () => {
           this.query.includes(
             "INSERT OR IGNORE INTO editorial_publication_runs",
           )
-        )
+        ) {
+          publicationRunInsertCount += 1;
+          if (publicationRunInsertCount === 1) return { meta: { changes: 0 } };
+          publicationRun.id = String(this.values[0]);
           currentPublicationRun = publicationRun;
+        }
         return { meta: { changes: 1 } };
       }
     }
@@ -4893,6 +4901,20 @@ describe("admin worker editor APIs", () => {
           "INSERT OR IGNORE INTO editorial_publication_runs",
         ),
       );
+      const publicationRunInserts = executed.filter((entry) =>
+        entry.query.includes(
+          "INSERT OR IGNORE INTO editorial_publication_runs",
+        ),
+      );
+      expect(publicationRunInserts).toHaveLength(2);
+      expect(
+        publicationRunInserts.every(
+          ({ query, values }) =>
+            query.includes(
+              "editorial_documents d WHERE d.id=? AND d.deleted_at IS NULL",
+            ) && values.at(-1) === documentId,
+        ),
+      ).toBe(true);
       expect(runInsert?.values[5]).toBe(savedRevision.updated_at);
       expect(runInsert?.values[6]).toBe(
         await publicationSnapshotHash(savedRevision),
