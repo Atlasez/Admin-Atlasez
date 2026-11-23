@@ -31,15 +31,7 @@ CREATE INDEX idx_editorial_deletion_requests_document_created
 CREATE INDEX idx_editorial_tasks_cancelled
   ON editorial_tasks(cancelled_at, updated_at DESC);
 
--- Existing archive was only a temporary list filter. Do not turn those rows
--- into deleted articles without a deletion request; make them visible again.
--- Keep the legacy columns through this rollout: the currently-serving Worker
--- still selects them until the replacement Worker is deployed. Remove the
--- columns in a later migration after that Worker has been retired.
-UPDATE editorial_documents
-   SET archived_at = NULL, archived_by = NULL, archive_expires_at = NULL
- WHERE archived_at IS NOT NULL;
-
-DROP INDEX IF EXISTS idx_editorial_documents_archived;
-DROP INDEX IF EXISTS idx_editorial_documents_archive;
-DROP INDEX IF EXISTS idx_editorial_documents_base_proposal;
+-- Keep existing archive values, columns, and indexes through this rollout.
+-- The currently-serving Worker still reads them. The replacement Worker will
+-- ignore archive state; clear the legacy values and remove this schema only in
+-- a later migration after that Worker has been deployed and the old one retired.

@@ -279,9 +279,9 @@ it("統合migrationは公開版を保持し更新案の履歴と関連データ�
         )
         .get(publishedId),
     ).toEqual({
-      archived_at: null,
-      archived_by: null,
-      archive_expires_at: null,
+      archived_at: "2026-09-01T00:00:00.000Z",
+      archived_by: "alice@example.com",
+      archive_expires_at: "2026-12-01T00:00:00.000Z",
     });
     expect(
       db
