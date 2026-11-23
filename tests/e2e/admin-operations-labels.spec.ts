@@ -65,8 +65,25 @@ test("T-1/T-2/T-5: タスク管理の初期表示が仕様どおりになる", a
   await page.goto("admin/operations/?project=atlas");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "運営タスク" }),
+    page.getByRole("heading", { level: 1, name: "タスク" }),
   ).toBeVisible();
+  await expect(
+    page.locator(
+      'nav[aria-label="運営用サイトメニュー"] [data-admin-site="atlas"][data-admin-page="operations"]',
+    ),
+  ).toHaveText("タスク");
+  await expect(
+    page.locator(
+      'nav[aria-label="運営用サイトメニュー"] [data-admin-site="atlas"][data-admin-page="calendar"]',
+    ),
+  ).toHaveText("カレンダー");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveCSS(
+    "font-size",
+    "24px",
+  );
+  await expect(page.locator("[data-admin-breadcrumbs]")).toContainText(
+    "タスク",
+  );
   await expect(
     page.getByRole("heading", { level: 2, name: "タスク一覧" }),
   ).toBeVisible();
@@ -97,6 +114,25 @@ test("T-1/T-2/T-5: タスク管理の初期表示が仕様どおりになる", a
     "タスクを追加しました。",
   );
   await expect(page.getByRole("heading", { name: "ToDo" })).toHaveCount(0);
+});
+
+test("学習サイトのカレンダー見出しは短く、タスク画面と同じサイズになる", async ({
+  page,
+}) => {
+  await mockOperationsApi(page);
+  await page.goto("admin/calendar/?project=atlas");
+
+  const heading = page.getByRole("heading", { level: 1, name: "カレンダー" });
+  await expect(heading).toBeVisible();
+  await expect(heading).toHaveCSS("font-size", "24px");
+  await expect(page.locator("[data-admin-breadcrumbs]")).toContainText(
+    "カレンダー",
+  );
+  await expect(
+    page.locator(
+      'nav[aria-label="運営用サイトメニュー"] [data-admin-site="atlas"][data-admin-page="calendar"]',
+    ),
+  ).toHaveAttribute("aria-current", "page");
 });
 
 test("担当者選択は重複アカウントをまとめ、再描画しても選択表示を維持する", async ({
