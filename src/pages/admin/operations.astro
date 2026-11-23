@@ -23,8 +23,14 @@ const projectLabel = projectSlug === "secretariat"
       : projectSlug === "thinking-cafe"
         ? "考えるカフェ"
         : "アトラス";
-const pageLabel = calendarPage ? "運営カレンダー" : progressOnly ? "進捗報告" : "運営タスク";
-const initialPageTitle = memberMode ? "自分の予定" : `${projectLabel}：${pageLabel}`;
+const pageLabel = calendarPage
+  ? projectSlug === "atlas" ? "カレンダー" : "運営カレンダー"
+  : progressOnly ? "進捗報告" : projectSlug === "atlas" ? "タスク" : "運営タスク";
+const initialPageTitle = memberMode
+  ? "自分の予定"
+  : projectSlug === "atlas" && !progressOnly
+    ? pageLabel
+    : `${projectLabel}：${pageLabel}`;
 ---
 
 <AdminLayout title={initialPageTitle} description="運営作業を共有する場所">
@@ -356,7 +362,6 @@ const initialPageTitle = memberMode ? "自分の予定" : `${projectLabel}：${p
     margin: 0;
   }
   .operations h1 {
-    font-size: 2rem;
     margin: 0.25rem 0;
   }
   .operations > header span,
@@ -1259,7 +1264,7 @@ const initialPageTitle = memberMode ? "自分の予定" : `${projectLabel}：${p
   .operations { max-width: 80rem; padding-bottom: 5rem; }
   .operations > header { border-bottom-color: color-mix(in srgb, var(--border-default) 78%, transparent); padding: 2.4rem 0 1.5rem; }
   .operations-eyebrow { color: var(--accent-primary) !important; font-family: var(--font-mono); font-size: .68rem !important; font-weight: 800 !important; letter-spacing: .12em !important; margin: 0 0 .55rem !important; text-transform: uppercase; }
-  .operations > header h1 { font-size: clamp(1.75rem, 3.4vw, 2.55rem); letter-spacing: -.035em; margin: 0; }
+  .operations > header h1 { font-size: 1.5rem; letter-spacing: -.035em; margin: 0; }
   .operations > header .operations-lede { color: var(--text-secondary); font-size: .84rem; margin: .55rem 0 0; }
   .grid { grid-template-columns: minmax(0, 1fr); margin-top: 1rem; }
   .grid section { background: color-mix(in srgb, var(--background-secondary) 48%, var(--background-primary)); border-radius: 12px; padding: 1.35rem 1.5rem; }
@@ -1794,7 +1799,14 @@ const initialPageTitle = memberMode ? "自分の予定" : `${projectLabel}：${p
       }
       const assignmentMembers = [...assignmentMembersByEmail.values()];
       const members = new Map(assignmentMembers.map((member) => [member.email, member.display_name || '表示名未設定']));
-      projectTitle.textContent = memberPage ? '自分の予定' : `${data.project?.name || 'プロジェクト'}：${calendarPage ? '運営カレンダー' : progressOnly ? '進捗報告' : '運営タスク'}`;
+      const projectPageLabel = calendarPage
+        ? projectId === 'atlas' ? 'カレンダー' : '運営カレンダー'
+        : progressOnly ? '進捗報告' : projectId === 'atlas' ? 'タスク' : '運営タスク';
+      projectTitle.textContent = memberPage
+        ? '自分の予定'
+        : projectId === 'atlas' && !progressOnly
+          ? projectPageLabel
+          : `${data.project?.name || 'プロジェクト'}：${projectPageLabel}`;
       get<HTMLElement>('[data-event-create]').hidden = memberPage || !scope.isManager;
       const canManageCurrentProject = Boolean(scope.isManager || scope.projectRole === 'manager');
       taskCreateTestLabel.hidden = !canManageCurrentProject;
