@@ -214,13 +214,14 @@ it("統合migrationは公開版を保持し更新案の履歴と関連データ�
     const documentColumns = db
       .prepare("PRAGMA table_info(editorial_documents)")
       .all() as Array<{ name: string }>;
-    expect(documentColumns.map((column) => column.name)).not.toEqual(
-      expect.arrayContaining([
-        "document_kind",
-        "base_document_id",
-        "base_document_updated_at",
-      ]),
-    );
+    for (const oldColumn of [
+      "document_kind",
+      "base_document_id",
+      "base_document_updated_at",
+    ])
+      expect(documentColumns.map((column) => column.name)).not.toContain(
+        oldColumn,
+      );
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
 
     db.exec(migration("0139_editorial_release_candidates.sql"));
@@ -244,6 +245,81 @@ it("統合migrationは公開版を保持し更新案の履歴と関連データ�
     expect(
       db.prepare("PRAGMA table_info(editorial_publication_history)").all(),
     ).toHaveLength(8);
+
+    db.prepare(
+      "UPDATE editorial_documents SET archived_at=?,archived_by=?,archive_expires_at=? WHERE id=?",
+    ).run(
+      "2026-09-01T00:00:00.000Z",
+      "alice@example.com",
+      "2026-12-01T00:00:00.000Z",
+      publishedId,
+    );
+    db.exec(migration("0140_editorial_document_deletion_requests.sql"));
+    const migratedDocumentColumns = db
+      .prepare("PRAGMA table_info(editorial_documents)")
+      .all() as Array<{ name: string }>;
+    expect(migratedDocumentColumns.map((column) => column.name)).toContain(
+      "deleted_at",
+    );
+    expect(migratedDocumentColumns.map((column) => column.name)).toContain(
+      "deleted_by",
+    );
+    for (const archiveColumn of [
+      "archived_at",
+      "archived_by",
+      "archive_expires_at",
+    ])
+      expect(
+        migratedDocumentColumns.map((column) => column.name),
+      ).not.toContain(archiveColumn);
+    expect(
+      db
+        .prepare("SELECT deleted_at FROM editorial_documents WHERE id=?")
+        .get(publishedId),
+    ).toEqual({ deleted_at: null });
+    const taskColumns = db
+      .prepare("PRAGMA table_info(editorial_tasks)")
+      .all() as Array<{ name: string }>;
+    expect(taskColumns.map((column) => column.name)).toEqual(
+      expect.arrayContaining([
+        "cancelled_at",
+        "cancelled_by",
+        "cancellation_reason",
+      ]),
+    );
+    const currentVersionId = (
+      db
+        .prepare(
+          "SELECT current_version_id FROM editorial_documents WHERE id=?",
+        )
+        .get(publishedId) as {
+        current_version_id: string;
+      }
+    ).current_version_id;
+    const insertDeletionRequest = db.prepare(
+      `INSERT INTO editorial_document_deletion_requests
+        (id,document_id,requested_version_id,requested_by,status,created_at,updated_at)
+       VALUES(?,?,?,?, 'pending', ?, ?)`,
+    );
+    insertDeletionRequest.run(
+      "deletion-request-1",
+      publishedId,
+      currentVersionId,
+      "bob@example.com",
+      proposalUpdatedAt,
+      proposalUpdatedAt,
+    );
+    expect(() =>
+      insertDeletionRequest.run(
+        "deletion-request-2",
+        publishedId,
+        currentVersionId,
+        "carol@example.com",
+        proposalUpdatedAt,
+        proposalUpdatedAt,
+      ),
+    ).toThrow();
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally {
     db.close();
   }

@@ -1,0 +1,162 @@
+---
+import AdminLayout from "../../layouts/AdminLayout.astro";
+import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
+---
+
+<AdminLayout title="記事の削除申請" description="記事の削除申請を確認します">
+  <main class="admin-page deletion-requests" data-deletion-requests data-admin-load-surface>
+    <header class="page-heading">
+      <div>
+        <h1>記事の削除申請</h1>
+        <p>申請時の版と現在の版、公開状態を確認して判断してください。</p>
+      </div>
+      <button type="button" class="quiet-action" data-refresh>再読み込み</button>
+    </header>
+    <p class="status" data-status role="status" aria-live="polite">申請を読み込んでいます。</p>
+    <AdminRetryNotice message="削除申請を読み込めませんでした。" />
+    <section class="request-list" data-list aria-live="polite"></section>
+  </main>
+</AdminLayout>
+
+<script>
+  import { createAdminLoadRetry } from "../../scripts/admin-load-retry";
+
+  type DeletionRequest = {
+    id: string;
+    document_id: string;
+    requested_version_id: string;
+    requested_by: string;
+    requester_name?: string;
+    request_reason: string;
+    created_at: string;
+    title: string;
+    subject: string;
+    document_status: string;
+    source_article_id: string | null;
+    has_publication_history: number | boolean;
+    has_published_catalog_entry: number | boolean;
+    current_version_id: string | null;
+    published_version_id: string | null;
+    published_at: string | null;
+    publication_review_stage: string | null;
+    scheduled_publish_at: string | null;
+    publication_action: string | null;
+    publication_pr_number: number | null;
+  };
+
+  const init = () => {
+    const root = document.querySelector<HTMLElement>("[data-deletion-requests]");
+    if (!root || root.dataset.ready === "true") return;
+    root.dataset.ready = "true";
+    const list = root.querySelector<HTMLElement>("[data-list]")!;
+    const status = root.querySelector<HTMLElement>("[data-status]")!;
+    let retryController: ReturnType<typeof createAdminLoadRetry> | null = null;
+    const esc = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char] ?? char));
+    const formatDate = (value: string) => {
+      const date = new Date(value);
+      return Number.isFinite(date.getTime())
+        ? new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" }).format(date)
+        : "日時不明";
+    };
+    const render = (requests: DeletionRequest[]) => {
+      list.innerHTML = requests.length ? requests.map((item) => {
+        const versionMatches = item.requested_version_id === item.current_version_id;
+        const blocked = Boolean(item.published_at || item.published_version_id || item.publication_review_stage || item.scheduled_publish_at || item.publication_action || item.publication_pr_number);
+      const hasPublicationHistory = Boolean(item.has_publication_history);
+      const hasPublicArticleLink = Boolean(item.source_article_id || item.has_published_catalog_entry);
+      const publicationState = item.published_at || item.published_version_id
+        ? "公開中・先に公開停止が必要"
+        : hasPublicationHistory
+          ? "過去の公開履歴あり・承認時に現行配信を照合"
+          : hasPublicArticleLink
+            ? "公開記事との関連あり・承認時に現行配信を照合"
+            : blocked
+              ? "審査・予約・公開処理を終了してから判断"
+              : "未公開";
+        return `<article class="request-card" data-request="${esc(item.id)}">
+          <header><div><h2>${esc(item.title)}</h2><p>${esc(item.subject)} ・ ${esc(item.requester_name || item.requested_by)} ・ ${esc(formatDate(item.created_at))}</p></div><a href="/admin/editor/?document=${encodeURIComponent(item.document_id)}">記事を確認 ↗</a></header>
+          <dl><div><dt>申請版</dt><dd><code>${esc(item.requested_version_id)}</code>${versionMatches ? "（現在の版）" : "（版が更新されています）"}</dd></div><div><dt>公開状態</dt><dd>${esc(publicationState)}</dd></div></dl>
+          <p class="request-reason">${item.request_reason ? esc(item.request_reason) : "申請理由はありません。"}</p>
+          ${!versionMatches ? '<p class="blocker">申請後に記事の版が更新されています。申請は無効です。現在の内容を確認して再申請してください。</p>' : blocked ? '<p class="blocker">公開状態または進行中の処理が残っているため、現時点では承認できません。</p>' : ""}
+          <label class="decision-note">判断メモ（却下時は必須）<textarea data-reason maxlength="2000" rows="3"></textarea></label>
+          <div class="actions"><button type="button" data-decision="rejected">却下する</button><button type="button" data-decision="approved" ${!versionMatches || blocked ? "disabled" : ""}>削除を承認</button></div>
+          <output data-result aria-live="polite"></output>
+        </article>`;
+      }).join("") : '<p class="empty">未処理の削除申請はありません。</p>';
+      status.textContent = `${requests.length}件の未処理申請`;
+    };
+    const load = async () => {
+      retryController?.begin();
+      status.textContent = "申請を読み込んでいます。";
+      try {
+        const response = await fetch("/api/admin/editor/deletion-requests", { credentials: "same-origin", cache: "no-store" });
+        const data = await response.json().catch(() => ({})) as { requests?: DeletionRequest[]; error?: string };
+        if (!response.ok) throw new Error(data.error || "削除申請を読み込めませんでした。");
+        render(data.requests ?? []);
+        retryController?.success();
+      } catch (error) {
+        status.textContent = error instanceof Error ? error.message : "削除申請を読み込めませんでした。";
+        list.replaceChildren();
+        retryController?.fail(error);
+      }
+    };
+    retryController = createAdminLoadRetry(root, () => load(), "削除申請を読み込めませんでした。");
+    root.addEventListener("click", async (event) => {
+      const target = event.target as HTMLElement;
+      if (target.closest("[data-refresh]")) { await load(); return; }
+      const button = target.closest<HTMLButtonElement>("[data-decision]");
+      const card = button?.closest<HTMLElement>("[data-request]");
+      if (!button || !card) return;
+      const requestId = card.dataset.request;
+      const decision = button.dataset.decision;
+      const reason = card.querySelector<HTMLTextAreaElement>("[data-reason]")?.value.trim() ?? "";
+      const result = card.querySelector<HTMLOutputElement>("[data-result]");
+      if (!requestId || (decision !== "approved" && decision !== "rejected")) return;
+      button.disabled = true;
+      try {
+        const response = await fetch(`/api/admin/editor/deletion-requests/${encodeURIComponent(requestId)}`, {
+          method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ decision, reason }),
+        });
+        const data = await response.json().catch(() => ({})) as { error?: string };
+        if (!response.ok) throw new Error(data.error || "判断を保存できませんでした。");
+        result && (result.textContent = decision === "approved" ? "削除を承認しました。履歴と関連記録は保持されています。" : "申請を却下しました。");
+        await load();
+      } catch (error) {
+        result && (result.textContent = error instanceof Error ? error.message : "判断を保存できませんでした。");
+        button.disabled = false;
+      }
+    });
+    void load();
+  };
+  document.addEventListener("astro:page-load", init);
+  init();
+</script>
+
+<style>
+  .deletion-requests { margin: 0 auto; max-width: 76rem; padding: 1.5rem 1rem 4rem; }
+  .page-heading { align-items: center; border-bottom: 1px solid var(--border); display: flex; gap: 1rem; justify-content: space-between; padding-bottom: 1rem; }
+  .page-heading h1 { font-size: 1.45rem; margin: 0; }
+  .page-heading p, .status { color: var(--muted); font-size: .85rem; margin: .35rem 0 0; }
+  .request-list { display: grid; gap: .9rem; margin-top: 1rem; }
+  .request-card { background: var(--surface); border: 1px solid var(--border); border-radius: .65rem; padding: 1rem; }
+  .request-card header { align-items: start; display: flex; gap: 1rem; justify-content: space-between; }
+  .request-card h2 { font-size: 1.05rem; margin: 0; }
+  .request-card header p, .request-reason { color: var(--muted); font-size: .82rem; line-height: 1.55; margin: .35rem 0; white-space: pre-wrap; }
+  .request-card a { color: var(--accent); font-size: .78rem; white-space: nowrap; }
+  .request-card dl { display: grid; gap: .35rem; margin: .75rem 0; }
+  .request-card dl div { display: grid; gap: .5rem; grid-template-columns: 6rem minmax(0, 1fr); }
+  .request-card dt { color: var(--muted); font-size: .75rem; font-weight: 700; }
+  .request-card dd { font-size: .75rem; margin: 0; overflow-wrap: anywhere; }
+  .request-card code { font-size: .7rem; }
+  .blocker { background: color-mix(in srgb, #c78500 10%, var(--surface)); border-left: 3px solid #c78500; color: var(--text); font-size: .8rem; padding: .55rem .7rem; }
+  .decision-note { display: grid; font-size: .76rem; font-weight: 700; gap: .35rem; margin-top: .75rem; }
+  .decision-note textarea { background: var(--background-primary, var(--surface)); border: 1px solid var(--border); border-radius: .35rem; color: var(--text); font: inherit; padding: .55rem; resize: vertical; }
+  .actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: end; margin-top: .6rem; }
+  .actions button { background: var(--surface); border: 1px solid var(--border); border-radius: .35rem; color: var(--text); cursor: pointer; font: inherit; font-size: .8rem; font-weight: 700; padding: .45rem .7rem; }
+  .actions button[data-decision="approved"] { background: var(--accent); border-color: var(--accent); color: white; }
+  .actions button:disabled { cursor: not-allowed; opacity: .5; }
+  [data-result] { color: var(--muted); display: block; font-size: .8rem; margin-top: .4rem; }
+  .empty { color: var(--muted); padding: 2rem; text-align: center; }
+  @media (max-width: 600px) { .page-heading, .request-card header { align-items: stretch; flex-direction: column; } .request-card a { white-space: normal; } .actions { display: grid; grid-template-columns: 1fr 1fr; } }
+</style>

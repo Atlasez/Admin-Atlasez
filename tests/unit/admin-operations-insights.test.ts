@@ -5,11 +5,11 @@ import { readOperationsInsights } from "../../src/lib/admin-operations-insights"
 
 function fixture() {
   const sqlite = new DatabaseSync(":memory:");
-  sqlite.exec(`CREATE TABLE editorial_tasks(id TEXT,project_id TEXT,subject TEXT,assignee_email TEXT,task_kind TEXT,status TEXT,due_at TEXT,due_timezone TEXT,created_by TEXT,updated_at TEXT,archived_at TEXT);
+  sqlite.exec(`CREATE TABLE editorial_tasks(id TEXT,project_id TEXT,subject TEXT,assignee_email TEXT,task_kind TEXT,status TEXT,due_at TEXT,due_timezone TEXT,created_by TEXT,updated_at TEXT,archived_at TEXT,cancelled_at TEXT);
     CREATE TABLE editorial_member_profiles(email TEXT,display_name TEXT);
     CREATE TABLE editorial_events(project_id TEXT,subject TEXT);
     CREATE TABLE editorial_progress_reports(project_id TEXT,email TEXT);
-    CREATE TABLE editorial_documents(id TEXT,title TEXT,subject TEXT,status TEXT,archived_at TEXT,publication_review_stage TEXT,publication_review_started_at TEXT);`);
+    CREATE TABLE editorial_documents(id TEXT,title TEXT,subject TEXT,status TEXT,deleted_at TEXT,publication_review_stage TEXT,publication_review_started_at TEXT);`);
   const db: D1Database = {
     prepare(query) {
       let bindings: (string | number | null)[] = [];
@@ -44,7 +44,9 @@ function fixture() {
     timezone = "Asia/Tokyo",
   ) =>
     sqlite
-      .prepare("INSERT INTO editorial_tasks VALUES (?,?,?,?,?,?,?,?,?,?,NULL)")
+      .prepare(
+        "INSERT INTO editorial_tasks VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL)",
+      )
       .run(
         id,
         project,
@@ -88,6 +90,10 @@ describe("運営統計の全件・可視範囲集計", () => {
       "atlas",
       "done",
     );
+    addTask("cancelled", "a@example.com", "2026-09-30T10:00");
+    sqlite
+      .prepare("UPDATE editorial_tasks SET cancelled_at=? WHERE id=?")
+      .run("2026-09-30T11:00:00.000Z", "cancelled");
     const data = await readOperationsInsights(db, manager, now);
     expect(data.tasks).toMatchObject({
       total: 208,
