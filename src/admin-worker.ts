@@ -21168,9 +21168,9 @@ async function registerEditorialReleaseCandidate(
     }));
   } else {
     const documents = await env.REPORTS.prepare(
-      `SELECT id, source_article_id, locale, subject, category, slug, current_version_id, published_version_id
-       FROM editorial_documents WHERE deleted_at IS NULL`,
-    ).all<Pick<EditorialDocument, "id" | "source_article_id" | "locale" | "subject" | "category" | "slug" | "current_version_id" | "published_version_id">>();
+      `SELECT id, source_article_id, locale, subject, category, slug, current_version_id, published_version_id, deleted_at
+       FROM editorial_documents`,
+    ).all<Pick<EditorialDocument, "id" | "source_article_id" | "locale" | "subject" | "category" | "slug" | "current_version_id" | "published_version_id" | "deleted_at">>();
     const documentsById = new Map<string, EditorialDocument>();
     const documentsByPath = new Map<string, EditorialDocument[]>();
     for (const document of documents.results ?? []) {
@@ -21286,6 +21286,19 @@ async function registerEditorialReleaseCandidate(
           ),
         };
       const document = catalogDocument ?? pathDocuments[0];
+      if (entry.status === "published" && document?.deleted_at)
+        return {
+          ...entry,
+          documentId: null,
+          versionId: null,
+          identityError: json(
+            {
+              error: `削除済みの記事「${entry.articleId}」は公開候補に含められません（${entry.path}）。`,
+              code: "release_deleted_article",
+            },
+            409,
+          ),
+        };
       if (
         document?.source_article_id &&
         document.source_article_id !== entry.articleId

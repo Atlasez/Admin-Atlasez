@@ -325,6 +325,124 @@ describe("記事公開候補の永続化と切替復旧", () => {
     expect(savedArticle?.bindings).not.toContain(duplicateDocumentId);
   });
 
+  it("削除済み記事を下書きとして版履歴へ解決し、後続候補の登録を続ける", async () => {
+    const database = new ReleaseDatabase();
+    const deletedDocumentId = "44444444-4444-4444-8444-444444444444";
+    const deletedVersionId = "f3aa94a0-fd78-4d4a-bf88-7284c5cebf57";
+    const deletedDraft = {
+      articleId: "ja-math-set-theory-retired-note",
+      path: "src/content/articles/jpn/mathematics/set-theory/retired-note.md",
+      status: "draft",
+      versionId: deletedVersionId,
+    };
+    database.documentRows.push({
+      id: deletedDocumentId,
+      source_article_id: deletedDraft.articleId,
+      locale: "ja",
+      subject: "mathematics",
+      category: "set-theory",
+      slug: "retired-note",
+      current_version_id: deletedVersionId,
+      published_version_id: null,
+      deleted_at: "2026-11-22T00:00:00.000Z",
+    });
+    database.revisionRows.push({
+      id: deletedVersionId,
+      document_id: deletedDocumentId,
+    });
+    database.catalogRows.push({
+      path: deletedDraft.path,
+      identity_key: "ja/mathematics/set-theory/retired-note",
+      repository: "Atlasez/Atlasez01",
+      source_article_id: deletedDraft.articleId,
+      document_id: deletedDocumentId,
+    });
+    const body = JSON.stringify(candidatePayload([article, deletedDraft]));
+    vi.stubGlobal("fetch", vi.fn(currentDeploymentResponse));
+
+    const response = await worker.fetch(
+      new Request(
+        "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+        {
+          method: "POST",
+          headers: await signedHeaders(body),
+          body,
+        },
+      ),
+      {
+        REPORTS: database,
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+        GITHUB_REPOSITORY: "Atlasez/Atlasez01",
+      } as never,
+    );
+
+    const responseBody = await response.json();
+    expect(response.status, JSON.stringify(responseBody)).toBe(200);
+    const savedArticles = database.batches
+      .flat()
+      .find(({ query }) =>
+        query.includes("INSERT INTO editorial_release_candidate_articles"),
+      );
+    expect(savedArticles?.bindings).toContain(deletedDocumentId);
+    expect(savedArticles?.bindings).toContain(deletedVersionId);
+  });
+
+  it("削除済み記事が公開状態で候補に含まれたらD1登録前に拒否する", async () => {
+    const database = new ReleaseDatabase();
+    const deletedDocumentId = "44444444-4444-4444-8444-444444444444";
+    const deletedVersionId = "f3aa94a0-fd78-4d4a-bf88-7284c5cebf57";
+    const deletedArticle = {
+      articleId: "ja-math-set-theory-retired-note",
+      path: "src/content/articles/jpn/mathematics/set-theory/retired-note.md",
+      status: "published",
+      versionId: deletedVersionId,
+    };
+    database.documentRows.push({
+      id: deletedDocumentId,
+      source_article_id: deletedArticle.articleId,
+      locale: "ja",
+      subject: "mathematics",
+      category: "set-theory",
+      slug: "retired-note",
+      current_version_id: deletedVersionId,
+      published_version_id: null,
+      deleted_at: "2026-11-22T00:00:00.000Z",
+    });
+    database.catalogRows.push({
+      path: deletedArticle.path,
+      identity_key: "ja/mathematics/set-theory/retired-note",
+      repository: "Atlasez/Atlasez01",
+      source_article_id: deletedArticle.articleId,
+      document_id: deletedDocumentId,
+    });
+    const body = JSON.stringify(candidatePayload([article, deletedArticle]));
+    vi.stubGlobal("fetch", vi.fn(currentDeploymentResponse));
+
+    const response = await worker.fetch(
+      new Request(
+        "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+        {
+          method: "POST",
+          headers: await signedHeaders(body),
+          body,
+        },
+      ),
+      {
+        REPORTS: database,
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+        GITHUB_REPOSITORY: "Atlasez/Atlasez01",
+      } as never,
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "release_deleted_article",
+    });
+    expect(database.batches).toHaveLength(0);
+  });
+
   it("41件を超える記事版をD1の100 bind上限内で候補登録する", async () => {
     const entries = Array.from({ length: 201 }, (_, index) => {
       const sequence = String(index + 1).padStart(12, "0");
