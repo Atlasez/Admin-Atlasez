@@ -21,7 +21,16 @@ for (const [project, label, site] of projects) {
     );
     await page.goto(`admin/manage/?project=${project}`);
     const main = page.locator("[data-management-home]");
-    await expect(main.locator("header p")).toHaveText(label);
+    const projectLabel = main.locator("[data-management-project-label]");
+    if (project === "atlas") {
+      await expect(projectLabel).toBeHidden();
+      await expect(main.getByRole("heading", { level: 1 })).toHaveText(
+        "管理トップ",
+      );
+    } else {
+      await expect(projectLabel).toHaveText(label);
+      await expect(projectLabel).toBeVisible();
+    }
     await expect(main.locator('a[href*="applications"]')).toBeVisible();
     await expect(main.locator('a[href*="applications"]')).toHaveAttribute(
       "href",
@@ -127,9 +136,9 @@ test("管理トップの未知プロジェクトはatlasへ一貫してフォー
     route.fulfill({ json: { isManager: true } }),
   );
   await page.goto("admin/manage/?project=unknown-project");
-  await expect(page.locator("main header p")).toHaveText(
-    "学習サイト「アトラス」",
-  );
+  await expect(
+    page.locator("main [data-management-project-label]"),
+  ).toBeHidden();
   await expect(page.locator('main a[href*="applications"]')).toHaveAttribute(
     "href",
     "/admin/applications/?project=atlas",
