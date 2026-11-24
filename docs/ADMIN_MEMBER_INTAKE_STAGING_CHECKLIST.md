@@ -4,13 +4,19 @@
 
 状態: **未実施／未承認**。このチェックリストは運営判断と隔離環境の準備票であり、募集開始・実ユーザーへの通知・本番変更を許可するものではない。
 
-## 2026-11-18 最新mainとの照合
+## 2026-11-18 historical main snapshot
 
 - ADMIN mainは `e50425afaba026671a0c265fca69a38b6cf81090`。公開build-info、Workers Builds run、固定Worker `atlasez-admin` のVersion/100% deploymentをread-onlyで照合済みです。詳しい証跡は[実運用開始の受入試験](ADMIN_READINESS_ACCEPTANCE.md)を参照。
 - 本番D1のread-only照合では `0137_seminar_public_catalog_content_corrections.sql` が適用済みで、応募処理用の#545 migrationは `0138_application_intake_reconciliation.sql` が未適用と確認しました。backup、restore、migration apply、データ書込みは行っていません。
 - staging D1の最後のread-only確認は2026-11-04です。その時点の結果は現在のmainや0138の適用を証明しません。最新のread-only照合が終わるまでSTG試験のmigration前提は未確認です。
 - 2026-11-18のmain配信照合ではWorkers Build ID `d1f41a16-0f94-4721-8f0a-cf52f8be4812`、Version `554d3968-513c-4a49-8eba-69cf0a060fcf`、固定Workerの100%配信、公開build-infoのSHAがmainで一致しました。WranglerのSource表示はUnknownですが、Build check・Version・Deployment・build-infoの対応を確認しています。
 - PR #546と#547はmainに統合済みです。#545は0138のbackup・互換性・別途承認済みmigration/事後read-only確認が未達のため未mergeです。PRの最新head CI/review状態はGitHub上で確認してください。
+
+## 2026-11-25 current migration sequence
+
+- Current main ends at `0139_editorial_release_candidates.sql`. Article-deletion PR #630 uses `0140_editorial_document_deletion_requests.sql`; intake PR #545's unchanged SQL is now `0141_application_intake_reconciliation.sql`. PR #549 is stacked on #545 and its staging drill now targets 0141.
+- The production and existing staging D1 migration ledgers were not re-read during this refresh. The latest recorded staging read-back remains 2026-11-04; it does not prove 0141 is applied. No backup, D1 write/apply, restore, or staging deployment was performed.
+- Local SQLite migration-drill tests are isolated fixtures and are not evidence of live staging or production migration state.
 
 ## 実施前の停止条件
 
@@ -55,7 +61,7 @@
    npx wrangler d1 migrations list <STAGING_D1_NAME> --remote --config wrangler.admin.staging.jsonc
    ```
 
-   新規の使い捨てD1演習でだけmigration適用記録と`0138_application_intake_reconciliation.sql`を含む対象SHAを保存する。本番名 `atlasez-reports`、本番config `wrangler.admin.jsonc`、本番D1 UUIDはコマンドへ指定しない。既存staging D1の最新ledgerは未確認なので、照合と個別承認なしにmigrationを適用しない。
+   新規の使い捨てD1演習でだけmigration適用記録と`0141_application_intake_reconciliation.sql`を含む対象SHAを保存する。本番名 `atlasez-reports`、本番config `wrangler.admin.jsonc`、本番D1 UUIDはコマンドへ指定しない。既存staging D1の最新ledgerは未確認なので、照合と個別承認なしにmigrationを適用しない。
 
 ### 2. Google OAuthの合成アカウント
 
@@ -104,7 +110,7 @@ STG-01〜09の開始前に、Cloudflare管理者はWorker名・route・D1 bindin
 
 既存の専用staging Worker/D1をread-onlyで識別し、worker.dev origin・Google OAuth・provider設定・bindingが本番と分離されているか確認する。新しいstaging resourceやproviderは不足が明確で、個別の変更承認がある場合だけ準備する。既存の試験データと運営者identityを保持し、cleanupやresetをしない。stagingアプリに本番secretや本番D1 bindingが残っていないことを、値を表示せずbinding名・環境IDで確認する。
 
-下記の空DB migration/apply手順は新しい使い捨てD1の演習専用です。既存 `atlasez-admin-staging-reports` は2026-11-04時点で0134を含むcandidate migrationにpendingなしでしたが、最新main・0138のread-only確認は未実施です。既存D1にapply、初期seed削除、reset、restoreをしません。
+下記の空DB migration/apply手順は新しい使い捨てD1の演習専用です。既存 `atlasez-admin-staging-reports` は2026-11-04時点で0134を含むcandidate migrationにpendingなしでしたが、最新candidate・0141のread-only確認は未実施です。既存D1にapply、初期seed削除、reset、restoreをしません。
 
 | Pseudonym            | 初期状態・role                       | 用途                                    | cleanup owner | 準備状態 |
 | -------------------- | ------------------------------------ | --------------------------------------- | ------------- | -------- |
@@ -143,7 +149,7 @@ STG-01〜09の開始前に、Cloudflare管理者はWorker名・route・D1 bindin
 | 試験      | 画面 / API                                                                                                                                                                                                                     | 実行内容・境界                                                                                                                                                                                                                                                                                                                                                                                |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | STG-01    | `/admin/login/` → `GET /auth/google/login` → `GET /auth/google/callback`                                                                                                                                                       | OAuth開始・callback。未認証の `/api/applicant/me` は401、採用前に管理APIへアクセスしても拒否されることを確認する。                                                                                                                                                                                                                                                                            |
-| STG-02    | `GET/POST /api/application-profile`、`POST /api/apply`、`GET /api/applicant/me`                                                                                                                                                | `POST /api/apply` の正常結果は `applicationState=saved`、`responseTaskCreated=true`、queue件数を返す。`emailDeliveryStatus=queued` はprovider配達完了を意味しない。保存後の応答喪失を再送すると409 `APPLICATION_ALREADY_EXISTS`となり、`/applicant/?submission=already-received`で自分の状態を確認できる。pendingマーカーとqueue/tasksの照合・修復はPR #545のmigration 0138適用後に確認する。 |
+| STG-02    | `GET/POST /api/application-profile`、`POST /api/apply`、`GET /api/applicant/me`                                                                                                                                                | `POST /api/apply` の正常結果は `applicationState=saved`、`responseTaskCreated=true`、queue件数を返す。`emailDeliveryStatus=queued` はprovider配達完了を意味しない。保存後の応答喪失を再送すると409 `APPLICATION_ALREADY_EXISTS`となり、`/applicant/?submission=already-received`で自分の状態を確認できる。pendingマーカーとqueue/tasksの照合・修復はPR #545のmigration 0141適用後に確認する。 |
 | STG-03/04 | `GET /api/admin/applications?project=<slug>`、`PATCH /api/admin/applications/<application-uuid>?project=<slug>`、`GET/PUT /api/admin/applications/<uuid>/interview`、`GET/PUT /api/admin/applications/<uuid>/interview-review` | managerは対象project内だけで応募・面談・審査を行う。状態更新は期待状態が古い場合に409となる。受入後は `/api/applicant/me` と `/api/user/status`、隔離D1でproject別membershipを確認する。                                                                                                                                                                                                      |
 | STG-05    | `GET/POST /api/onboarding/me`、`GET/POST /api/onboarding/project`、`GET/POST /api/onboarding/tutorial`、`GET /api/admin/member-tasks`、`PATCH /api/admin/operations/tasks/<task-uuid>`                                         | 本人の初回profile/自己紹介/onboarding状態を保存し、所属・担当範囲内のtaskだけopen→doing→doneへ更新する。別project・他人のtask IDを直接指定し403/404とDB不変を確認する。                                                                                                                                                                                                                       |
 | STG-06    | `GET/POST /api/admin/member-procedures?project=<slug>`、reviewは `?project=<slug>&view=review`                                                                                                                                 | 本人がpause/withdrawal/restartを申請・取下げし、別の権限者が承認/却下する。予定適用は専用staging Cronで確認し、旧sessionのAPIを再呼出しする。Discord grant/revokeはOPSD-08承認後のSTG-08だけで扱う。                                                                                                                                                                                          |
@@ -208,7 +214,7 @@ before/afterの行数・状態 / PIIを除いた画像またはログ / cleanup�
 - [ ] Cloudflare管理者がWorkers Buildsの接続repository、Production branch `main`、Preview無効、Build/Deploy command、対象Workerを読み取り確認する。PR mergeでproduction buildが起動し得るか明示する。設定を確認できない場合は「自動配信なし」と推測せず、PR mergeを止める。
 - [ ] Issue #509のprovenance gateとして、成功したBuild run ID、checkout SHA、固定Worker `atlasez-admin` のVersion、100%配信、公開build-infoを照合する。build-infoとmainのSHA一致だけでは合格にしない。
 - [ ] D1運用者が固定された本番D1の現在のmigration ledgerをread-onlyで取得する。権限エラー、古い結果、対象DBを識別できない出力は未確認扱いとする。
-- [ ] PR #545を含む新Workerを配信する前に、承認済みbackup・migration手順で `0138_application_intake_reconciliation.sql` を本番D1へ適用し、read-only ledgerで適用を確認する。実行者、承認者、対象DB識別子、対象SHA、時刻、結果を別々に記録する。PR mergeの許可をmigration許可に読み替えない。
+- [ ] PR #545を含む新Workerを配信する前に、承認済みbackup・migration手順で `0141_application_intake_reconciliation.sql` を本番D1へ適用し、read-only ledgerで適用を確認する。実行者、承認者、対象DB識別子、対象SHA、時刻、結果を別々に記録する。PR mergeの許可をmigration許可に読み替えない。
 - [ ] 運営責任者がOPSD決定票の必要項目、少人数上限、担当/代理、停止・復旧担当を承認する。未決定の保存期間、SLA、Discord role方針を公開・実行しない。
 
 ### mergeと配信の順序
@@ -222,10 +228,10 @@ Issue #548の順序案は `#546 → #545 → #547`。この順序はCloudflare�
 - [ ] 承認されたmain SHAのWorker Versionが固定Workerへ100%配信され、Build run/checkout SHAと一致する。
 - [ ] 認証済みChromeでlogin、応募者status、portal、task、calendar、profile、対象projectのapplicationsを確認する。合成roleに対応する許可/拒否APIも確認し、実会員の応募・採用・role変更を行わない。
 - [ ] 応募row、対応task、期待メールqueue、reconciliation markerを隔離データで照合する。メールproviderの受理、sinkでの受信、Discord側read-backをそれぞれ分けて記録する。
-- [ ] アプリの問題はレビュー済みrevert PRとWorkers Buildsで戻す。migration 0138の列/indexを削除せず、送信済みメールを復旧操作で再送しない。D1復元は対象・影響を別途レビューし、承認されたrunbookでのみ行う。
+- [ ] アプリの問題はレビュー済みrevert PRとWorkers Buildsで戻す。migration 0141の列/indexを削除せず、送信済みメールを復旧操作で再送しない。D1復元は対象・影響を別途レビューし、承認されたrunbookでのみ行う。
 
 | 承認role                   | merge/deploy可否 | migration/backup確認      | OPSD必要承認               | 証跡URL・日時 |
 | -------------------------- | ---------------- | ------------------------- | -------------------------- | ------------- |
 | Cloudflare / release owner | ____             | 対象SHA・Version: ____    | N/A                        | ____          |
-| D1 operator / security     | N/A              | backup・0138 ledger: ____ | OPSD-05/07: ____           | ____          |
+| D1 operator / security     | N/A              | backup・0141 ledger: ____ | OPSD-05/07: ____           | ____          |
 | 運営責任者 / privacy責任者 | N/A              | N/A                       | OPSD-01〜04/06/08/09: ____ | ____          |

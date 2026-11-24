@@ -1,9 +1,9 @@
 import { expect, it } from "vitest";
 import { runAdminStagingMigrationDrill } from "../../scripts/lib/admin-staging-migration-drill.mjs";
 
-it("runs migration 0138, verifies backfill and old-column compatibility, then restores the synthetic pre-migration snapshot", () => {
+it("runs migration 0141, verifies backfill and old-column compatibility, then restores the synthetic pre-migration snapshot", () => {
   expect(runAdminStagingMigrationDrill()).toMatchObject({
-    migration: "0138_application_intake_reconciliation.sql",
+    migration: "0141_application_intake_reconciliation.sql",
     preservedApplicationRows: 1,
     preservedEmailQueueRows: 2,
     stagingBootstrapRolesSanitized: true,

@@ -57,7 +57,7 @@ if (mode === "--deploy") {
   const requiredConfirmations = [
     "ATLASEZ_STAGING_DEPLOY_CONFIRMED",
     "ATLASEZ_STAGING_PROVIDER_SETTINGS_VERIFIED",
-    "ATLASEZ_STAGING_0138_VERIFIED",
+    "ATLASEZ_STAGING_0141_VERIFIED",
   ];
   const missing = requiredConfirmations.filter(
     (name) => process.env[name] !== "1",

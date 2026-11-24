@@ -2,7 +2,13 @@
 
 対象は監査P0の4〜7。仮利用者は `@atlasez.test`、隔離D1はメモリ内SQLiteで全migrationを適用する。本番の認証方式・権限表・Google認証を検証用に変更しない。プロバイダーを模擬した試験と実到達・本番受入を区別する。
 
-## 2026-11-18 最新確認
+## 2026-11-25 PR and migration refresh
+
+- Current main is `97422553003630e0665f37788f561a9179e83fd1` and contains migrations through `0139_editorial_release_candidates.sql`.
+- Article deletion PR #630 uses migration 0140. Intake PR #545's migration has been renamed, without SQL changes, to 0141. PR #549's staged migration drill is being updated to inherit this base and target 0141.
+- This refresh did not read production or existing staging D1 migration ledgers and did not apply, back up, restore, deploy, or modify Cloudflare settings. Historical ledger observations below are not current-state evidence.
+
+## 2026-11-18 historical confirmation
 
 - GitHub `main` は `e50425afaba026671a0c265fca69a38b6cf81090`。公開 `https://admin.atlasez.org/build-info.json` は同じcommit、`ref=main`、`target=admin`、builtAt `2026-11-16T02:16:23.102Z` を返す。
 - 同じmain SHAのCloudflare Workers Builds checkはsuccess。Build ID [`d1f41a16-0f94-4721-8f0a-cf52f8be4812`](https://dash.cloudflare.com/812021e62fa20465950b61be55dfe064/workers/services/view/atlasez-admin/production/builds/d1f41a16-0f94-4721-8f0a-cf52f8be4812)、固定Worker `atlasez-admin`、Version `554d3968-513c-4a49-8eba-69cf0a060fcf`。固定Workerのread-only `deployments list`でも同Versionが100%配信され、作成時刻は `2026-11-16T02:17:01.212Z`。WranglerのSource表記は `Unknown (version_upload)` だが、Cloudflareのexact-main Build check、Version、100%配信、公開build-infoが一致する。

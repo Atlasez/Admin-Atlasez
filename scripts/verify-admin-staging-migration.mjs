@@ -10,7 +10,7 @@ try {
   );
 } catch {
   console.error(
-    "Isolated migration 0138 backup/restore drill failed. No remote D1 was contacted; fixture rows and values were not logged.",
+    "Isolated migration 0141 backup/restore drill failed. No remote D1 was contacted; fixture rows and values were not logged.",
   );
   process.exit(1);
 }
