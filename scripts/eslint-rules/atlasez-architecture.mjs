@@ -30,14 +30,6 @@ function containsCall(node, name) {
   return found;
 }
 
-function containsString(node, value) {
-  let found = false;
-  walk(node, (candidate) => {
-    if (literalValue(candidate) === value) found = true;
-  });
-  return found;
-}
-
 function findFunction(program, name) {
   return program.body
     .map((statement) =>
@@ -340,12 +332,12 @@ export const publicationCompareAndSet = {
     type: "problem",
     docs: {
       description:
-        "Require optimistic concurrency predicates for verified publication state changes.",
+        "Require D1 candidate recording and active-version verification before publication pointers move.",
     },
     schema: [],
     messages: {
       compareAndSet:
-        "Every editorial_documents update after deployment verification must compare updated_at and handle a failed compare-and-set.",
+        "Publication must record candidate articles before deployment, then update published_version_id and history together only after the matching 100% deployment is verified.",
     },
   },
   create(context) {
@@ -355,10 +347,23 @@ export const publicationCompareAndSet = {
           program,
           "progressEditorialPublicationRun",
         );
-        if (!progress?.body) {
+        const registerCandidate = findFunction(
+          program,
+          "registerEditorialReleaseCandidate",
+        );
+        const activateCandidate = findFunction(
+          program,
+          "activateEditorialReleaseCandidate",
+        );
+        if (
+          !progress?.body ||
+          !registerCandidate?.body ||
+          !activateCandidate?.body
+        ) {
           context.report({ node: program, messageId: "compareAndSet" });
           return;
         }
+
         let deployBlock;
         walk(progress.body, (candidate) => {
           if (
@@ -373,7 +378,7 @@ export const publicationCompareAndSet = {
           return;
         }
 
-        const documentUpdates = [];
+        let progressWritesPublicationDocument = false;
         walk(deployBlock, (candidate) => {
           if (
             candidate.type !== "CallExpression" ||
@@ -383,35 +388,38 @@ export const publicationCompareAndSet = {
             return;
           const sql = staticSql(candidate.arguments[0]);
           if (sql && /\bUPDATE\s+editorial_documents\b/i.test(sql))
-            documentUpdates.push({ candidate, sql });
+            progressWritesPublicationDocument = true;
         });
 
-        const allUpdatesCompareAndSet =
-          documentUpdates.length > 0 &&
-          documentUpdates.every(({ sql }) =>
-            /\bWHERE\s+id\s*=\s*\?\s+AND\s+updated_at\s*=\s*\?/i.test(sql),
-          );
-        let batchChangeCountCalls = 0;
-        const conflictRecoveryBranches = [];
-        walk(deployBlock, (candidate) => {
-          if (
-            candidate.type === "CallExpression" &&
-            identifierName(candidate.callee) === "batchChangeCount"
-          )
-            batchChangeCountCalls += 1;
-          if (
-            candidate.type === "IfStatement" &&
-            containsString(
-              candidate.consequent,
-              "publication_compare_and_set_failed",
-            )
-          )
-            conflictRecoveryBranches.push(candidate);
-        });
+        const source = context.sourceCode;
+        const registrationSource = source.getText(registerCandidate.body);
+        const activationSource = source.getText(activateCandidate.body);
+        const recordsCandidateArticles =
+          registrationSource.includes(
+            "INSERT INTO editorial_release_candidates",
+          ) &&
+          registrationSource.includes(
+            "INSERT INTO editorial_release_candidate_articles",
+          ) &&
+          registrationSource.includes("REPORTS.batch");
+        const recordsActivationAndPointerTogether =
+          activationSource.includes(
+            "INSERT OR IGNORE INTO editorial_publication_history",
+          ) &&
+          activationSource.includes("SET published_version_id =") &&
+          activationSource.includes("REPORTS.batch(statements)");
+        const verifiesActiveVersion =
+          activationSource.includes(
+            "getCurrentEditorialWorkerDeployment(env)",
+          ) &&
+          activationSource.includes("versions[0]?.version_id !== versionId") &&
+          activationSource.includes("versions[0]?.percentage !== 100");
+
         if (
-          !allUpdatesCompareAndSet ||
-          batchChangeCountCalls < 4 ||
-          conflictRecoveryBranches.length < 3
+          progressWritesPublicationDocument ||
+          !recordsCandidateArticles ||
+          !recordsActivationAndPointerTogether ||
+          !verifiesActiveVersion
         ) {
           context.report({ node: deployBlock, messageId: "compareAndSet" });
         }
