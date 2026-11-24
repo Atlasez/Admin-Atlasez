@@ -213,11 +213,92 @@ function currentDeploymentResponse() {
   });
 }
 
+function streamingRequest(
+  url: string,
+  chunkBytes: number,
+  totalChunks: number,
+) {
+  let pulled = 0;
+  let cancelled = false;
+  const chunk = new Uint8Array(chunkBytes);
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (pulled >= totalChunks) {
+        controller.close();
+        return;
+      }
+      pulled += 1;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const request = new Request(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body,
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
+  return {
+    request,
+    totalChunks,
+    get pulled() {
+      return pulled;
+    },
+    get cancelled() {
+      return cancelled;
+    },
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("記事公開候補の永続化と切替復旧", () => {
+  it("Content-Lengthのない過大な候補・有効化Webhookを読み切る前に停止する", async () => {
+    const cloudflareFetch = vi.fn();
+    vi.stubGlobal("fetch", cloudflareFetch);
+    for (const path of [
+      "/api/internal/editorial-release/candidate",
+      "/api/internal/editorial-release/activated",
+    ]) {
+      const streamed = streamingRequest(
+        `https://admin.atlasez.org${path}`,
+        250_000,
+        10,
+      );
+      expect(streamed.request.headers.get("content-length")).toBeNull();
+      const response = await worker.fetch(streamed.request, {
+        REPORTS: new ReleaseDatabase(),
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+      } as never);
+
+      expect(response.status).toBe(413);
+      expect(streamed.cancelled).toBe(true);
+      expect(streamed.pulled).toBeLessThan(streamed.totalChunks);
+    }
+    expect(cloudflareFetch).not.toHaveBeenCalled();
+  });
+
+  it("25 MB超過のGitHub WebhookをContent-Lengthなしでも読み切らず停止する", async () => {
+    const streamed = streamingRequest(
+      "https://admin.atlasez.org/api/internal/github-publication-webhook",
+      1_000_000,
+      30,
+    );
+    expect(streamed.request.headers.get("content-length")).toBeNull();
+    const response = await worker.fetch(streamed.request, {
+      GITHUB_WEBHOOK_SECRET: "github-webhook-secret",
+    } as never);
+
+    expect(response.status).toBe(413);
+    expect(streamed.cancelled).toBe(true);
+    expect(streamed.pulled).toBeLessThan(streamed.totalChunks);
+  });
+
   it("候補に含まれる記事とD1版IDを切替前に一括保存する", async () => {
     const database = new ReleaseDatabase();
     const body = JSON.stringify(candidatePayload());

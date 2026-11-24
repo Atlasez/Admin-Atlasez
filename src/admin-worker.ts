@@ -20495,6 +20495,51 @@ const hexDigest = (bytes: ArrayBuffer) =>
   [...new Uint8Array(bytes)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+// GitHub rejects deliveries above 25 MB; keep the webhook reader within that cap.
+const githubWebhookMaxBytes = 25_000_000;
+
+const readRequestTextLimited = async (
+  request: Request,
+  maxBytes: number,
+): Promise<string | null> => {
+  const contentLength = request.headers.get("content-length");
+  if (
+    contentLength &&
+    /^\d+$/.test(contentLength) &&
+    Number(contentLength) > maxBytes
+  ) {
+    await request.body?.cancel().catch(() => undefined);
+    return null;
+  }
+
+  const reader = request.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  chunks.length = 0;
+  return new TextDecoder().decode(bytes);
+};
 
 const verifyGithubWebhookSignature = async (
   secret: string,
@@ -20585,7 +20630,9 @@ async function receiveGithubPublicationWebhook(
   const secret = env.GITHUB_WEBHOOK_SECRET?.trim();
   if (!secret)
     return json({ error: "GitHub Webhook Secretが設定されていません。" }, 503);
-  const body = await request.text();
+  const body = await readRequestTextLimited(request, githubWebhookMaxBytes);
+  if (body === null)
+    return json({ error: "GitHub Webhookが大きすぎます。" }, 413);
   if (
     !(await verifyGithubWebhookSignature(
       secret,
@@ -20775,11 +20822,8 @@ async function registerEditorialReleaseCandidate(
   env: Env,
 ): Promise<Response> {
   if (request.method !== "POST") return json({ error: "POSTのみ利用できます。" }, 405);
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > editorialReleaseRequestMaxBytes)
-    return json({ error: "公開候補マニフェストが大きすぎます。" }, 413);
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > editorialReleaseRequestMaxBytes)
+  const body = await readRequestTextLimited(request, editorialReleaseRequestMaxBytes);
+  if (body === null)
     return json({ error: "公開候補マニフェストが大きすぎます。" }, 413);
   const signatureFailure = await verifyEditorialReleaseRequest(request, body, env);
   if (signatureFailure) return signatureFailure;
@@ -21186,11 +21230,8 @@ async function receiveEditorialReleaseEvent(
 ): Promise<Response> {
   if (request.method !== "POST") return json({ error: "POSTのみ利用できます。" }, 405);
   if (event === "candidate") return registerEditorialReleaseCandidate(request, env);
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > editorialReleaseRequestMaxBytes)
-    return json({ error: "公開候補通知が大きすぎます。" }, 413);
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > editorialReleaseRequestMaxBytes)
+  const body = await readRequestTextLimited(request, editorialReleaseRequestMaxBytes);
+  if (body === null)
     return json({ error: "公開候補通知が大きすぎます。" }, 413);
   const signatureFailure = await verifyEditorialReleaseRequest(request, body, env);
   if (signatureFailure) return signatureFailure;
