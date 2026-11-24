@@ -61,6 +61,7 @@ import {
   isProfileImageDataUrl,
   profileImageMaxStoredUrlLength,
 } from "./lib/profile-image";
+import { readRequestTextLimited } from "./lib/request-body-text";
 // ローカルWrangler開発時だけ同一Workerのexportをフォールバックとして使う。
 // Preview/本番は外部の専用Worker bindingを必ず経由する。
 export { EditorialCollaborationRoom } from "./editorial-collaboration-worker";
@@ -1864,6 +1865,8 @@ const isTrustedArticleUrl = (value: string) => {
   }
 };
 
+const articleReportIngestRequestMaxBytes = 64_000;
+
 async function ingestArticleReport(
   request: Request,
   env: Env,
@@ -1875,9 +1878,19 @@ async function ingestArticleReport(
   )
     return json({ error: "JSON形式で送信してください。" }, 415);
 
+  const body = await readRequestTextLimited(
+    request,
+    articleReportIngestRequestMaxBytes,
+  );
+  if (body === null)
+    return json({ error: "送信内容が大きすぎます。" }, 413);
+
   let payload: ArticleReportIngestPayload;
   try {
-    payload = (await request.json()) as ArticleReportIngestPayload;
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return json({ error: "入力内容を読み取れませんでした。" }, 400);
+    payload = parsed as ArticleReportIngestPayload;
   } catch {
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
@@ -20497,49 +20510,6 @@ const hexDigest = (bytes: ArrayBuffer) =>
     .join("");
 // GitHub rejects deliveries above 25 MB; keep the webhook reader within that cap.
 const githubWebhookMaxBytes = 25_000_000;
-
-const readRequestTextLimited = async (
-  request: Request,
-  maxBytes: number,
-): Promise<string | null> => {
-  const contentLength = request.headers.get("content-length");
-  if (
-    contentLength &&
-    /^\d+$/.test(contentLength) &&
-    Number(contentLength) > maxBytes
-  ) {
-    await request.body?.cancel().catch(() => undefined);
-    return null;
-  }
-
-  const reader = request.body?.getReader();
-  if (!reader) return "";
-  const chunks: Uint8Array[] = [];
-  let byteLength = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      byteLength += value.byteLength;
-      if (byteLength > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        return null;
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  const bytes = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  chunks.length = 0;
-  return new TextDecoder().decode(bytes);
-};
 
 const verifyGithubWebhookSignature = async (
   secret: string,

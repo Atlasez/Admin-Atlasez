@@ -1,3 +1,5 @@
+import { readRequestTextLimited } from "./lib/request-body-text";
+
 interface Fetcher {
   fetch(request: Request): Promise<Response>;
 }
@@ -70,6 +72,8 @@ type ArticleAnalyticsRegion = {
 
 const MAX_DETAILS_LENGTH = 6_000;
 const MAX_CONTACT_LENGTH = 320;
+const MAX_ARTICLE_REPORT_REQUEST_BYTES = 64_000;
+const MAX_ARTICLE_ANALYTICS_REQUEST_BYTES = 16_000;
 const MIN_FORM_FILL_MS = 1_200;
 const MAX_FORM_OPEN_MS = 2 * 60 * 60 * 1_000;
 const TAXONOMY_SLUG = /^[a-z0-9-]+$/;
@@ -231,9 +235,18 @@ async function saveArticleReport(
     return json({ error: "この送信元からは受け付けられません。" }, 403);
   }
 
+  const body = await readRequestTextLimited(
+    request,
+    MAX_ARTICLE_REPORT_REQUEST_BYTES,
+  );
+  if (body === null) return json({ error: "送信内容が大きすぎます。" }, 413);
+
   let payload: ReportPayload;
   try {
-    payload = (await request.json()) as ReportPayload;
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return json({ error: "入力内容を読み取れませんでした。" }, 400);
+    payload = parsed as ReportPayload;
   } catch {
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
@@ -379,9 +392,18 @@ async function saveArticleAnalytics(
   if (!isTrustedReportOrigin(origin, new URL(request.url))) {
     return json({ error: "この送信元からは受け付けられません。" }, 403);
   }
+  const body = await readRequestTextLimited(
+    request,
+    MAX_ARTICLE_ANALYTICS_REQUEST_BYTES,
+  );
+  if (body === null) return json({ error: "統計データが大きすぎます。" }, 413);
+
   let payload: AnalyticsPayload;
   try {
-    payload = (await request.json()) as AnalyticsPayload;
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return json({ error: "入力内容を読み取れませんでした。" }, 400);
+    payload = parsed as AnalyticsPayload;
   } catch {
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
