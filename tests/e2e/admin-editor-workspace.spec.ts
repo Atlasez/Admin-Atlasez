@@ -2865,16 +2865,20 @@ test("既存の未完了依頼を重ねず、画面上部から取り下げら�
     "依頼を取り下げ、記事を下書きに戻しました。",
   );
 
-  // The compact toolbar hides while scrolling down. Scroll back up before
-  // using its next action so the test follows the toolbar's reveal behavior.
-  await page.mouse.wheel(0, -1000);
+  // Return to the top after the withdrawal so the revealed toolbar is fully
+  // available for its next action.
+  await page.mouse.wheel(0, -10_000);
+  await expect(page.locator(".workspace-header")).toBeInViewport();
   await expect(page.locator(".editor-workspace")).not.toHaveAttribute(
     "data-toolbar-hidden",
     "",
   );
-  await page
-    .getByRole("button", { name: "追加でフィードバックを依頼" })
-    .click();
+  const addReviewRequest = page.getByRole("button", {
+    name: "追加でフィードバックを依頼",
+  });
+  await expect(addReviewRequest).toBeVisible();
+  await expect(addReviewRequest).toBeInViewport({ ratio: 1 });
+  await addReviewRequest.click();
   const dialog = page.locator("[data-review-request-dialog]");
   const reviewerSelect = dialog.locator("[data-review-request-assignee]");
   expect(
