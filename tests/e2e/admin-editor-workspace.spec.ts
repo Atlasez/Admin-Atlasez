@@ -3005,17 +3005,20 @@ test("既存の未完了依頼を重ねず、画面上部から取り下げら�
     "依頼を取り下げ、記事を下書きに戻しました。",
   );
 
-  // Return to the document top so the next click does not scroll the button
-  // into view and toggle the compact toolbar again.
+  // Returning to the top reveals the toolbar. Keep focus on its action while
+  // Playwright scrolls the button into view for the pointer click.
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  const requestAdditionalFeedback = page.getByRole("button", {
+    name: "追加でフィードバックを依頼",
+  });
+  await requestAdditionalFeedback.focus();
+  await expect(requestAdditionalFeedback).toBeFocused();
   await expect(page.locator(".editor-workspace")).not.toHaveAttribute(
     "data-toolbar-hidden",
     "",
   );
-  await page
-    .getByRole("button", { name: "追加でフィードバックを依頼" })
-    .click();
+  await requestAdditionalFeedback.click();
   const dialog = page.locator("[data-review-request-dialog]");
   const reviewerSelect = dialog.locator("[data-review-request-assignee]");
   expect(
