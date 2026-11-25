@@ -300,7 +300,8 @@ const sendDiscordMessage = async (
         content,
         allowed_mentions: { parse: [] },
       }),
-      redirect: "error",
+      // Workers supports manual redirects, keeping the request at its original destination.
+      redirect: "manual",
       signal: controller.signal,
     });
     const raw = await response.text().catch(() => "");

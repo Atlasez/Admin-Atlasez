@@ -258,9 +258,26 @@ describe("scheduled health alerts", () => {
     expect(fetcher).toHaveBeenCalledWith(
       webhook,
       expect.objectContaining({
-        redirect: "error",
+        redirect: "manual",
         body: expect.stringContaining('"allowed_mentions":{"parse":[]}'),
       }),
     );
+  });
+
+  it("records a webhook redirect as a terminal delivery failure", async () => {
+    const { env, db } = createAdminTestEnvironment();
+    await reconcileScheduledHealthAlerts(env.REPORTS, [signal("bad")], at(1));
+    const fetcher = vi.fn(async () =>
+      Response.redirect("https://example.com/redirected", 307),
+    );
+    const result = await dispatchDueDiscordNotifications(
+      { ...env, DISCORD_ADMIN_HEALTH_WEBHOOK_URL: webhook },
+      { now: at(2), fetcher, logger: { info: vi.fn(), error: vi.fn() } },
+    );
+    expect(result).toEqual({ notified: false, sent: 0, failed: 1, skipped: 0 });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(
+      db.prepare("SELECT status,last_error FROM discord_notifications").get(),
+    ).toEqual({ status: "failed", last_error: "http_307" });
   });
 });
