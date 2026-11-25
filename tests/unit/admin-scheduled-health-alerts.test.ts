@@ -20,13 +20,15 @@ const signal = (status: HealthAlertSignal["status"]): HealthAlertSignal => ({
   ownerRole: "公開担当",
   status,
 });
-const webhook = "https://discord.com/api/webhooks/123456789012345678/test-token";
+const webhook = "https://discord.com/api/webhooks/123456789012345678/token";
 
 describe("scheduled health alerts", () => {
-  it("opens once, defers recovery until delivery, ignores stale sweeps and reopens", async () => {
+  it("deduplicates, defers recovery, ignores stale sweeps and reopens", async () => {
     const { env, db } = createAdminTestEnvironment();
-    const sweep = (status: HealthAlertSignal["status"], minute: number) =>
-      reconcileScheduledHealthAlerts(env.REPORTS, [signal(status)], at(minute));
+    const sweep = (status: HealthAlertSignal["status"], minute: number) => {
+      const signals = [signal(status)];
+      return reconcileScheduledHealthAlerts(env.REPORTS, signals, at(minute));
+    };
     const messages = () =>
       db
         .prepare(
@@ -50,7 +52,8 @@ describe("scheduled health alerts", () => {
     ]);
     await sweep("bad", 6);
     expect(messages()).toHaveLength(3);
-    expect(new Set(messages().map((row) => row.dedupe_key)).size).toBe(3);
+    const keys = messages().map((row) => row.dedupe_key);
+    expect(new Set(keys).size).toBe(3);
   });
 
   it("does not claim recovery for an alert that was never delivered", async () => {
@@ -58,22 +61,24 @@ describe("scheduled health alerts", () => {
     await reconcileScheduledHealthAlerts(env.REPORTS, [signal("bad")], at(1));
     db.exec("UPDATE discord_notifications SET status='failed'");
     await reconcileScheduledHealthAlerts(env.REPORTS, [signal("ok")], at(2));
-    const messages = db.prepare("SELECT kind FROM discord_notifications").all();
+    const query = "SELECT kind FROM discord_notifications";
+    const messages = db.prepare(query).all();
     expect(messages).toEqual([{ kind: "admin-health-alert" }]);
     expect(
       db.prepare("SELECT * FROM admin_scheduled_alert_incidents").all(),
     ).toEqual([]);
   });
 
-  it("keeps open incidents during unknown observations and ignores the alert transport", async () => {
+  it("retains incidents for unknown states and ignores transport failures", async () => {
     const { env, db } = createAdminTestEnvironment();
     const jobs = await readScheduledJobHealth(env.REPORTS, at(1));
     const target = jobs.jobs.find(
       (job) => job.id === "editorial-release-reconcile",
     )!;
     target.status = "warning";
-    jobs.jobs.find((job) => job.id === "discord-notifications")!.status =
-      "error";
+    const transportId = "discord-notifications";
+    const transport = jobs.jobs.find((j) => j.id === transportId)!;
+    transport.status = "error";
     const signals = collectHealthAlertSignals(jobs, []);
     expect(signals).toEqual([signal("bad")]);
     await reconcileScheduledHealthAlerts(env.REPORTS, signals, at(1));
@@ -84,7 +89,8 @@ describe("scheduled health alerts", () => {
       collectHealthAlertSignals(jobs, []),
       at(2),
     );
-    const messages = db.prepare("SELECT kind FROM discord_notifications").all();
+    const query = "SELECT kind FROM discord_notifications";
+    const messages = db.prepare(query).all();
     expect(messages).toEqual([{ kind: "admin-health-alert" }]);
     target.status = "ok";
     const unavailable = { ...jobs, available: false };
@@ -129,13 +135,15 @@ describe("scheduled health alerts", () => {
   it("pauses only health notifications without consuming retries", async () => {
     const { env, db } = createAdminTestEnvironment();
     await reconcileScheduledHealthAlerts(env.REPORTS, [signal("bad")], at(1));
-    db.prepare(
+    const insert = db.prepare(
       `INSERT INTO discord_notifications
          (id,dedupe_key,kind,destination_kind,destination_ref,content,
           next_attempt_at,created_at,updated_at)
        VALUES ('ordinary','ordinary','progress','webhook',
          'DISCORD_PROGRESS_WEBHOOK_URL','ordinary progress',?,?,?)`,
-    ).run(at(1).toISOString(), at(1).toISOString(), at(1).toISOString());
+    );
+    const timestamp = at(1).toISOString();
+    insert.run(timestamp, timestamp, timestamp);
     const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
     const ordinary = "https://discord.com/api/webhooks/1234567890/ordinary";
     const disabled = { ...env, DISCORD_PROGRESS_WEBHOOK_URL: ordinary };
@@ -153,10 +161,7 @@ describe("scheduled health alerts", () => {
         .get();
     expect(health()).toEqual({ status: "pending", attempt_count: 0 });
     expect(fetcher.mock.calls).toHaveLength(1);
-    const enabled = {
-      ...disabled,
-      DISCORD_ADMIN_HEALTH_WEBHOOK_URL: webhook,
-    };
+    const enabled = { ...disabled, DISCORD_ADMIN_HEALTH_WEBHOOK_URL: webhook };
     const resumed = await dispatchDueDiscordNotifications(enabled, {
       now: at(3),
       fetcher,
@@ -174,7 +179,7 @@ describe("scheduled health alerts", () => {
       .all();
     expect(rows).toHaveLength(1);
     expect(rows[0].destination_ref).toBe("DISCORD_ADMIN_HEALTH_WEBHOOK_URL");
-    expect(JSON.stringify(rows)).not.toContain("test-token");
+    expect(JSON.stringify(rows)).not.toContain(webhook);
     const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
     const result = await dispatchDueDiscordNotifications(
       { ...env, DISCORD_ADMIN_HEALTH_WEBHOOK_URL: webhook },
