@@ -2865,9 +2865,17 @@ test("既存の未完了依頼を重ねず、画面上部から取り下げら�
     "依頼を取り下げ、記事を下書きに戻しました。",
   );
 
-  // The compact toolbar hides while scrolling down. Scroll back up before
-  // using its next action so the test follows the toolbar's reveal behavior.
-  await page.mouse.wheel(0, -1000);
+  // Opening history scrolls smoothly, while a wheel event does not wait for
+  // scrolling to finish. Return to the top and wait for the expanded toolbar
+  // before clicking so the next action does not restart its hide transition.
+  await page.evaluate(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  });
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await expect(page.locator("[data-document-toolbar]")).not.toHaveAttribute(
+    "data-compact",
+    "",
+  );
   await expect(page.locator(".editor-workspace")).not.toHaveAttribute(
     "data-toolbar-hidden",
     "",
