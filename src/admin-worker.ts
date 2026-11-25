@@ -20508,8 +20508,10 @@ const hexDigest = (bytes: ArrayBuffer) =>
   [...new Uint8Array(bytes)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
-// GitHub rejects deliveries above 25 MB; keep the webhook reader within that cap.
-const githubWebhookMaxBytes = 25_000_000;
+// Webhook payloads contain status metadata only. Keep room for the decoded text
+// and parsed object inside a 128 MB Worker isolate; the scheduled reconciler
+// can recover status updates that exceed this application-level limit.
+const githubWebhookMaxBytes = 2_000_000;
 
 const verifyGithubWebhookSignature = async (
   secret: string,

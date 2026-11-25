@@ -3,40 +3,41 @@ export async function readRequestTextLimited(
   maxBytes: number,
 ): Promise<string | null> {
   const contentLength = request.headers.get("content-length");
-  if (
-    contentLength &&
-    /^\d+$/.test(contentLength) &&
-    Number(contentLength) > maxBytes
-  ) {
+  const declaredLength =
+    contentLength && /^\d+$/.test(contentLength) ? Number(contentLength) : null;
+  if (declaredLength !== null && declaredLength > maxBytes) {
     await request.body?.cancel().catch(() => undefined);
     return null;
   }
 
   const reader = request.body?.getReader();
   if (!reader) return "";
-  const chunks: Uint8Array[] = [];
+  let bytes = new Uint8Array(declaredLength ?? 0);
   let byteLength = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      byteLength += value.byteLength;
-      if (byteLength > maxBytes) {
+      const nextByteLength = byteLength + value.byteLength;
+      if (nextByteLength > maxBytes) {
         await reader.cancel().catch(() => undefined);
         return null;
       }
-      chunks.push(value);
+      if (nextByteLength > bytes.byteLength) {
+        const capacity = Math.min(
+          maxBytes,
+          Math.max(16_384, bytes.byteLength * 2, nextByteLength),
+        );
+        const grown = new Uint8Array(capacity);
+        grown.set(bytes.subarray(0, byteLength));
+        bytes = grown;
+      }
+      bytes.set(value, byteLength);
+      byteLength = nextByteLength;
     }
   } finally {
     reader.releaseLock();
   }
 
-  const bytes = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  chunks.length = 0;
-  return new TextDecoder().decode(bytes);
+  return new TextDecoder().decode(bytes.subarray(0, byteLength));
 }
