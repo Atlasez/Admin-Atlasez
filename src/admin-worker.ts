@@ -18926,6 +18926,35 @@ async function storeArticleBackup(
 
 const WORKER_SYNC_PAGE_SIZE = 8;
 
+type PublishedArticleBackupState = {
+  version: 1;
+  repository: string;
+  treeSha: string;
+  cursor: string | null;
+  complete: boolean;
+};
+
+function parsePublishedArticleBackupState(
+  cursor: string | null,
+): PublishedArticleBackupState | null {
+  if (!cursor) return null;
+  try {
+    const value = JSON.parse(cursor) as Partial<PublishedArticleBackupState>;
+    if (
+      value.version === 1 &&
+      typeof value.repository === "string" &&
+      typeof value.treeSha === "string" &&
+      value.treeSha.length > 0 &&
+      (typeof value.cursor === "string" || value.cursor === null) &&
+      typeof value.complete === "boolean"
+    )
+      return value as PublishedArticleBackupState;
+  } catch {
+    // 旧形式のパスだけを保存したチェックポイントは、新しい形式で再走査する。
+  }
+  return null;
+}
+
 async function readWorkerSyncCursor(env: Env, job: string) {
   const row = await env.REPORTS.prepare(
     "SELECT cursor FROM admin_worker_sync_checkpoints WHERE job = ?",
@@ -18938,14 +18967,16 @@ async function readWorkerSyncCursor(env: Env, job: string) {
 async function writeWorkerSyncCursor(
   env: Env,
   job: string,
+  previousCursor: string | null,
   cursor: string | null,
 ) {
   await env.REPORTS.prepare(
     `INSERT INTO admin_worker_sync_checkpoints (job, cursor, updated_at)
      VALUES (?, ?, ?)
-     ON CONFLICT(job) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at`,
+     ON CONFLICT(job) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at
+     WHERE admin_worker_sync_checkpoints.cursor IS ?`,
   )
-    .bind(job, cursor, new Date().toISOString())
+    .bind(job, cursor, new Date().toISOString(), previousCursor)
     .run();
 }
 
@@ -18968,17 +18999,41 @@ async function syncPublishedArticleBackups(env: Env) {
     "user-agent": "atlasez-editorial-backup",
     "x-github-api-version": "2022-11-28",
   };
+  const previousCursor = await readWorkerSyncCursor(env, "published-article-backups");
+  const parsedState = parsePublishedArticleBackupState(previousCursor);
+  const savedState = parsedState?.repository === repository ? parsedState : null;
+  const resume = savedState && !savedState.complete ? savedState : null;
+  let treeSha = resume?.treeSha;
+  if (!treeSha) {
+    const root = await fetch(
+      `https://api.github.com/repos/${repository}/git/trees/main`,
+      { headers },
+    );
+    if (!root.ok)
+      throw new Error("GitHubのバックアップ対象の更新を確認できませんでした。");
+    const { sha } = (await root.json()) as { sha?: string };
+    if (typeof sha !== "string" || !sha)
+      throw new Error("GitHubのバックアップ対象のtree SHAを取得できませんでした。");
+    if (savedState?.treeSha === sha)
+      return { synced: 0, skipped: true, reason: "unchanged" };
+    treeSha = sha;
+  }
+
+  // Finish each scan against the tree it started with before checking main again.
+  const cursor = resume?.cursor ?? null;
   const treeResponse = await fetch(
-    `https://api.github.com/repos/${repository}/git/trees/main?recursive=1`,
+    `https://api.github.com/repos/${repository}/git/trees/${treeSha}?recursive=1`,
     { headers },
   );
   if (!treeResponse.ok)
     throw new Error("GitHubのバックアップ対象を取得できませんでした。");
   const tree = (await treeResponse.json()) as {
     tree?: { path?: string; type?: string; sha?: string }[];
+    truncated?: boolean;
   };
-  const cursor = await readWorkerSyncCursor(env, "published-article-backups");
-  const articles = (tree.tree ?? []).filter(
+  if (tree.truncated || !Array.isArray(tree.tree))
+    throw new Error("GitHubのバックアップ対象一覧が不完全です。checkpointは進めていません。");
+  const articles = tree.tree.filter(
     (entry) =>
       entry.type === "blob" &&
       entry.path?.startsWith("src/content/articles/") &&
@@ -19023,7 +19078,14 @@ async function syncPublishedArticleBackups(env: Env) {
   await writeWorkerSyncCursor(
     env,
     "published-article-backups",
-    hasMore ? page.at(-1)?.path ?? null : null,
+    previousCursor,
+    JSON.stringify({
+      version: 1,
+      repository,
+      treeSha,
+      cursor: hasMore ? page.at(-1)?.path ?? null : null,
+      complete: !hasMore,
+    } satisfies PublishedArticleBackupState),
   );
   console.info(
     JSON.stringify({
