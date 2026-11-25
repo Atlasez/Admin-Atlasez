@@ -188,16 +188,22 @@ test("公開処理と応募メールの診断から次の確認へ進める", as
     ),
     lastErrorCode: "invalid_configuration",
   };
-  data.queues[0].id = "editorial-publication";
-  data.queues[1] = {
-    ...data.queues[1],
-    id: "application-email",
-    status: "warning",
-    detail: "メールを送信できませんでした",
-    failedCount: 1,
-  };
   await page.route("**/api/admin/developer/diagnostics", (route) =>
-    route.fulfill({ json: data }),
+    route.fulfill({
+      json: {
+        ...data,
+        queues: [
+          { ...data.queues[0], id: "editorial-publication" },
+          {
+            ...data.queues[1],
+            id: "application-email",
+            status: "warning",
+            detail: "メールを送信できませんでした",
+            failedCount: 1,
+          },
+        ],
+      },
+    }),
   );
 
   await page.goto("admin/developer/?mode=developer");
