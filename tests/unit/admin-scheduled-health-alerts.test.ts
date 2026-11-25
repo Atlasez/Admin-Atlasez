@@ -5,7 +5,10 @@ import {
   reconcileScheduledHealthAlerts,
   type HealthAlertSignal,
 } from "../../src/lib/admin-scheduled-health-alerts";
-import { readScheduledJobHealth } from "../../src/lib/admin-scheduled-job-health";
+import {
+  readScheduledJobHealth,
+  runObservedScheduledJob,
+} from "../../src/lib/admin-scheduled-job-health";
 import {
   dispatchDueDiscordNotifications,
   hasScheduledHealthWebhook,
@@ -23,6 +26,71 @@ const signal = (status: HealthAlertSignal["status"]): HealthAlertSignal => ({
 const webhook = "https://discord.com/api/webhooks/123456789012345678/token";
 
 describe("scheduled health alerts", () => {
+  it("sends one alert after retry and one recovery for an observed job", async () => {
+    const { env, db } = createAdminTestEnvironment();
+    const configured = { ...env, DISCORD_ADMIN_HEALTH_WEBHOOK_URL: webhook };
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockImplementation(async () => new Response(null, { status: 204 }));
+    const job = "editorial-release-reconcile";
+    const deliver = (minute: number) =>
+      dispatchDueDiscordNotifications(configured, {
+        now: at(minute),
+        fetcher,
+        logger,
+      });
+    const observe = (minute: number, healthy: boolean) =>
+      runObservedScheduledJob(
+        env.REPORTS,
+        job,
+        async (report) => {
+          if (!healthy)
+            report({ status: "warning", code: "dependency_failed" });
+        },
+        { now: () => at(minute), logger },
+      );
+
+    await observe(1, false);
+    await dispatchScheduledHealthAlerts(configured, at(1));
+    await dispatchScheduledHealthAlerts(configured, at(2));
+    expect((await deliver(2)).failed).toBe(1);
+    expect(
+      db
+        .prepare("SELECT status,attempt_count FROM discord_notifications")
+        .all(),
+    ).toEqual([{ status: "retry", attempt_count: 1 }]);
+
+    await observe(3, true);
+    await dispatchScheduledHealthAlerts(configured, at(3));
+    expect((await deliver(6)).sent).toBe(0);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect((await deliver(7)).sent).toBe(1);
+    await observe(8, true);
+    await dispatchScheduledHealthAlerts(configured, at(8));
+    await dispatchScheduledHealthAlerts(configured, at(9));
+    expect((await deliver(9)).sent).toBe(1);
+    expect((await deliver(10)).sent).toBe(0);
+
+    const delivered = fetcher.mock.calls.map(([url, options]) => {
+      expect(url).toBe(webhook);
+      const payload = JSON.parse(String(options?.body));
+      expect(payload.allowed_mentions).toEqual({ parse: [] });
+      return payload.content;
+    });
+    expect(delivered).toEqual([
+      expect.stringContaining("【運営監視・異常検知】公開状態の照合"),
+      expect.stringContaining("【運営監視・異常検知】公開状態の照合"),
+      expect.stringContaining("【運営監視・復旧確認】公開状態の照合"),
+    ]);
+    expect(
+      db
+        .prepare("SELECT status FROM discord_notifications ORDER BY created_at")
+        .all(),
+    ).toEqual([{ status: "sent" }, { status: "sent" }]);
+  });
+
   it("deduplicates, defers recovery, ignores stale sweeps and reopens", async () => {
     const { env, db } = createAdminTestEnvironment();
     const sweep = (status: HealthAlertSignal["status"], minute: number) => {
