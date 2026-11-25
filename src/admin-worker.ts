@@ -20495,18 +20495,22 @@ const hexDigest = (bytes: ArrayBuffer) =>
   [...new Uint8Array(bytes)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
-// GitHub rejects deliveries above 25 MB; keep the webhook reader within that cap.
-const githubWebhookMaxBytes = 25_000_000;
+// Webhook payloads contain status metadata only. Keep room for the decoded text
+// and parsed object inside a 128 MB Worker isolate; the scheduled reconciler
+// can recover status updates that exceed this application-level limit.
+const githubWebhookMaxBytes = 2_000_000;
 
 const readRequestTextLimited = async (
   request: Request,
   maxBytes: number,
 ): Promise<string | null> => {
   const contentLength = request.headers.get("content-length");
+  const declaredLength = contentLength && /^\d+$/.test(contentLength)
+    ? Number(contentLength)
+    : null;
   if (
-    contentLength &&
-    /^\d+$/.test(contentLength) &&
-    Number(contentLength) > maxBytes
+    declaredLength !== null &&
+    declaredLength > maxBytes
   ) {
     await request.body?.cancel().catch(() => undefined);
     return null;
@@ -20514,31 +20518,34 @@ const readRequestTextLimited = async (
 
   const reader = request.body?.getReader();
   if (!reader) return "";
-  const chunks: Uint8Array[] = [];
+  let bytes = new Uint8Array(declaredLength ?? 0);
   let byteLength = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      byteLength += value.byteLength;
-      if (byteLength > maxBytes) {
+      const nextByteLength = byteLength + value.byteLength;
+      if (nextByteLength > maxBytes) {
         await reader.cancel().catch(() => undefined);
         return null;
       }
-      chunks.push(value);
+      if (nextByteLength > bytes.byteLength) {
+        const capacity = Math.min(
+          maxBytes,
+          Math.max(16_384, bytes.byteLength * 2, nextByteLength),
+        );
+        const grown = new Uint8Array(capacity);
+        grown.set(bytes.subarray(0, byteLength));
+        bytes = grown;
+      }
+      bytes.set(value, byteLength);
+      byteLength = nextByteLength;
     }
   } finally {
     reader.releaseLock();
   }
 
-  const bytes = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  chunks.length = 0;
-  return new TextDecoder().decode(bytes);
+  return new TextDecoder().decode(bytes.subarray(0, byteLength));
 };
 
 const verifyGithubWebhookSignature = async (
