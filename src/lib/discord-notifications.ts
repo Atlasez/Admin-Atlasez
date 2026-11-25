@@ -1,3 +1,5 @@
+import type { ScheduledJobReporter } from "./admin-scheduled-job-health";
+
 type D1Statement = {
   bind(...values: unknown[]): D1Statement;
   run(): Promise<{ meta?: { changes?: number } }>;
@@ -38,6 +40,7 @@ export type DiscordNotificationOptions = {
   logger?: Pick<Console, "info" | "error">;
   limit?: number;
   timeoutMs?: number;
+  report?: ScheduledJobReporter;
 };
 
 type NotificationRow = {
@@ -353,6 +356,10 @@ const claimAndSend = async (
       return "sent";
     }
     const canRetry = result.retryable && attempt < MAX_ATTEMPTS;
+    if (result.error === "not_configured")
+      options.report?.({ status: "warning", code: "not_configured" });
+    else if (result.error === "invalid_destination")
+      options.report?.({ status: "warning", code: "invalid_configuration" });
     const retryDelayMs = /^http_5\d\d$/.test(result.error)
       ? serverErrorBackoffMs(attempt)
       : result.retryDelayMs;
@@ -382,6 +389,7 @@ const claimAndSend = async (
     });
     return "failed";
   } catch {
+    options.report?.({ status: "warning", code: "queue_unavailable" });
     safeLog(logger, "error", "discord_notification_failed", {
       id: row.id,
       kind: row.kind,
@@ -488,6 +496,7 @@ export async function dispatchDueDiscordNotifications(
       .all<NotificationRow>();
     return deliverRows(env, ready.results ?? [], options, nowDate);
   } catch {
+    options.report?.({ status: "warning", code: "queue_unavailable" });
     safeLog(logger, "error", "discord_notifications_dispatch_failed", {
       category: "queue",
     });
