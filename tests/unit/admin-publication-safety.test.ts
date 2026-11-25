@@ -14,7 +14,7 @@ const article = {
   versionId: articleVersionId,
 };
 
-async function signedHeaders(body: string) {
+async function signedHeaders(body: string): Promise<Record<string, string>> {
   const timestamp = String(Date.now());
   const key = await crypto.subtle.importKey(
     "raw",
@@ -35,6 +35,31 @@ async function signedHeaders(body: string) {
     "content-type": "application/json",
     "x-atlasez-release-timestamp": timestamp,
     "x-atlasez-release-signature": `sha256=${hex}`,
+  };
+}
+
+async function signedGithubHeaders(
+  body: string,
+): Promise<Record<string, string>> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode("github-webhook-secret"),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(body),
+  );
+  const hex = [...new Uint8Array(signature)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return {
+    "content-type": "application/json",
+    "x-github-event": "ping",
+    "x-hub-signature-256": `sha256=${hex}`,
   };
 }
 
@@ -213,11 +238,292 @@ function currentDeploymentResponse() {
   });
 }
 
+function streamingRequest(
+  url: string,
+  chunkBytes: number,
+  totalChunks: number,
+  extraHeaders: Record<string, string> = {},
+) {
+  let pulled = 0;
+  let cancelled = false;
+  const chunk = new Uint8Array(chunkBytes);
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (pulled >= totalChunks) {
+        controller.close();
+        return;
+      }
+      pulled += 1;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const request = new Request(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...extraHeaders },
+    body,
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
+  return {
+    request,
+    totalChunks,
+    get pulled() {
+      return pulled;
+    },
+    get cancelled() {
+      return cancelled;
+    },
+  };
+}
+
+function splitBytesRequest(
+  url: string,
+  bytes: Uint8Array,
+  splitAt: number,
+  headers: Record<string, string>,
+) {
+  let pulled = 0;
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (pulled === 0) controller.enqueue(bytes.subarray(0, splitAt));
+      else if (pulled === 1) controller.enqueue(bytes.subarray(splitAt));
+      else {
+        controller.close();
+        return;
+      }
+      pulled += 1;
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const request = new Request(url, {
+    method: "POST",
+    headers,
+    body,
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
+  return {
+    request,
+    get pulled() {
+      return pulled;
+    },
+    get cancelled() {
+      return cancelled;
+    },
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("記事公開候補の永続化と切替復旧", () => {
+  it("候補照合の失敗を分類し相関ID付きで記録する", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ success: false }), { status: 403 }),
+        ),
+    );
+    const pending: Promise<unknown>[] = [];
+    const database = {
+      prepare: () => ({
+        bind: () => ({ all: async () => ({ results: [] }) }),
+      }),
+    };
+
+    await worker.scheduled(
+      { cron: "*/1 * * * *" },
+      {
+        REPORTS: database,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+      } as never,
+      {
+        waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+      } as never,
+    );
+    await Promise.all(pending);
+
+    const eventText = errorLog.mock.calls
+      .map(([message]) => message)
+      .find(
+        (message): message is string =>
+          typeof message === "string" &&
+          message.includes("editorial_release_reconciliation_failed"),
+      );
+    expect(eventText).toBeDefined();
+    const event = JSON.parse(eventText!);
+    expect(event).toMatchObject({
+      event: "editorial_release_reconciliation_failed",
+      failureKind: "configuration",
+      errorCode: "cloudflare_deployment_lookup_failed",
+      retryable: false,
+    });
+    expect(event.correlationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+  });
+
+  it("Content-Lengthのない過大な候補・有効化Webhookを読み切る前に停止する", async () => {
+    const cloudflareFetch = vi.fn();
+    vi.stubGlobal("fetch", cloudflareFetch);
+    for (const path of [
+      "/api/internal/editorial-release/candidate",
+      "/api/internal/editorial-release/activated",
+    ]) {
+      const streamed = streamingRequest(
+        `https://admin.atlasez.org${path}`,
+        250_000,
+        10,
+      );
+      expect(streamed.request.headers.get("content-length")).toBeNull();
+      const response = await worker.fetch(streamed.request, {
+        REPORTS: new ReleaseDatabase(),
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+      } as never);
+
+      expect(response.status).toBe(413);
+      expect(streamed.cancelled).toBe(true);
+      expect(streamed.pulled).toBeLessThan(streamed.totalChunks);
+    }
+    expect(cloudflareFetch).not.toHaveBeenCalled();
+  });
+
+  it("異常または過少なContent-Lengthを信用せず実体の上限超過でcancelする", async () => {
+    for (const contentLength of ["not-a-number", "-1", "1"]) {
+      const streamed = streamingRequest(
+        "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+        250_000,
+        10,
+        { "content-length": contentLength },
+      );
+      const response = await worker.fetch(streamed.request, {
+        REPORTS: new ReleaseDatabase(),
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+      } as never);
+
+      expect(response.status).toBe(413);
+      expect(streamed.cancelled).toBe(true);
+      expect(streamed.pulled).toBeLessThan(streamed.totalChunks);
+    }
+
+    const declaredOversize = streamingRequest(
+      "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+      1,
+      2,
+      { "content-length": "1000001" },
+    );
+    const response = await worker.fetch(declaredOversize.request, {
+      REPORTS: new ReleaseDatabase(),
+      EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+      CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+    } as never);
+    expect(response.status).toBe(413);
+    expect(declaredOversize.cancelled).toBe(true);
+    expect(declaredOversize.pulled).toBeLessThan(declaredOversize.totalChunks);
+  });
+
+  it("1,000,000 bytesちょうどを受け入れ、UTF-8の途中で分割された署名本文を検証する", async () => {
+    const database = new ReleaseDatabase();
+    const payload = { ...candidatePayload(), note: "公開候補 東京" };
+    const json = JSON.stringify(payload);
+    const maxBytes = 1_000_000;
+    const exactBody = `${json}${" ".repeat(maxBytes - new TextEncoder().encode(json).byteLength)}`;
+    const exactHeaders = await signedHeaders(exactBody);
+    exactHeaders["content-length"] = String(
+      new TextEncoder().encode(exactBody).byteLength,
+    );
+    vi.stubGlobal("fetch", vi.fn(currentDeploymentResponse));
+
+    const exactResponse = await worker.fetch(
+      new Request(
+        "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+        { method: "POST", headers: exactHeaders, body: exactBody },
+      ),
+      {
+        REPORTS: database,
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+        GITHUB_REPOSITORY: "Atlasez/Atlasez01",
+      } as never,
+    );
+    expect(exactResponse.status).toBe(200);
+
+    const utf8Body = JSON.stringify(payload);
+    const utf8Bytes = new TextEncoder().encode(utf8Body);
+    const japaneseByte = utf8Bytes.findIndex((byte) => byte === 0xe5);
+    expect(japaneseByte).toBeGreaterThanOrEqual(0);
+    const utf8Headers = await signedHeaders(utf8Body);
+    const split = splitBytesRequest(
+      "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+      utf8Bytes,
+      japaneseByte + 1,
+      utf8Headers,
+    );
+    const utf8Response = await worker.fetch(split.request, {
+      REPORTS: new ReleaseDatabase(),
+      EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+      CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+      GITHUB_REPOSITORY: "Atlasez/Atlasez01",
+    } as never);
+    expect(utf8Response.status).toBe(200);
+    expect(split.pulled).toBe(2);
+    expect(split.cancelled).toBe(false);
+  });
+
+  it("2 MB超過のGitHub WebhookをContent-Lengthなしでも読み切らず停止する", async () => {
+    const streamed = streamingRequest(
+      "https://admin.atlasez.org/api/internal/github-publication-webhook",
+      1_000_000,
+      30,
+    );
+    expect(streamed.request.headers.get("content-length")).toBeNull();
+    const response = await worker.fetch(streamed.request, {
+      GITHUB_WEBHOOK_SECRET: "github-webhook-secret",
+    } as never);
+
+    expect(response.status).toBe(413);
+    expect(streamed.cancelled).toBe(true);
+    expect(streamed.pulled).toBeLessThan(streamed.totalChunks);
+  });
+
+  it("署名付きGitHub Webhookは2,000,000 bytesちょうどまで受け入れる", async () => {
+    const prefix = JSON.stringify({ zen: "ping" });
+    const maxBytes = 2_000_000;
+    const body = `${prefix}${" ".repeat(maxBytes - new TextEncoder().encode(prefix).byteLength)}`;
+    const headers = await signedGithubHeaders(body);
+    headers["content-length"] = String(
+      new TextEncoder().encode(body).byteLength,
+    );
+    const response = await worker.fetch(
+      new Request(
+        "https://admin.atlasez.org/api/internal/github-publication-webhook",
+        {
+          method: "POST",
+          headers,
+          body,
+        },
+      ),
+      { GITHUB_WEBHOOK_SECRET: "github-webhook-secret" } as never,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      event: "ping",
+    });
+  });
+
   it("候補に含まれる記事とD1版IDを切替前に一括保存する", async () => {
     const database = new ReleaseDatabase();
     const body = JSON.stringify(candidatePayload());
@@ -323,6 +629,124 @@ describe("記事公開候補の永続化と切替復旧", () => {
       );
     expect(savedArticle?.bindings).toContain(documentId);
     expect(savedArticle?.bindings).not.toContain(duplicateDocumentId);
+  });
+
+  it("削除済み記事を下書きとして版履歴へ解決し、後続候補の登録を続ける", async () => {
+    const database = new ReleaseDatabase();
+    const deletedDocumentId = "44444444-4444-4444-8444-444444444444";
+    const deletedVersionId = "f3aa94a0-fd78-4d4a-bf88-7284c5cebf57";
+    const deletedDraft = {
+      articleId: "ja-math-set-theory-retired-note",
+      path: "src/content/articles/jpn/mathematics/set-theory/retired-note.md",
+      status: "draft",
+      versionId: deletedVersionId,
+    };
+    database.documentRows.push({
+      id: deletedDocumentId,
+      source_article_id: deletedDraft.articleId,
+      locale: "ja",
+      subject: "mathematics",
+      category: "set-theory",
+      slug: "retired-note",
+      current_version_id: deletedVersionId,
+      published_version_id: null,
+      deleted_at: "2026-11-22T00:00:00.000Z",
+    });
+    database.revisionRows.push({
+      id: deletedVersionId,
+      document_id: deletedDocumentId,
+    });
+    database.catalogRows.push({
+      path: deletedDraft.path,
+      identity_key: "ja/mathematics/set-theory/retired-note",
+      repository: "Atlasez/Atlasez01",
+      source_article_id: deletedDraft.articleId,
+      document_id: deletedDocumentId,
+    });
+    const body = JSON.stringify(candidatePayload([article, deletedDraft]));
+    vi.stubGlobal("fetch", vi.fn(currentDeploymentResponse));
+
+    const response = await worker.fetch(
+      new Request(
+        "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+        {
+          method: "POST",
+          headers: await signedHeaders(body),
+          body,
+        },
+      ),
+      {
+        REPORTS: database,
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+        GITHUB_REPOSITORY: "Atlasez/Atlasez01",
+      } as never,
+    );
+
+    const responseBody = await response.json();
+    expect(response.status, JSON.stringify(responseBody)).toBe(200);
+    const savedArticles = database.batches
+      .flat()
+      .find(({ query }) =>
+        query.includes("INSERT INTO editorial_release_candidate_articles"),
+      );
+    expect(savedArticles?.bindings).toContain(deletedDocumentId);
+    expect(savedArticles?.bindings).toContain(deletedVersionId);
+  });
+
+  it("削除済み記事が公開状態で候補に含まれたらD1登録前に拒否する", async () => {
+    const database = new ReleaseDatabase();
+    const deletedDocumentId = "44444444-4444-4444-8444-444444444444";
+    const deletedVersionId = "f3aa94a0-fd78-4d4a-bf88-7284c5cebf57";
+    const deletedArticle = {
+      articleId: "ja-math-set-theory-retired-note",
+      path: "src/content/articles/jpn/mathematics/set-theory/retired-note.md",
+      status: "published",
+      versionId: deletedVersionId,
+    };
+    database.documentRows.push({
+      id: deletedDocumentId,
+      source_article_id: deletedArticle.articleId,
+      locale: "ja",
+      subject: "mathematics",
+      category: "set-theory",
+      slug: "retired-note",
+      current_version_id: deletedVersionId,
+      published_version_id: null,
+      deleted_at: "2026-11-22T00:00:00.000Z",
+    });
+    database.catalogRows.push({
+      path: deletedArticle.path,
+      identity_key: "ja/mathematics/set-theory/retired-note",
+      repository: "Atlasez/Atlasez01",
+      source_article_id: deletedArticle.articleId,
+      document_id: deletedDocumentId,
+    });
+    const body = JSON.stringify(candidatePayload([article, deletedArticle]));
+    vi.stubGlobal("fetch", vi.fn(currentDeploymentResponse));
+
+    const response = await worker.fetch(
+      new Request(
+        "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+        {
+          method: "POST",
+          headers: await signedHeaders(body),
+          body,
+        },
+      ),
+      {
+        REPORTS: database,
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+        GITHUB_REPOSITORY: "Atlasez/Atlasez01",
+      } as never,
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "release_deleted_article",
+    });
+    expect(database.batches).toHaveLength(0);
   });
 
   it("41件を超える記事版をD1の100 bind上限内で候補登録する", async () => {

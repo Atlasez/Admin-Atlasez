@@ -83,7 +83,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
     const saveViewButton = root.querySelector<HTMLButtonElement>("[data-action-save-view]")!;
     const escape = (value: unknown) => String(value ?? "").replace(/[&<>\"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[character] ?? character));
     const formatTime = (value: string) => value ? new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "";
-    const statusLabels: Record<string, string> = { open: "未着手", doing: "進行中", done: "完了", archived: "アーカイブ済み", draft: "下書き", "in-review": "査読中", approved: "承認済み", published: "公開済み", scheduled: "予約投稿", new: "新規", reviewing: "確認中", accepted: "受け入れ済み", rejected: "却下", pending: "承認待ち", unread: "未読", read: "既読" };
+    const statusLabels: Record<string, string> = { open: "未着手", doing: "進行中", done: "完了", archived: "アーカイブ済み", cancelled: "取消", draft: "下書き", "in-review": "査読中", approved: "承認済み", published: "公開済み", scheduled: "予約投稿", new: "新規", reviewing: "確認中", accepted: "受け入れ済み", rejected: "却下", pending: "承認待ち", unread: "未読", read: "既読" };
     const kindLabels: Record<string, string> = { task: "タスク", document: "記事", application: "応募", approval: "承認" };
     const kindIcons: Record<string, string> = { task: "✓", document: "文", application: "人", approval: "承" };
     const priorityLabels: Record<string, string> = { urgent: "今日対応", "due-soon": "期限間近", new: "新着" };
@@ -160,7 +160,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
         ? ""
         : `全${assignedTotal}件のうち、この画面には${assignedVisible}件を表示しています。<a href="/admin/member-tasks/">タスク管理</a>、<a href="/admin/editor/">記事一覧</a>、応募・承認の各ページで全件を確認できます。`;
       if (!rows.length) {
-        itemsNode.innerHTML = `<div class="action-empty"><strong>${filter === "history" ? "完了・アーカイブ済みの項目はありません。" : filter === "approvals" ? "承認待ちの項目はありません。" : "対応が必要な項目はありません。"}</strong><span>${filter === "history" ? "対応を完了するとここに表示されます。" : "新しい項目が追加されるとここに表示されます。"}</span></div>`;
+          itemsNode.innerHTML = `<div class="action-empty"><strong>${filter === "history" ? "完了・取消・アーカイブ済みの項目はありません。" : filter === "approvals" ? "承認待ちの項目はありません。" : "対応が必要な項目はありません。"}</strong><span>${filter === "history" ? "対応を完了するとここに表示されます。" : "新しい項目が追加されるとここに表示されます。"}</span></div>`;
         renderBulkBar();
         return;
       }

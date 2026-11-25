@@ -68,6 +68,7 @@ import {
   isProfileImageDataUrl,
   profileImageMaxStoredUrlLength,
 } from "./lib/profile-image";
+import { readRequestTextLimited } from "./lib/request-body-text";
 // ローカルWrangler開発時だけ同一Workerのexportをフォールバックとして使う。
 // Preview/本番は外部の専用Worker bindingを必ず経由する。
 export { EditorialCollaborationRoom } from "./editorial-collaboration-worker";
@@ -225,9 +226,8 @@ type EditorialDocument = {
   updated_at: string;
   reviewed_at: string | null;
   published_at: string | null;
-  archived_at: string | null;
-  archived_by: string | null;
-  archive_expires_at: string | null;
+  deleted_at: string | null;
+  deleted_by: string | null;
   scheduled_publish_at: string | null;
   scheduled_publish_claimed_at: string | null;
   publication_review_stage: EditorialPublicationReviewStage | null;
@@ -1880,6 +1880,8 @@ const isTrustedArticleUrl = (value: string) => {
   }
 };
 
+const articleReportIngestRequestMaxBytes = 64_000;
+
 async function ingestArticleReport(
   request: Request,
   env: Env,
@@ -1891,9 +1893,19 @@ async function ingestArticleReport(
   )
     return json({ error: "JSON形式で送信してください。" }, 415);
 
+  const body = await readRequestTextLimited(
+    request,
+    articleReportIngestRequestMaxBytes,
+  );
+  if (body === null)
+    return json({ error: "送信内容が大きすぎます。" }, 413);
+
   let payload: ArticleReportIngestPayload;
   try {
-    payload = (await request.json()) as ArticleReportIngestPayload;
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return json({ error: "入力内容を読み取れませんでした。" }, 400);
+    payload = parsed as ArticleReportIngestPayload;
   } catch {
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
@@ -2419,6 +2431,9 @@ type AdminAuditAction =
   | "article_approved"
   | "article_published"
   | "article_unpublished"
+  | "article_deletion_requested"
+  | "article_deletion_rejected"
+  | "article_deleted"
   | "feedback_request_withdrawn"
   | "permission_granted"
   | "permission_replaced"
@@ -2462,6 +2477,9 @@ const adminAuditActionLabel = (action: AdminAuditAction | string) => ({
   article_approved: "記事を承認",
   article_published: "記事を公開",
   article_unpublished: "記事の公開を取り消し",
+  article_deletion_requested: "記事の削除を申請",
+  article_deletion_rejected: "記事の削除申請を却下",
+  article_deleted: "記事を削除",
   feedback_request_withdrawn: "フィードバック依頼を取り下げ",
   permission_granted: "権限を付与",
   permission_replaced: "権限を変更",
@@ -2634,8 +2652,8 @@ async function listWorkflowTransitions(request: Request, env: Env): Promise<Resp
   const scope = await getGlobalAdminScope(request, env);
   if (isResponse(scope)) return scope;
   const [taskCounts, documentCounts, applicationCounts, approvalCounts] = await Promise.all([
-    env.REPORTS.prepare("SELECT status AS state,COUNT(*) AS count FROM editorial_tasks WHERE archived_at IS NULL GROUP BY status").all<{ state: string; count: number }>(),
-    env.REPORTS.prepare("SELECT status AS state,COUNT(*) AS count FROM editorial_documents WHERE archived_at IS NULL GROUP BY status").all<{ state: string; count: number }>().catch(() => ({ results: [] as Array<{ state: string; count: number }> })),
+    env.REPORTS.prepare("SELECT status AS state,COUNT(*) AS count FROM editorial_tasks WHERE archived_at IS NULL AND cancelled_at IS NULL GROUP BY status").all<{ state: string; count: number }>(),
+    env.REPORTS.prepare("SELECT status AS state,COUNT(*) AS count FROM editorial_documents WHERE deleted_at IS NULL GROUP BY status").all<{ state: string; count: number }>(),
     env.REPORTS.prepare("SELECT status AS state,COUNT(*) AS count FROM atlasez_member_applications GROUP BY status").all<{ state: string; count: number }>().catch(() => ({ results: [] as Array<{ state: string; count: number }> })),
     env.REPORTS.prepare("SELECT status AS state,COUNT(*) AS count FROM editorial_member_profile_change_requests GROUP BY status").all<{ state: string; count: number }>().catch(() => ({ results: [] as Array<{ state: string; count: number }> })),
   ]);
@@ -2771,9 +2789,10 @@ async function transitionTaskState(
   if (replay && (replay.entity_type !== "task" || replay.entity_id !== taskId || replay.from_state !== fromState || replay.to_state !== toState))
     return json({ error: "この操作キーは別の状態変更に使われています。", code: "IDEMPOTENCY_KEY_REUSED" }, 409);
   const task = await env.REPORTS.prepare(
-    "SELECT project_id,subject,assignee_email,task_kind,title,created_by,status,updated_at,archived_at FROM editorial_tasks WHERE id=?",
-  ).bind(taskId).first<{ project_id: string; subject: string | null; assignee_email: string | null; task_kind: string; title: string; created_by: string; status: string; updated_at: string; archived_at: string | null }>();
+    "SELECT project_id,subject,assignee_email,task_kind,title,created_by,status,updated_at,archived_at,cancelled_at FROM editorial_tasks WHERE id=?",
+  ).bind(taskId).first<{ project_id: string; subject: string | null; assignee_email: string | null; task_kind: string; title: string; created_by: string; status: string; updated_at: string; archived_at: string | null; cancelled_at: string | null }>();
   if (!task) return json({ error: "タスクが見つかりません。" }, 404);
+  if (task.cancelled_at) return json({ error: "取消済みのタスクは変更できません。", code: "TASK_CANCELLED" }, 409);
   const project = await resolveOperationProject(env, scope, task.project_id);
   if (isResponse(project)) return project;
   if (!scope.isManager && !canManageProject && !taskAssignedTo(task.assignee_email, scope.email, task.task_kind) && task.created_by.toLowerCase() !== scope.email.toLowerCase())
@@ -2802,7 +2821,7 @@ async function transitionTaskState(
   // D1 batch is transactional; changes() ties the event/idempotency row to the CAS update.
   const [update, event] = await env.REPORTS.batch([
     env.REPORTS.prepare(
-      "UPDATE editorial_tasks SET status=?,updated_at=? WHERE id=? AND status=? AND updated_at=?",
+      "UPDATE editorial_tasks SET status=?,updated_at=? WHERE id=? AND status=? AND updated_at=? AND cancelled_at IS NULL",
     ).bind(toState, now, taskId, fromState, task.updated_at),
     workflowEventStatement(
       env,
@@ -6310,7 +6329,7 @@ async function updateMemberDiscordRoles(
 }
 
 const editorialDocumentSelect = `SELECT id, creator_kind, current_version_id, published_version_id, source_article_id, subject, category, locale, slug,
-  title, summary, concept_id, concept_name, concept_name_en, concept_is_new, body, writing_memo, latex_engine, status, created_by, updated_by, created_at, updated_at, reviewed_at, published_at, archived_at, archived_by, archive_expires_at, scheduled_publish_at, scheduled_publish_claimed_at, publication_review_stage, publication_review_round, publication_pr_number, publication_pr_url, publication_branch, publication_action, publication_requested_at, locked_ranges, article_references,
+  title, summary, concept_id, concept_name, concept_name_en, concept_is_new, body, writing_memo, latex_engine, status, created_by, updated_by, created_at, updated_at, reviewed_at, published_at, deleted_at, deleted_by, scheduled_publish_at, scheduled_publish_claimed_at, publication_review_stage, publication_review_round, publication_pr_number, publication_pr_url, publication_branch, publication_action, publication_requested_at, locked_ranges, article_references,
   CASE WHEN creator_kind='organization' THEN 'Atlasez運営' ELSE COALESCE(NULLIF(TRIM((SELECT p.display_name FROM editorial_member_profiles p WHERE lower(p.email)=lower(editorial_documents.created_by) LIMIT 1)), ''), created_by) END AS created_by_display_name,
   COALESCE(NULLIF(TRIM((SELECT p.display_name FROM editorial_member_profiles p WHERE lower(p.email)=lower(editorial_documents.updated_by) LIMIT 1)), ''), updated_by) AS updated_by_display_name,
   CASE WHEN creator_kind='organization' THEN '' ELSE COALESCE((SELECT p.avatar_url FROM editorial_member_profiles p WHERE lower(p.email)=lower(editorial_documents.created_by) LIMIT 1), '') END AS created_by_avatar_url,
@@ -6337,6 +6356,25 @@ const canReviewDocument = (
     document.publication_review_stage === "project-leader" &&
     scope.isProjectLeader) ||
   (scope.isManager && document.status === "in-review");
+
+async function canReadEditorialDocumentForDeletionReview(
+  env: Env,
+  scope: AdminScope,
+  documentId: string,
+): Promise<boolean> {
+  if (!scope.isManager && !scope.isProjectLeader) return false;
+  const request = await env.REPORTS.prepare(
+    `SELECT 1 AS can_read
+       FROM editorial_document_deletion_requests r
+       JOIN editorial_documents d ON d.id=r.document_id
+      WHERE r.document_id=? AND r.status='pending'
+        AND lower(r.requested_by)<>lower(?) AND d.deleted_at IS NULL
+      LIMIT 1`,
+  )
+    .bind(documentId, scope.email)
+    .first<{ can_read: number }>();
+  return Boolean(request);
+}
 
 const canCoordinateSubject = (scope: AdminScope, subject: string) =>
   Boolean(
@@ -6504,7 +6542,7 @@ const editorialAssetDocument = async (
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
   const document = await env.REPORTS.prepare(
-    "SELECT id, subject, status, publication_review_stage, created_by FROM editorial_documents WHERE id = ?",
+    "SELECT id, subject, status, publication_review_stage, created_by, deleted_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
     .first<
@@ -6515,12 +6553,19 @@ const editorialAssetDocument = async (
         | "status"
         | "publication_review_stage"
         | "created_by"
+        | "deleted_at"
       >
       >();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (!canReviewDocument(scope, document))
+  if (document.deleted_at)
+    return json({ error: "削除済みの記事の素材は扱えません。" }, 410);
+  const canReview = canReviewDocument(scope, document);
+  const readOnly =
+    !canReview &&
+    (await canReadEditorialDocumentForDeletionReview(env, scope, documentId));
+  if (!canReview && !readOnly)
     return json({ error: "この原稿の素材を扱う権限がありません。" }, 403);
-  return { scope, document };
+  return { scope, document, readOnly };
 };
 
 async function listEditorialAssets(
@@ -6557,6 +6602,8 @@ async function uploadEditorialAsset(
 ): Promise<Response> {
   const access = await editorialAssetDocument(request, env, documentId);
   if (access instanceof Response) return access;
+  if (access.readOnly)
+    return json({ error: "削除申請の審査中は素材を変更できません。" }, 403);
   if (!isSameOrigin(request))
     return json({ error: "この送信元からは受け付けられません。" }, 403);
   if (
@@ -6662,7 +6709,7 @@ async function deleteEditorialAsset(
   if (isResponse(scope)) return scope;
   const asset = await env.REPORTS.prepare(
     `SELECT a.id, a.document_id, a.filename, d.subject, d.status,
-            d.publication_review_stage, d.created_by, d.body
+            d.publication_review_stage, d.created_by, d.body, d.deleted_at
      FROM editorial_assets a
      JOIN editorial_documents d ON d.id = a.document_id
      WHERE a.id = ?`,
@@ -6675,8 +6722,10 @@ async function deleteEditorialAsset(
         publication_review_stage: EditorialPublicationReviewStage | null;
         created_by: string;
         body: string;
+        deleted_at: string | null;
       }
     >();
+  if (asset?.deleted_at) return json({ error: "削除済みの記事の素材は変更できません。" }, 410);
   if (!asset || !canReviewDocument(scope, asset))
     return json({ error: "この素材を扱う権限がありません。" }, 403);
   if (!scope.isManager && asset.created_by !== scope.email)
@@ -6715,7 +6764,7 @@ async function serveEditorialAsset(
   if (isResponse(scope)) return scope;
   const asset = await env.REPORTS.prepare(
     `SELECT a.id, a.document_id, a.filename, a.media_type, a.bytes, a.data,
-            d.subject, d.status, d.publication_review_stage
+            d.subject, d.status, d.publication_review_stage, d.deleted_at
      FROM editorial_assets a
      JOIN editorial_documents d ON d.id = a.document_id
      WHERE a.id = ?`,
@@ -6726,9 +6775,23 @@ async function serveEditorialAsset(
         subject: string;
         status: EditorialDocumentStatus;
         publication_review_stage: EditorialPublicationReviewStage | null;
+        deleted_at: string | null;
       }
     >();
-  if (!asset || !canReviewDocument(scope, asset))
+  const canReview = asset ? canReviewDocument(scope, asset) : false;
+  const canReadForDeletionReview =
+    asset &&
+    !canReview &&
+    (await canReadEditorialDocumentForDeletionReview(
+      env,
+      scope,
+      asset.document_id,
+    ));
+  if (
+    !asset ||
+    asset.deleted_at ||
+    (!canReview && !canReadForDeletionReview)
+  )
     return new Response("Not found", { status: 404 });
   // D1 は環境によって BLOB を Uint8Array または ArrayBuffer として返す。
   // D1 の返却型を Response が確実に扱える ArrayBuffer に正規化する。
@@ -6954,8 +7017,7 @@ async function listEditorialDocuments(
     filters.push("d.subject = ?");
     values.push(requestedSubject);
   }
-  const includeArchived = searchParams.get("includeArchived") === "1";
-  if (!includeArchived) filters.push("d.archived_at IS NULL");
+  filters.push("d.deleted_at IS NULL");
   // Keep the first page small enough for Cloudflare's Worker CPU budget. The
   // article index can load additional pages explicitly, so a smaller default
   // does not reduce coverage while avoiding 503s when the D1 result contains
@@ -6977,7 +7039,7 @@ async function listEditorialDocuments(
   const where = filters.length ? ` WHERE ${filters.join(" AND ")}` : "";
   const result = await env.REPORTS.prepare(
     `SELECT d.id, d.creator_kind, d.current_version_id, d.published_version_id, d.source_article_id, d.subject, d.category, d.locale, d.slug, d.title, d.summary, d.concept_id, d.latex_engine,
-      d.status, d.created_by, d.updated_by, d.created_at, d.updated_at, d.reviewed_at, d.published_at, d.archived_at, d.archived_by, d.archive_expires_at, d.scheduled_publish_at, d.publication_review_stage,
+      d.status, d.created_by, d.updated_by, d.created_at, d.updated_at, d.reviewed_at, d.published_at, d.deleted_at, d.deleted_by, d.scheduled_publish_at, d.publication_review_stage,
       CASE WHEN d.creator_kind='organization' THEN 'Atlasez運営' ELSE COALESCE(NULLIF(TRIM(cp.display_name), ''), d.created_by) END AS created_by_display_name,
       COALESCE(NULLIF(TRIM(up.display_name), ''), d.updated_by) AS updated_by_display_name,
       CASE WHEN d.creator_kind='organization' THEN '' ELSE COALESCE(cp.avatar_url, '') END AS created_by_avatar_url,
@@ -7018,7 +7080,7 @@ async function listEditorialDocuments(
                     (SELECT t.assignee_email
                        FROM editorial_feedback_task_links link
                        JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
-                      WHERE link.document_id=d.id
+                      WHERE link.document_id=d.id AND t.cancelled_at IS NULL
                         AND NOT EXISTS (
                           SELECT 1 FROM workflow_transition_events e
                            WHERE e.entity_type='task' AND e.entity_id=t.id
@@ -7086,70 +7148,268 @@ async function listEditorialDocuments(
   });
 }
 
-const EDITORIAL_ARCHIVE_DAYS = 30;
-const editorialArchiveExpiry = (now: Date) =>
-  new Date(now.getTime() + EDITORIAL_ARCHIVE_DAYS * 24 * 60 * 60 * 1_000).toISOString();
+const canReviewEditorialDeletionRequests = (scope: AdminScope) =>
+  scope.isManager || Boolean(scope.isProjectLeader);
 
-async function updateEditorialDocumentArchive(
+async function isEditorialDocumentAbsentFromActiveRelease(
+  env: Env,
+  documentId: string,
+  sourceArticleId: string | null,
+): Promise<boolean> {
+  const deployment = await getCurrentEditorialWorkerDeployment(env);
+  const versions = deployment?.versions ?? [];
+  if (!deployment || versions.length !== 1 || versions[0]?.percentage !== 100)
+    return false;
+  const versionId = versions[0].version_id;
+  const recordedRelease = await env.REPORTS.prepare(
+    `SELECT c.version_id
+       FROM editorial_release_candidates c
+       JOIN editorial_publication_history h ON h.candidate_version_id=c.version_id
+      WHERE c.version_id=? AND c.state='activated'
+        AND c.worker_name=? AND c.deployment_id=? AND h.deployment_id=?
+      LIMIT 1`,
+  )
+    .bind(versionId, editorialReleaseWorkerName, deployment.id, deployment.id)
+    .first<{ version_id: string }>();
+  if (!recordedRelease) return false;
+  const articles = await env.REPORTS.prepare(
+    `SELECT article_status FROM editorial_release_candidate_articles
+      WHERE candidate_version_id=? AND (document_id=? OR (? IS NOT NULL AND article_id=?))`,
+  )
+    .bind(versionId, documentId, sourceArticleId, sourceArticleId)
+    .all<{ article_status: EditorialReleaseManifestEntry["status"] }>();
+  return (articles.results ?? []).every((article) => article.article_status !== "published");
+}
+
+async function getEditorialDocumentDeletionRequest(
   request: Request,
   env: Env,
   documentId: string,
-  archive: boolean,
 ): Promise<Response> {
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
   const document = await env.REPORTS.prepare(
-    "SELECT id, subject, status, created_by, published_at, published_version_id, publication_review_stage, scheduled_publish_at, archived_at, archived_by, archive_expires_at FROM editorial_documents WHERE id = ?",
-  )
-    .bind(documentId)
-    .first<Pick<EditorialDocument, "id" | "subject" | "status" | "created_by" | "published_at" | "published_version_id" | "publication_review_stage" | "scheduled_publish_at" | "archived_at" | "archived_by" | "archive_expires_at">>();
+    "SELECT id, subject, created_by, current_version_id, deleted_at FROM editorial_documents WHERE id=?",
+  ).bind(documentId).first<{
+    id: string; subject: string; created_by: string; current_version_id: string | null; deleted_at: string | null;
+  }>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (
-    (document.status !== "draft" && document.status !== "in-review") ||
-    document.publication_review_stage ||
-    document.published_version_id ||
-    document.published_at ||
-    document.scheduled_publish_at
-  )
-    return json(
-      { error: "アーカイブできるのは公開前の下書き・フィードバック中の記事です。公開審査中・公開済みの記事はアーカイブできません。" },
-      400,
-    );
-  if (!scope.isManager && document.created_by.toLowerCase() !== scope.email.toLowerCase() && !canEditSubject(scope, document.subject))
-    return json({ error: "この原稿をアーカイブする権限がありません。" }, 403);
+  const canRequest = canEditSubject(scope, document.subject) || document.created_by.toLowerCase() === scope.email.toLowerCase();
+  const canReview = canReviewEditorialDeletionRequests(scope);
+  const existing = await env.REPORTS.prepare(
+    `SELECT id, requested_version_id, requested_by, request_reason, status,
+            decided_by, decision_reason, created_at, updated_at, decided_at
+       FROM editorial_document_deletion_requests
+      WHERE document_id=? ORDER BY created_at DESC LIMIT 1`,
+  ).bind(documentId).first();
+  if (!canRequest && !canReview && (existing as { requested_by?: string } | null)?.requested_by?.toLowerCase() !== scope.email.toLowerCase())
+    return json({ error: "この原稿の削除申請を閲覧する権限がありません。" }, 403);
+  const current = existing as {
+    id: string; requested_version_id: string; requested_by: string; request_reason: string;
+    status: string; decided_by: string | null; decision_reason: string; created_at: string;
+    updated_at: string; decided_at: string | null;
+  } | null;
+  const state = current?.status === "pending" && current.requested_version_id !== document.current_version_id
+    ? "stale"
+    : current?.status ?? null;
+  return json({
+    request: current ? { ...current, status: state } : null,
+    deleted: Boolean(document.deleted_at),
+    canRequest: canRequest && Boolean(document.current_version_id) && !document.deleted_at,
+    canReview,
+    isRequester: current?.requested_by.toLowerCase() === scope.email.toLowerCase(),
+  });
+}
 
-  if (!archive) {
-    if (!document.archived_at) return json({ ok: true, archived: false });
-    if (document.archive_expires_at && Date.parse(document.archive_expires_at) <= Date.now())
-      return json({ error: `アーカイブ期限（${EDITORIAL_ARCHIVE_DAYS}日）を過ぎたため復元できません。` }, 410);
-    const now = new Date().toISOString();
-    const result = await env.REPORTS.prepare(
-      "UPDATE editorial_documents SET archived_at = NULL, archived_by = NULL, archive_expires_at = NULL, updated_at = ?, updated_by = ? WHERE id = ? AND archived_at = ? AND status IN ('draft', 'in-review') AND published_version_id IS NULL AND published_at IS NULL AND scheduled_publish_at IS NULL AND publication_review_stage IS NULL",
-    )
-      .bind(now, scope.email, documentId, document.archived_at)
-      .run();
-    if (Number(result.meta?.changes ?? 0) !== 1)
-      return json({ error: "原稿の状態が変わりました。再読み込みしてから復元してください。" }, 409);
-    return json({ ok: true, archived: false, archived_at: null, archive_expires_at: null });
-  }
+async function requestEditorialDocumentDeletion(
+  request: Request,
+  env: Env,
+  documentId: string,
+): Promise<Response> {
+  const scope = await getAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  if (!isSameOrigin(request)) return json({ error: "この送信元からは受け付けられません。" }, 403);
+  const payload = await request.json().catch(() => null) as { reason?: unknown } | null;
+  const reason = text(payload?.reason, 2_000);
+  const document = await env.REPORTS.prepare(
+    `SELECT id, subject, title, created_by, current_version_id, updated_at, deleted_at
+       FROM editorial_documents WHERE id=?`,
+  ).bind(documentId).first<{
+    id: string; subject: string; title: string; created_by: string; current_version_id: string | null; updated_at: string; deleted_at: string | null;
+  }>();
+  if (!document) return json({ error: "原稿が見つかりません。" }, 404);
+  if (document.deleted_at) return json({ error: "削除済みの記事です。" }, 410);
+  if (!document.current_version_id) return json({ error: "保存済みの版がない記事には削除を申請できません。記事を保存してからお試しください。" }, 409);
+  if (!canEditSubject(scope, document.subject) && document.created_by.toLowerCase() !== scope.email.toLowerCase())
+    return json({ error: "この記事の削除を申請する権限がありません。" }, 403);
+  const activePublishRun = await env.REPORTS.prepare(
+    `SELECT 1 AS active FROM editorial_publication_runs
+      WHERE document_id=? AND action='publish'
+        AND state IN ('queued','checks_pending','merge_pending','deploy_pending','retry_wait') LIMIT 1`,
+  ).bind(documentId).first<{ active: number }>();
+  if (activePublishRun) return json({ error: "公開処理中の記事は申請できません。公開処理の完了後にもう一度お試しください。" }, 409);
+  const now = new Date().toISOString();
+  const requestId = crypto.randomUUID();
+  const result = await env.REPORTS.batch([
+    env.REPORTS.prepare(
+      `UPDATE editorial_document_deletion_requests
+          SET status='stale', decision_reason='申請後に記事の版が更新されました。内容を確認して再申請してください。', updated_at=?
+        WHERE document_id=? AND status='pending' AND requested_version_id<>?`,
+    ).bind(now, documentId, document.current_version_id),
+    env.REPORTS.prepare(
+      `INSERT OR IGNORE INTO editorial_document_deletion_requests
+        (id,document_id,requested_version_id,requested_by,request_reason,status,created_at,updated_at)
+       SELECT ?,id,?,?,?,'pending',?,? FROM editorial_documents
+        WHERE id=? AND current_version_id=? AND deleted_at IS NULL
+          AND NOT EXISTS(SELECT 1 FROM editorial_publication_runs pr WHERE pr.document_id=editorial_documents.id AND pr.action='publish' AND pr.state IN ('queued','checks_pending','merge_pending','deploy_pending','retry_wait'))`,
+    ).bind(requestId, document.current_version_id, scope.email, reason, now, now, documentId, document.current_version_id),
+  ]);
+  const inserted = batchChangeCount(result, 1);
+  const active = await env.REPORTS.prepare(
+    `SELECT id, requested_version_id, requested_by, request_reason, status, created_at, updated_at
+       FROM editorial_document_deletion_requests WHERE document_id=? AND status='pending' LIMIT 1`,
+  ).bind(documentId).first();
+  if (!active) return json({ error: "記事の状態が変わりました。再読み込みしてから申請してください。" }, 409);
+  if (inserted !== 1 && (active as { requested_by?: string }).requested_by?.toLowerCase() !== scope.email.toLowerCase())
+    return json({ error: "この記事にはすでに未処理の削除申請があります。" }, 409);
+  if (inserted === 1) await recordAdminAudit(env, scope.email, "article_deletion_requested", "article", documentId, document.title, `記事の削除を申請：${document.title}`, { requestId, versionId: document.current_version_id });
+  await notifyEditorialDocumentChange(env, documentId);
+  return json({ ok: true, request: active }, inserted === 1 ? 201 : 200);
+}
 
-  if (document.archived_at && document.archive_expires_at && Date.parse(document.archive_expires_at) > Date.now())
-    return json({ ok: true, archived: true, archived_at: document.archived_at, archive_expires_at: document.archive_expires_at });
-  if (document.archived_at)
-    return json({ error: `アーカイブ期限（${EDITORIAL_ARCHIVE_DAYS}日）を過ぎたため再アーカイブできません。` }, 410);
-  const now = new Date();
-  const archivedAt = now.toISOString();
-  const archiveExpiresAt = editorialArchiveExpiry(now);
+async function listEditorialDocumentDeletionRequests(request: Request, env: Env): Promise<Response> {
+  const scope = await getAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  if (!canReviewEditorialDeletionRequests(scope)) return json({ error: "削除申請を審査する権限がありません。" }, 403);
   const result = await env.REPORTS.prepare(
-    "UPDATE editorial_documents SET archived_at = ?, archived_by = ?, archive_expires_at = ?, updated_at = ?, updated_by = ? WHERE id = ? AND archived_at IS NULL AND status IN ('draft', 'in-review') AND published_version_id IS NULL AND published_at IS NULL AND scheduled_publish_at IS NULL AND publication_review_stage IS NULL",
-  )
-    .bind(archivedAt, scope.email, archiveExpiresAt, archivedAt, scope.email, documentId)
-    .run();
-  if (Number(result.meta?.changes ?? 0) !== 1)
-    return json({ error: "原稿の状態が変わりました。再読み込みしてからアーカイブしてください。" }, 409);
-  return json({ ok: true, archived: true, archived_at: archivedAt, archive_expires_at: archiveExpiresAt });
+    `SELECT r.id,r.document_id,r.requested_version_id,r.requested_by,r.request_reason,r.created_at,
+            d.title,d.subject,d.status AS document_status,d.current_version_id,d.published_version_id,
+            d.source_article_id,d.published_at,d.publication_review_stage,d.scheduled_publish_at,d.publication_action,d.publication_pr_number,
+            EXISTS(SELECT 1 FROM editorial_publication_history h
+                    JOIN editorial_release_candidate_articles a ON a.candidate_version_id=h.candidate_version_id
+                   WHERE a.document_id=d.id AND a.article_status='published') AS has_publication_history,
+            EXISTS(SELECT 1 FROM editorial_article_catalog c
+                   WHERE c.document_id=d.id AND c.public_status='published') AS has_published_catalog_entry,
+            COALESCE(NULLIF(TRIM(p.display_name),''),r.requested_by) AS requester_name
+       FROM editorial_document_deletion_requests r
+       JOIN editorial_documents d ON d.id=r.document_id
+       LEFT JOIN editorial_member_profiles p ON lower(p.email)=lower(r.requested_by)
+      WHERE r.status='pending' AND d.deleted_at IS NULL
+      ORDER BY r.created_at ASC LIMIT 100`,
+  ).all();
+  return json({ requests: result.results ?? [] });
+}
+
+async function decideEditorialDocumentDeletionRequest(
+  request: Request,
+  env: Env,
+  requestId: string,
+): Promise<Response> {
+  const scope = await getAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  if (!isSameOrigin(request)) return json({ error: "この送信元からは受け付けられません。" }, 403);
+  if (!canReviewEditorialDeletionRequests(scope)) return json({ error: "削除申請を審査する権限がありません。" }, 403);
+  const payload = await request.json().catch(() => null) as { decision?: unknown; reason?: unknown } | null;
+  const decision = payload?.decision === "approved" || payload?.decision === "rejected" ? payload.decision : null;
+  const reason = text(payload?.reason, 2_000);
+  if (!decision) return json({ error: "承認または却下を選択してください。" }, 400);
+  if (decision === "rejected" && !reason) return json({ error: "却下理由を入力してください。" }, 400);
+  const row = await env.REPORTS.prepare(
+    `SELECT r.id,r.document_id,r.requested_version_id,r.requested_by,r.status,d.current_version_id,d.source_article_id,
+            d.title,d.published_at,d.published_version_id,d.publication_review_stage,d.scheduled_publish_at,
+            d.publication_action,d.publication_pr_number,d.deleted_at
+       FROM editorial_document_deletion_requests r JOIN editorial_documents d ON d.id=r.document_id
+      WHERE r.id=?`,
+  ).bind(requestId).first<{
+    id: string; document_id: string; requested_version_id: string; requested_by: string; status: string;
+    current_version_id: string | null; source_article_id: string | null; title: string; published_at: string | null; published_version_id: string | null;
+    publication_review_stage: string | null; scheduled_publish_at: string | null; publication_action: string | null;
+    publication_pr_number: number | null; deleted_at: string | null;
+  }>();
+  if (!row) return json({ error: "削除申請が見つかりません。" }, 404);
+  if (row.requested_by.toLowerCase() === scope.email.toLowerCase()) return json({ error: "自分が申請した削除は審査できません。" }, 403);
+  if (row.status !== "pending") return json({ error: "この削除申請はすでに処理されています。" }, 409);
+  const now = new Date().toISOString();
+  if (row.requested_version_id !== row.current_version_id) {
+    await env.REPORTS.prepare(
+      `UPDATE editorial_document_deletion_requests
+          SET status='stale',decision_reason='申請後に記事の版が更新されました。内容を確認して再申請してください。',updated_at=?
+        WHERE id=? AND status='pending'`,
+    ).bind(now, requestId).run();
+    return json({ error: "申請後に記事の版が更新されたため、この申請は無効です。記事を確認して再申請してください。", code: "STALE_DELETION_REQUEST" }, 409);
+  }
+  if (decision === "rejected") {
+    const updated = await env.REPORTS.prepare(
+      `UPDATE editorial_document_deletion_requests
+          SET status='rejected',decided_by=?,decision_reason=?,decided_at=?,updated_at=?
+        WHERE id=? AND status='pending' AND requested_version_id=?
+          AND EXISTS(SELECT 1 FROM editorial_documents d WHERE d.id=document_id AND d.current_version_id=? AND d.deleted_at IS NULL)`,
+    ).bind(scope.email, reason, now, now, requestId, row.requested_version_id, row.current_version_id).run();
+    if (Number(updated.meta?.changes ?? 0) !== 1) return json({ error: "申請状態が変わりました。再読み込みしてください。" }, 409);
+    await recordAdminAudit(env, scope.email, "article_deletion_rejected", "article", row.document_id, row.title, `記事の削除申請を却下：${row.title}`, { requestId, reason });
+    await notifyEditorialDocumentChange(env, row.document_id);
+    return json({ ok: true, status: "rejected" });
+  }
+  const activePublishRun = await env.REPORTS.prepare(
+    `SELECT 1 AS active FROM editorial_publication_runs
+      WHERE document_id=? AND action='publish'
+        AND state IN ('queued','checks_pending','merge_pending','deploy_pending','retry_wait') LIMIT 1`,
+  ).bind(row.document_id).first<{ active: number }>();
+  if (row.published_at || row.published_version_id)
+    return json({ error: "公開済みの記事は削除できません。先に既存の公開停止を完了し、公開版と配信履歴を確認してください。" }, 409);
+  let hasPublicationFootprint: boolean;
+  try {
+    const footprint = await env.REPORTS.prepare(
+      `SELECT (
+         EXISTS(SELECT 1 FROM editorial_publication_history h
+                 JOIN editorial_release_candidate_articles a ON a.candidate_version_id=h.candidate_version_id
+                WHERE a.document_id=? AND a.article_status='published')
+         OR EXISTS(SELECT 1 FROM editorial_article_catalog c
+                    WHERE c.document_id=? AND c.public_status='published')
+       ) AS found`,
+    ).bind(row.document_id, row.document_id).first<{ found: number }>();
+    hasPublicationFootprint = Boolean(footprint?.found) || Boolean(row.source_article_id);
+  } catch {
+    return json({ error: "公開履歴を確認できないため削除を承認できません。公開状態とD1の記録を確認してください。", code: "deletion_publication_history_unavailable" }, 409);
+  }
+  if (hasPublicationFootprint) {
+    try {
+      if (!(await isEditorialDocumentAbsentFromActiveRelease(env, row.document_id, row.source_article_id)))
+        return json({ error: "Cloudflareの現行配信とD1の公開候補・履歴が一致しないか、対象記事が公開候補に含まれています。照合が完了するまで削除を承認できません。", code: "deletion_publication_state_unverified" }, 409);
+    } catch {
+      return json({ error: "Cloudflareの現行配信を確認できないため削除を承認できません。公開状態を照合してから再試行してください。", code: "deletion_publication_state_unavailable" }, 409);
+    }
+  }
+  if (row.publication_review_stage || row.scheduled_publish_at || row.publication_action === "publish" || row.publication_pr_number || activePublishRun)
+    return json({ error: "公開審査・予約・公開処理が残っています。既存の処理を終了してから再確認してください。" }, 409);
+  const results = await env.REPORTS.batch([
+    env.REPORTS.prepare(
+      `UPDATE editorial_documents SET deleted_at=?,deleted_by=?
+        WHERE id=? AND current_version_id=? AND deleted_at IS NULL
+          AND published_at IS NULL AND published_version_id IS NULL
+          AND publication_review_stage IS NULL AND scheduled_publish_at IS NULL
+          AND publication_action IS NULL AND publication_pr_number IS NULL
+          AND NOT EXISTS(SELECT 1 FROM editorial_publication_runs pr WHERE pr.document_id=editorial_documents.id AND pr.action='publish' AND pr.state IN ('queued','checks_pending','merge_pending','deploy_pending','retry_wait'))
+          AND EXISTS(SELECT 1 FROM editorial_document_deletion_requests r WHERE r.id=? AND r.status='pending' AND r.requested_version_id=?)`,
+    ).bind(now, scope.email, row.document_id, row.requested_version_id, requestId, row.requested_version_id),
+    env.REPORTS.prepare(
+      `UPDATE editorial_document_deletion_requests
+          SET status='approved',decided_by=?,decision_reason=?,decided_at=?,updated_at=?
+        WHERE id=? AND status='pending' AND requested_version_id=?
+          AND EXISTS(SELECT 1 FROM editorial_documents d WHERE d.id=document_id AND d.deleted_at=? AND d.deleted_by=? AND d.current_version_id=?)`,
+    ).bind(scope.email, reason, now, now, requestId, row.requested_version_id, now, scope.email, row.requested_version_id),
+    env.REPORTS.prepare(
+      `UPDATE editorial_tasks SET cancelled_at=?,cancelled_by=?,cancellation_reason='記事削除の承認に伴う取消',updated_at=?
+        WHERE id IN (SELECT task_id FROM editorial_feedback_task_links WHERE document_id=?)
+          AND task_kind='feedback' AND status IN ('open','doing') AND cancelled_at IS NULL
+          AND EXISTS(SELECT 1 FROM editorial_documents WHERE id=? AND deleted_at=? AND deleted_by=?)`,
+    ).bind(now, scope.email, now, row.document_id, row.document_id, now, scope.email),
+  ]);
+  if (batchChangeCount(results, 0) === 0 || batchChangeCount(results, 1) === 0)
+    return json({ error: "記事または申請状態が変わりました。削除は行われていません。再読み込みして確認してください。" }, 409);
+  await recordAdminAudit(env, scope.email, "article_deleted", "article", row.document_id, row.title, `記事の削除を承認：${row.title}`, { requestId, versionId: row.requested_version_id, cancellationCount: batchChangeCount(results, 2) });
+  await notifyEditorialDocumentChange(env, row.document_id);
+  return json({ ok: true, status: "approved", deletedAt: now });
 }
 
 const publicArticleCatalogFields = `
@@ -7691,7 +7951,7 @@ async function getPersonalWorkspace(
   const [documents, workspace] = await Promise.all([
     env.REPORTS.prepare(
       `SELECT id, subject, category, title, status, updated_at, published_at, scheduled_publish_at
-       FROM editorial_documents WHERE created_by = ? AND creator_kind='person' AND archived_at IS NULL ORDER BY updated_at DESC LIMIT 100`,
+       FROM editorial_documents WHERE created_by = ? AND creator_kind='person' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 100`,
     )
       .bind(scope.email)
       .all<
@@ -10656,7 +10916,7 @@ const getWorkflowSummary = async (
   const taskScopeSql = projectIds.length
     ? `t.project_id IN (${projectIds.map(() => "?").join(",")})
        AND (lower(t.assignee_email)=lower(?) OR instr(',' || lower(COALESCE(t.assignee_email,'')) || ',', ',' || lower(?) || ',') > 0 OR (t.task_kind='feedback' AND t.assignee_email='*'))
-       AND t.status != 'done' AND t.archived_at IS NULL AND t.is_test_data=0`
+       AND t.status != 'done' AND t.archived_at IS NULL AND t.cancelled_at IS NULL AND t.is_test_data=0`
     : "0=1";
   const taskBindings = projectIds.length ? [...projectIds, scope.email, scope.email] : [];
   const zones = projectIds.length
@@ -10779,7 +11039,7 @@ async function portalOverview(request: Request, env: Env): Promise<Response> {
   const taskScopeSql = projectIds.length
     ? `t.project_id IN (${projectIds.map(() => "?").join(",")})
        AND (lower(t.assignee_email)=lower(?) OR instr(',' || lower(COALESCE(t.assignee_email,'')) || ',', ',' || lower(?) || ',') > 0 OR (t.task_kind='feedback' AND t.assignee_email='*'))
-       AND t.status != 'done' AND t.archived_at IS NULL AND t.is_test_data=0`
+       AND t.status != 'done' AND t.archived_at IS NULL AND t.cancelled_at IS NULL AND t.is_test_data=0`
     : "0=1";
   const taskScopeBindings = projectIds.length ? [...projectIds, scope.email, scope.email] : [];
   const todos = projectIds.length
@@ -10841,7 +11101,7 @@ async function portalOverview(request: Request, env: Env): Promise<Response> {
            FROM editorial_tasks t
            JOIN atlasez_projects p ON p.id = t.project_id
            WHERE t.project_id IN (${projectIds.map(() => "?").join(",")})
-             AND (lower(t.assignee_email)=lower(?) OR instr(',' || lower(COALESCE(t.assignee_email,'')) || ',', ',' || lower(?) || ',') > 0 OR (t.task_kind='feedback' AND t.assignee_email='*')) AND t.status != 'done' AND t.archived_at IS NULL AND t.is_test_data=0
+             AND (lower(t.assignee_email)=lower(?) OR instr(',' || lower(COALESCE(t.assignee_email,'')) || ',', ',' || lower(?) || ',') > 0 OR (t.task_kind='feedback' AND t.assignee_email='*')) AND t.status != 'done' AND t.archived_at IS NULL AND t.cancelled_at IS NULL AND t.is_test_data=0
              AND t.due_at IS NOT NULL
              AND ${personalDeadlineRange.sql}
            ORDER BY t.due_at ASC LIMIT 120`,
@@ -11045,11 +11305,11 @@ async function actionCenterOverview(request: Request, env: Env): Promise<Respons
   const assignedCountPromise = Promise.all([
         env.REPORTS.prepare(
           `SELECT COUNT(*) AS count FROM editorial_tasks t
-            WHERE ${taskPredicate} AND t.archived_at IS NULL AND t.status!='done'`,
+            WHERE ${taskPredicate} AND t.archived_at IS NULL AND t.cancelled_at IS NULL AND t.status!='done'`,
         ).bind(...taskBindings).first<{ count: number }>(),
         env.REPORTS.prepare(
           `SELECT COUNT(*) AS count FROM editorial_documents d
-            WHERE d.archived_at IS NULL AND ${documentVisibility.sql}
+            WHERE d.deleted_at IS NULL AND ${documentVisibility.sql}
               -- 下書きから査読依頼を送る操作は個別記事に限定する。
               AND d.status = 'in-review' AND d.publication_review_stage IS NOT NULL`,
         ).bind(...documentVisibility.bindings).first<{ count: number }>(),
@@ -11076,26 +11336,26 @@ async function actionCenterOverview(request: Request, env: Env): Promise<Respons
       `SELECT t.id,t.project_id,t.subject,t.task_kind,t.title,t.details,t.status,t.due_at,t.due_timezone,t.updated_at,
               COALESCE(p.name,t.project_id) AS project_name
          FROM editorial_tasks t LEFT JOIN atlasez_projects p ON p.id=t.project_id
-        WHERE ${taskPredicate} AND t.archived_at IS NULL AND t.status!='done'
+        WHERE ${taskPredicate} AND t.archived_at IS NULL AND t.cancelled_at IS NULL AND t.status!='done'
         ORDER BY CASE WHEN t.due_at IS NULL THEN 1 ELSE 0 END,t.due_at,t.updated_at DESC LIMIT 50`,
     ).bind(...taskBindings).all<{
       id: string; project_id: string; subject: string | null; task_kind: string; title: string; details: string;
       status: string; due_at: string | null; due_timezone?: string; updated_at: string; project_name: string;
     }>(),
-    historyOnly ? Promise.resolve({ results: [] as Array<{ id: string; title: string; summary: string; subject: string; status: string; created_by: string; updated_at: string; scheduled_publish_at: string | null; publication_review_stage: string | null; published_at: string | null; archived_at: string | null; category: string }> }) : env.REPORTS.prepare(
+    historyOnly ? Promise.resolve({ results: [] as Array<{ id: string; title: string; summary: string; subject: string; status: string; created_by: string; updated_at: string; scheduled_publish_at: string | null; publication_review_stage: string | null; published_at: string | null; deleted_at: string | null; category: string }> }) : env.REPORTS.prepare(
       `SELECT d.id,d.title,d.summary,d.subject,d.status,d.created_by,d.updated_at,d.scheduled_publish_at,
-              d.publication_review_stage,d.published_at,d.archived_at,COALESCE(d.category,'') AS category
+              d.publication_review_stage,d.published_at,d.deleted_at,COALESCE(d.category,'') AS category
         FROM editorial_documents d
-        WHERE d.archived_at IS NULL AND ${documentVisibility.sql}
+        WHERE d.deleted_at IS NULL AND ${documentVisibility.sql}
           -- 下書きから査読依頼を送る操作は個別記事に限定する。
           AND d.status = 'in-review' AND d.publication_review_stage IS NOT NULL
         ORDER BY CASE WHEN d.scheduled_publish_at IS NULL THEN 1 ELSE 0 END,d.scheduled_publish_at,d.updated_at DESC LIMIT 100`,
     ).bind(...documentVisibility.bindings).all<{
       id: string; title: string; summary: string; subject: string; status: string; created_by: string; updated_at: string;
-      scheduled_publish_at: string | null; publication_review_stage: string | null; published_at: string | null; archived_at: string | null; category: string;
+      scheduled_publish_at: string | null; publication_review_stage: string | null; published_at: string | null; deleted_at: string | null; category: string;
     }>().catch(() => ({ results: [] as Array<{
       id: string; title: string; summary: string; subject: string; status: string; created_by: string; updated_at: string;
-      scheduled_publish_at: string | null; publication_review_stage: string | null; published_at: string | null; archived_at: string | null; category: string;
+      scheduled_publish_at: string | null; publication_review_stage: string | null; published_at: string | null; deleted_at: string | null; category: string;
     }> })),
     historyOnly ? Promise.resolve({ results: [] as Array<{ id: string; name: string; email: string; project_slug: string; status: string; created_at: string; updated_at: string }> }) : canReviewApplications
       ? env.REPORTS.prepare(
@@ -11118,27 +11378,27 @@ async function actionCenterOverview(request: Request, env: Env): Promise<Respons
         ORDER BY r.submitted_at DESC LIMIT 50`,
     ).bind(...approvalProjectIds).all<{ id: string; email: string; project_id: string; submitted_at: string; status: string }>(),
     historyOnly ? env.REPORTS.prepare(
-      `SELECT t.id,t.project_id,t.subject,t.task_kind,t.title,t.details,t.status,t.due_at,t.due_timezone,t.updated_at,t.archived_at,
+      `SELECT t.id,t.project_id,t.subject,t.task_kind,t.title,t.details,t.status,t.due_at,t.due_timezone,t.updated_at,t.archived_at,t.cancelled_at,t.cancellation_reason,
               COALESCE(p.name,t.project_id) AS project_name
          FROM editorial_tasks t LEFT JOIN atlasez_projects p ON p.id=t.project_id
-        WHERE ${taskPredicate} AND (t.status='done' OR t.archived_at IS NOT NULL)
+        WHERE ${taskPredicate} AND (t.status='done' OR t.archived_at IS NOT NULL OR t.cancelled_at IS NOT NULL)
         ORDER BY t.updated_at DESC LIMIT 50`,
     ).bind(...taskBindings).all<{
       id: string; project_id: string; subject: string | null; task_kind: string; title: string; details: string;
-      status: string; due_at: string | null; due_timezone?: string; updated_at: string; archived_at: string | null; project_name: string;
-    }>() : Promise.resolve({ results: [] as Array<{ id: string; project_id: string; subject: string | null; task_kind: string; title: string; details: string; status: string; due_at: string | null; due_timezone?: string; updated_at: string; archived_at: string | null; project_name: string }> }),
+      status: string; due_at: string | null; due_timezone?: string; updated_at: string; archived_at: string | null; cancelled_at: string | null; cancellation_reason: string; project_name: string;
+    }>() : Promise.resolve({ results: [] as Array<{ id: string; project_id: string; subject: string | null; task_kind: string; title: string; details: string; status: string; due_at: string | null; due_timezone?: string; updated_at: string; archived_at: string | null; cancelled_at: string | null; cancellation_reason: string; project_name: string }> }),
     historyOnly ? env.REPORTS.prepare(
         `SELECT d.id,d.title,d.summary,d.subject,d.status,d.created_by,d.updated_at,d.scheduled_publish_at,
-              d.publication_review_stage,d.published_at,d.archived_at,COALESCE(d.category,'') AS category
+              d.publication_review_stage,d.published_at,d.deleted_at,COALESCE(d.category,'') AS category
          FROM editorial_documents d
-        WHERE (${documentVisibility.sql}) AND (d.archived_at IS NOT NULL OR d.published_at IS NOT NULL OR d.status='approved')
+        WHERE d.deleted_at IS NULL AND (${documentVisibility.sql}) AND (d.published_at IS NOT NULL OR d.status='approved')
         ORDER BY d.updated_at DESC LIMIT 50`,
     ).bind(...documentVisibility.bindings).all<{
       id: string; title: string; summary: string; subject: string; status: string; created_by: string; updated_at: string;
-      scheduled_publish_at: string | null; publication_review_stage: string | null; published_at: string | null; archived_at: string | null; category: string;
+      scheduled_publish_at: string | null; publication_review_stage: string | null; published_at: string | null; deleted_at: string | null; category: string;
     }>().catch(() => ({ results: [] as Array<{
       id: string; title: string; summary: string; subject: string; status: string; created_by: string; updated_at: string;
-      scheduled_publish_at: string | null; publication_review_stage: string | null; published_at: string | null; archived_at: string | null; category: string;
+      scheduled_publish_at: string | null; publication_review_stage: string | null; published_at: string | null; deleted_at: string | null; category: string;
     }> })) : Promise.resolve({ results: [] as Array<{ id: string; title: string; summary: string; subject: string; status: string; created_by: string; updated_at: string; scheduled_publish_at: string | null; publication_review_stage: string | null; published_at: string | null; archived_at: string | null; category: string }> }),
     historyOnly ? canReviewApplications
       ? env.REPORTS.prepare(
@@ -11260,12 +11520,12 @@ async function actionCenterOverview(request: Request, env: Env): Promise<Respons
   }
   const history: ActionCenterItem[] = [];
   for (const row of taskHistoryRows.results ?? []) {
-    history.push({ id: `task:${row.id}`, kind: "task", title: row.title, detail: row.details?.split("\n")[0] || "対応済みのタスクです。", href: `/admin/task-detail/?task=${encodeURIComponent(row.id)}`, status: row.archived_at ? "archived" : row.status, priority: "read", updatedAt: row.updated_at, dueAt: row.due_at, dueTimezone: row.due_timezone || "Asia/Tokyo", project: row.project_name || projectNames.get(row.project_id) || row.project_id, subject: row.subject, read: true, archived: Boolean(row.archived_at), actions: [] });
+    history.push({ id: `task:${row.id}`, kind: "task", title: row.title, detail: row.cancellation_reason || row.details?.split("\n")[0] || "対応済みのタスクです。", href: row.cancelled_at ? "/admin/action-center/?filter=history" : `/admin/task-detail/?task=${encodeURIComponent(row.id)}`, status: row.cancelled_at ? "cancelled" : row.archived_at ? "archived" : row.status, priority: "read", updatedAt: row.updated_at, dueAt: row.due_at, dueTimezone: row.due_timezone || "Asia/Tokyo", project: row.project_name || projectNames.get(row.project_id) || row.project_id, subject: row.subject, read: true, archived: Boolean(row.archived_at), actions: [] });
   }
   for (const row of documentHistoryRows.results ?? []) {
     const permitted = scope.isManager || row.created_by.toLowerCase() === scope.email.toLowerCase();
     if (!permitted) continue;
-    history.push({ id: `document:${row.id}`, kind: "document", title: row.title, detail: row.archived_at ? "アーカイブ済みの記事です。" : row.published_at ? "公開済みの記事です。" : "承認済みの記事です。", href: `/admin/editor/?document=${encodeURIComponent(row.id)}`, status: row.archived_at ? "archived" : row.published_at ? "published" : "approved", priority: "read", updatedAt: row.updated_at, dueAt: null, project: "アトラス", subject: row.subject, read: true, archived: Boolean(row.archived_at), actions: [] });
+    history.push({ id: `document:${row.id}`, kind: "document", title: row.title, detail: row.published_at ? "公開済みの記事です。" : "承認済みの記事です。", href: `/admin/editor/?document=${encodeURIComponent(row.id)}`, status: row.published_at ? "published" : "approved", priority: "read", updatedAt: row.updated_at, dueAt: null, project: "アトラス", subject: row.subject, read: true, archived: false, actions: [] });
   }
   for (const row of applicationHistoryRows.results ?? []) {
     history.push({ id: `application:${row.id}`, kind: "application", title: `応募：${APPLICATION_FORM_LABELS[row.project_slug] ?? row.project_slug}`, detail: `${row.name}（${row.email}）の応募は${row.status === "accepted" ? "受け入れ済み" : "見送り済み"}です。`, href: `/admin/applications/?project=${encodeURIComponent(row.project_slug)}`, status: row.status, priority: "read", updatedAt: row.updated_at || row.created_at, dueAt: null, project: APPLICATION_FORM_LABELS[row.project_slug] ?? row.project_slug, subject: null, read: true, actions: [] });
@@ -11315,20 +11575,20 @@ async function adminCommandSearch(request: Request, env: Env): Promise<Response>
     ? env.REPORTS.prepare(
         `SELECT t.id,t.title,t.details,t.status,t.updated_at,t.project_id,COALESCE(p.name,t.project_id) AS project_name
            FROM editorial_tasks t LEFT JOIN atlasez_projects p ON p.id=t.project_id
-          WHERE t.archived_at IS NULL AND t.is_test_data=0 AND (t.title LIKE ? ESCAPE '\\' OR t.details LIKE ? ESCAPE '\\')
+          WHERE t.archived_at IS NULL AND t.cancelled_at IS NULL AND t.is_test_data=0 AND (t.title LIKE ? ESCAPE '\\' OR t.details LIKE ? ESCAPE '\\')
           ORDER BY t.updated_at DESC LIMIT 8`,
       ).bind(needle, needle).all<{ id: string; title: string; details: string; status: string; updated_at: string; project_id: string; project_name: string }>()
     : env.REPORTS.prepare(
         `SELECT t.id,t.title,t.details,t.status,t.updated_at,t.project_id,COALESCE(p.name,t.project_id) AS project_name
            FROM editorial_tasks t LEFT JOIN atlasez_projects p ON p.id=t.project_id
-          WHERE t.archived_at IS NULL AND t.is_test_data=0 AND (lower(t.created_by)=lower(?) OR lower(t.assignee_email)=lower(?) OR instr(',' || lower(COALESCE(t.assignee_email,'')) || ',', ',' || lower(?) || ',') > 0)
+          WHERE t.archived_at IS NULL AND t.cancelled_at IS NULL AND t.is_test_data=0 AND (lower(t.created_by)=lower(?) OR lower(t.assignee_email)=lower(?) OR instr(',' || lower(COALESCE(t.assignee_email,'')) || ',', ',' || lower(?) || ',') > 0)
             AND (t.title LIKE ? ESCAPE '\\' OR t.details LIKE ? ESCAPE '\\')
           ORDER BY t.updated_at DESC LIMIT 8`,
       ).bind(scope.email, scope.email, scope.email, needle, needle).all<{ id: string; title: string; details: string; status: string; updated_at: string; project_id: string; project_name: string }>();
   const documentSearch = scope.isManager
     ? {
         query: `SELECT id,title,summary,status,subject,updated_at FROM editorial_documents
-          WHERE archived_at IS NULL AND (title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\')
+          WHERE deleted_at IS NULL AND (title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\')
           ORDER BY updated_at DESC LIMIT 8`,
         bindings: [needle, needle],
       }
@@ -11337,7 +11597,7 @@ async function adminCommandSearch(request: Request, env: Env): Promise<Response>
         // 担当分野が未設定でも編集を継続できるように残すが、他人の
         // 担当外記事をタイトル検索だけで返さない。
         query: `SELECT id,title,summary,status,subject,updated_at FROM editorial_documents
-          WHERE archived_at IS NULL
+          WHERE deleted_at IS NULL
             AND (lower(created_by)=lower(?)${
               scope.subjects.length
                 ? ` OR subject IN (${scope.subjects.map(() => "?").join(",")})`
@@ -11394,7 +11654,7 @@ async function taskWorkspace(request: Request, env: Env, taskId: string): Promis
   const projects = await accessibleOperationProjects(env, scope);
   const projectMap = new Map(projects.map(project => [project.id, project]));
   const access = async (id: string): Promise<TaskWorkspaceAccess | null> => {
-    const task = await env.REPORTS.prepare("SELECT id,project_id,subject,title,status,assignee_email,task_kind,created_by,updated_at,archived_at FROM editorial_tasks WHERE id=?").bind(id).first<WorkspaceTask & { task_kind: string; created_by: string }>();
+    const task = await env.REPORTS.prepare("SELECT id,project_id,subject,title,status,assignee_email,task_kind,created_by,updated_at,archived_at FROM editorial_tasks WHERE id=? AND cancelled_at IS NULL").bind(id).first<WorkspaceTask & { task_kind: string; created_by: string }>();
     if (!task || !projectMap.has(task.project_id)) return null;
     const manager = scope.isManager || projectMap.get(task.project_id)?.role === "manager";
     const owned = taskAssignedTo(task.assignee_email, scope.email, task.task_kind) || task.created_by.toLowerCase() === scope.email.toLowerCase();
@@ -11406,7 +11666,7 @@ async function taskWorkspace(request: Request, env: Env, taskId: string): Promis
     documentAllowed: async id => {
       // Article routes require an admin scope independently of membership in a project.
       if (scope.memberAccess) return false;
-      const document = await env.REPORTS.prepare("SELECT subject,created_by FROM editorial_documents WHERE id=? AND archived_at IS NULL").bind(id).first<{ subject: string; created_by: string }>();
+      const document = await env.REPORTS.prepare("SELECT subject,created_by FROM editorial_documents WHERE id=? AND deleted_at IS NULL").bind(id).first<{ subject: string; created_by: string }>();
       return Boolean(document && (canEditSubject(scope, document.subject) || document.created_by === scope.email));
     },
     candidates: async (projectId, query) => {
@@ -11416,7 +11676,7 @@ async function taskWorkspace(request: Request, env: Env, taskId: string): Promis
       const subjectWhere = scope.subjects.length ? `subject IN (${scope.subjects.map(() => "?").join(",")})` : "0=1";
       const visibility = manager ? "1=1" : `(lower(created_by)=lower(?) OR instr(','||lower(COALESCE(assignee_email,''))||',',','||lower(?)||',')>0 OR subject IS NULL OR (task_kind='feedback' AND assignee_email='*') OR ${subjectWhere})`;
       const values = manager ? [] : [scope.email, scope.email, ...scope.subjects];
-      const rows = await env.REPORTS.prepare(`SELECT id,title,status FROM editorial_tasks WHERE project_id=? AND id!=? AND archived_at IS NULL AND ${visibility} AND instr(lower(title),lower(?))>0 ORDER BY updated_at DESC,id DESC LIMIT 30`).bind(projectId, taskId, ...values, query).all<{ id: string; title: string; status: string }>();
+      const rows = await env.REPORTS.prepare(`SELECT id,title,status FROM editorial_tasks WHERE project_id=? AND id!=? AND archived_at IS NULL AND cancelled_at IS NULL AND ${visibility} AND instr(lower(title),lower(?))>0 ORDER BY updated_at DESC,id DESC LIMIT 30`).bind(projectId, taskId, ...values, query).all<{ id: string; title: string; status: string }>();
       return rows.results;
     },
   });
@@ -11488,7 +11748,7 @@ async function memberTasksOverview(
   );
   visibleValues.push(scope.email, scope.email, scope.email, ...scope.subjects);
   const visibilityFilter = ` AND (${visiblePredicates.join(" OR ")})`;
-  const baseWhere = `project_id IN (${placeholders})${includeArchived ? "" : " AND archived_at IS NULL"}${includeTestData ? "" : " AND is_test_data=0"}${visibilityFilter}`;
+  const baseWhere = `project_id IN (${placeholders})${includeArchived ? "" : " AND archived_at IS NULL"} AND cancelled_at IS NULL${includeTestData ? "" : " AND is_test_data=0"}${visibilityFilter}`;
   const baseValues = [...projectIds, ...visibleValues];
   const needsDueBounds = ["overdue", "today", "week"].includes(searchParams.get("due") ?? "");
   const zones = needsDueBounds
@@ -11500,7 +11760,7 @@ async function memberTasksOverview(
   const [tasks, members, counts] = await Promise.all([
     env.REPORTS.prepare(
       `SELECT id,project_id,subject,assignee_email,task_kind,title,details,status,due_at,due_timezone,is_test_data,
-        created_by,created_at,updated_at,archived_at,archived_by,archive_expires_at FROM editorial_tasks
+        created_by,created_at,updated_at,archived_at,archived_by,archive_expires_at,cancelled_at,cancelled_by,cancellation_reason FROM editorial_tasks
        WHERE ${filteredWhere}${taskCursorCondition ? ` AND ${taskCursorCondition}` : ""}
        ORDER BY ${statusRank},${archivedRank},${dueRank},COALESCE(due_at, '') ASC,updated_at DESC,id DESC LIMIT ?`,
     )
@@ -14513,8 +14773,8 @@ async function operationsOverview(
     : "";
   if (taskCursor) values.push(taskCursor.status, taskCursor.status, taskCursor.archived, taskCursor.archived, taskCursor.due, taskCursor.due, taskCursor.dueAt, taskCursor.dueAt, taskCursor.updatedAt, taskCursor.updatedAt, taskCursor.id);
   const where = filters.length
-    ? ` WHERE ${filters.join(" AND ")}${includeArchived ? "" : " AND archived_at IS NULL"}${includeTestData ? "" : " AND is_test_data=0"}${taskCursorCondition ? ` AND ${taskCursorCondition}` : ""}`
-    : ` WHERE ${includeArchived ? "1=1" : "archived_at IS NULL"}${includeTestData ? "" : " AND is_test_data=0"}${taskCursorCondition ? ` AND ${taskCursorCondition}` : ""}`;
+    ? ` WHERE ${filters.join(" AND ")}${includeArchived ? "" : " AND archived_at IS NULL"} AND cancelled_at IS NULL${includeTestData ? "" : " AND is_test_data=0"}${taskCursorCondition ? ` AND ${taskCursorCondition}` : ""}`
+    : ` WHERE ${includeArchived ? "1=1" : "archived_at IS NULL"} AND cancelled_at IS NULL${includeTestData ? "" : " AND is_test_data=0"}${taskCursorCondition ? ` AND ${taskCursorCondition}` : ""}`;
   // 担当者候補は選択中プロジェクトの所属者を正本にする。
   // report_admin_permissionsだけから取得すると、別プロジェクトのmanagerにも
   // 全分野担当者のメールアドレスが返ってしまう。分野担当者にはさらに
@@ -14554,7 +14814,7 @@ async function operationsOverview(
   const [tasks, events, progress, members, availability, availabilityBlocks, availabilityRules] =
     await Promise.all([
       env.REPORTS.prepare(
-        `SELECT id, project_id, subject, assignee_email, task_kind, title, details, status, due_at, due_timezone, reminder_at, reminder_repeat, reminder_email, is_test_data, created_by, created_at, updated_at, archived_at, archived_by, archive_expires_at FROM editorial_tasks${where} ORDER BY ${statusRank}, ${archivedRank}, ${dueRank}, COALESCE(due_at, '') ASC, updated_at DESC, id DESC LIMIT ?`,
+        `SELECT id, project_id, subject, assignee_email, task_kind, title, details, status, due_at, due_timezone, reminder_at, reminder_repeat, reminder_email, is_test_data, created_by, created_at, updated_at, archived_at, archived_by, archive_expires_at, cancelled_at, cancelled_by, cancellation_reason FROM editorial_tasks${where} ORDER BY ${statusRank}, ${archivedRank}, ${dueRank}, COALESCE(due_at, '') ASC, updated_at DESC, id DESC LIMIT ?`,
       )
         .bind(...values, pageLimit + 1)
         .all(),
@@ -15323,7 +15583,7 @@ async function updateTask(
   if (requestedStatus === null && requestedArchived === null && !reminderAction && requestedTestData === null)
     return json({ error: "更新内容を指定してください。" }, 400);
   const task = await env.REPORTS.prepare(
-    "SELECT project_id,subject,assignee_email,task_kind,title,created_by,due_at,due_timezone,status,archived_at,reminder_email,is_test_data FROM editorial_tasks WHERE id=?",
+    "SELECT project_id,subject,assignee_email,task_kind,title,created_by,due_at,due_timezone,status,archived_at,cancelled_at,reminder_email,is_test_data FROM editorial_tasks WHERE id=?",
   )
     .bind(taskId)
     .first<{
@@ -15337,10 +15597,12 @@ async function updateTask(
       due_timezone: string;
       status: string;
       archived_at: string | null;
+      cancelled_at: string | null;
       reminder_email: string | null;
       is_test_data: number;
     }>();
   if (!task) return json({ error: "タスクが見つかりません。" }, 404);
+  if (task.cancelled_at) return json({ error: "取消済みのタスクは変更できません。", code: "TASK_CANCELLED" }, 409);
   const project = await resolveOperationProject(env, scope, task.project_id);
   if (isResponse(project)) return project;
   const projectRole = await operationProjectRole(env, scope, project.id);
@@ -17154,8 +17416,32 @@ async function getEditorialDocument(
     .bind(documentId)
     .first<EditorialDocument>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (!canReviewDocument(scope, document))
+  if (document.deleted_at) return json({ error: "削除済みの記事です。" }, 410);
+  const canReview = canReviewDocument(scope, document);
+  const readOnly =
+    !canReview &&
+    (await canReadEditorialDocumentForDeletionReview(env, scope, documentId));
+  if (!canReview && !readOnly)
     return json({ error: "この分野の原稿を閲覧する権限がありません。" }, 403);
+  if (readOnly) {
+    const publicationRun = await hydrateEditorialPublicationDiagnostic(
+      env,
+      await getLatestEditorialPublicationRun(env, documentId),
+    );
+    return json({
+      document: {
+        ...document,
+        publication_run: publicationRun,
+        read_only: true,
+      },
+      publicationRun,
+      comments: [],
+      comment_action_summary: {
+        counts: { acknowledge: 0, unacknowledge: 0, resolve: 0, reopen: 0 },
+        actors: { acknowledge: [], unacknowledge: [], resolve: [], reopen: [] },
+      },
+    });
+  }
   const comments = await env.REPORTS.prepare(
     `SELECT id, document_id, parent_comment_id, body, created_by, created_at, selection_start, selection_end, selection_text,
       acknowledged_at, acknowledged_by, resolved_at, resolved_by
@@ -17739,7 +18025,7 @@ async function updateEditorialDocument(
       400,
     );
   const existing = await env.REPORTS.prepare(
-    "SELECT current_version_id, published_version_id, source_article_id, subject, status, title, summary, concept_id, concept_name, concept_name_en, concept_is_new, body, writing_memo, category, locale, slug, latex_engine, published_at, scheduled_publish_at, scheduled_publish_claimed_at, publication_review_stage, publication_review_round, locked_ranges, article_references, updated_at, updated_by FROM editorial_documents WHERE id = ?",
+    "SELECT current_version_id, published_version_id, source_article_id, subject, status, title, summary, concept_id, concept_name, concept_name_en, concept_is_new, body, writing_memo, category, locale, slug, latex_engine, published_at, scheduled_publish_at, scheduled_publish_claimed_at, publication_review_stage, publication_review_round, locked_ranges, article_references, updated_at, updated_by, deleted_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
     .first<
@@ -17771,9 +18057,11 @@ async function updateEditorialDocument(
         | "article_references"
         | "updated_at"
         | "updated_by"
+        | "deleted_at"
       >
   >();
   if (!existing) return json({ error: "原稿が見つかりません。" }, 404);
+  if (existing.deleted_at) return json({ error: "削除済みの記事は編集できません。" }, 410);
   const nextLockedRanges = values.lockedRanges ??
     storedEditorialLockedRanges(existing.locked_ranges, existing.body);
   const nextReferences = values.references ??
@@ -17964,7 +18252,7 @@ async function updateEditorialDocument(
       scheduled_publish_at = CASE WHEN ? = 'approved' THEN scheduled_publish_at ELSE NULL END,
       scheduled_publish_claimed_at = CASE WHEN ? = 'approved' THEN scheduled_publish_claimed_at ELSE NULL END,
       publication_review_stage = CASE WHEN ? = 'approved' THEN publication_review_stage ELSE NULL END
-     WHERE id = ? AND (? IS NULL OR updated_at = ?)`,
+     WHERE id = ? AND deleted_at IS NULL AND (? IS NULL OR updated_at = ?)`,
     )
     .bind(
       values.sourceArticleId,
@@ -18015,6 +18303,14 @@ async function updateEditorialDocument(
       versionId,
       now,
     ),
+    env.REPORTS.prepare(
+      `UPDATE editorial_document_deletion_requests
+          SET status='stale',
+              decision_reason='申請後に記事の版が更新されました。内容を確認して再申請してください。',
+              updated_at=?
+        WHERE document_id=? AND status='pending'
+          AND requested_version_id<>(SELECT current_version_id FROM editorial_documents WHERE id=?)`,
+    ).bind(now, documentId, documentId),
   ]);
   // Some D1-compatible test adapters omit `meta`; a real D1 UPDATE always
   // provides the change count, so only an explicit non-one count is a race.
@@ -18088,7 +18384,7 @@ async function listEditorialRevisions(
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
   const document = await env.REPORTS.prepare(
-    "SELECT subject, status, publication_review_stage, current_version_id, published_version_id, archived_at FROM editorial_documents WHERE id = ?",
+    "SELECT subject, status, publication_review_stage, current_version_id, published_version_id, deleted_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
     .first<{
@@ -18097,9 +18393,16 @@ async function listEditorialRevisions(
       publication_review_stage: EditorialPublicationReviewStage | null;
       current_version_id: string | null;
       published_version_id: string | null;
-      archived_at: string | null;
+      deleted_at: string | null;
     }>();
-  if (!document || !canReviewDocument(scope, document))
+  if (!document)
+    return json({ error: "この原稿を閲覧する権限がありません。" }, 403);
+  if (document.deleted_at) return json({ error: "削除済みの記事です。" }, 410);
+  const canReview = canReviewDocument(scope, document);
+  const readOnly =
+    !canReview &&
+    (await canReadEditorialDocumentForDeletionReview(env, scope, documentId));
+  if (!canReview && !readOnly)
     return json({ error: "この原稿を閲覧する権限がありません。" }, 403);
   const result = await env.REPORTS.prepare(
     `SELECT r.id, r.title, r.summary, r.body, r.status, r.saved_by, r.saved_at, r.snapshot_json,
@@ -18148,7 +18451,7 @@ async function listEditorialRevisions(
        FROM editorial_feedback_task_links link
        JOIN editorial_tasks t ON t.id = link.task_id AND t.task_kind = 'feedback'
        LEFT JOIN editorial_member_profiles profile ON lower(profile.email) = lower(t.created_by)
-      WHERE link.document_id = ?
+      WHERE link.document_id = ? AND t.cancelled_at IS NULL
       ORDER BY link.created_at DESC, t.created_at DESC
       LIMIT 100`,
   )
@@ -18171,11 +18474,12 @@ async function listEditorialRevisions(
     feedbackRequests: (feedbackRequests.results ?? []).map((task) => ({
       ...task,
       canUpdate:
-        scope.isManager ||
+        !readOnly && (scope.isManager ||
         task.created_by.toLowerCase() === scope.email.toLowerCase() ||
-        taskAssignedTo(task.assignee_email, scope.email, "feedback"),
+        taskAssignedTo(task.assignee_email, scope.email, "feedback")),
       canWithdraw:
-        !document.archived_at &&
+        !readOnly &&
+        !document.deleted_at &&
         document.status === "in-review" &&
         !document.publication_review_stage &&
         !task.withdrawn_at &&
@@ -18192,9 +18496,9 @@ async function editorialBoard(request: Request, env: Env): Promise<Response> {
   const values: unknown[] = scope.allSubjects ? [] : [...scope.subjects];
   const where = scope.allSubjects
     ? ""
-    : ` WHERE subject IN (${scope.subjects.map(() => "?").join(",")})`;
+    : ` AND subject IN (${scope.subjects.map(() => "?").join(",")})`;
   const result = await env.REPORTS.prepare(
-    `SELECT subject, status, COUNT(*) AS count FROM editorial_documents${where} GROUP BY subject,status ORDER BY subject,status`,
+    `SELECT subject, status, COUNT(*) AS count FROM editorial_documents WHERE deleted_at IS NULL${where} GROUP BY subject,status ORDER BY subject,status`,
   )
     .bind(...values)
     .all();
@@ -18231,7 +18535,7 @@ async function listEditorialReviewRequests(
            (SELECT t.assignee_email
               FROM editorial_feedback_task_links link
               JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
-             WHERE link.document_id=d.id
+             WHERE link.document_id=d.id AND t.cancelled_at IS NULL
                AND NOT EXISTS (
                  SELECT 1 FROM workflow_transition_events e
                   WHERE e.entity_type='task' AND e.entity_id=t.id
@@ -18247,7 +18551,7 @@ async function listEditorialReviewRequests(
             FROM editorial_feedback_task_links active_link
             JOIN editorial_tasks t ON t.id=active_link.task_id AND t.task_kind='feedback'
            WHERE active_link.document_id=d.id
-             AND t.status IN ('open','doing')
+             AND t.status IN ('open','doing') AND t.cancelled_at IS NULL
              AND NOT EXISTS (
                SELECT 1 FROM workflow_transition_events e
                 WHERE e.entity_type='task' AND e.entity_id=t.id
@@ -18257,7 +18561,7 @@ async function listEditorialReviewRequests(
        LEFT JOIN editorial_review_assignments r ON r.document_id = d.id
        LEFT JOIN editorial_member_profiles requester ON requester.email = d.updated_by
        LEFT JOIN editorial_member_profiles reviewer ON reviewer.email = r.reviewer_email
-       WHERE d.status = 'in-review' AND d.archived_at IS NULL${subjectFilter}${documentFilter}
+       WHERE d.status = 'in-review' AND d.deleted_at IS NULL${subjectFilter}${documentFilter}
        ORDER BY CASE WHEN lower(reviewer_email) = lower(?) THEN 0 WHEN reviewer_email IS NULL THEN 2 ELSE 1 END,
                 d.updated_at ASC LIMIT 100`,
     )
@@ -18341,7 +18645,7 @@ async function updateEditorialReviewAssignment(
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
   const document = await env.REPORTS.prepare(
-    "SELECT subject, status, publication_review_stage, title, created_by, archived_at FROM editorial_documents WHERE id = ?",
+    "SELECT subject, status, publication_review_stage, title, created_by, deleted_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
     .first<{
@@ -18350,11 +18654,11 @@ async function updateEditorialReviewAssignment(
       publication_review_stage: EditorialPublicationReviewStage | null;
       title: string;
       created_by: string;
-      archived_at: string | null;
+      deleted_at: string | null;
     }>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (document.archived_at)
-    return json({ error: "アーカイブ中の記事のフィードバック担当者は変更できません。先に一覧から復元してください。" }, 409);
+  if (document.deleted_at)
+    return json({ error: "削除済みの記事のフィードバック担当者は変更できません。" }, 409);
   if (document.status !== "in-review" || document.publication_review_stage)
     return json(
       { error: "フィードバック中の原稿だけ担当者を設定できます。" },
@@ -18408,7 +18712,7 @@ async function updateEditorialReviewAssignment(
     `SELECT t.assignee_email
        FROM editorial_feedback_task_links link
        JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
-      WHERE link.document_id=?
+      WHERE link.document_id=? AND t.cancelled_at IS NULL
         AND t.status IN ('open','doing')
         AND NOT EXISTS (
           SELECT 1 FROM workflow_transition_events e
@@ -18460,12 +18764,12 @@ async function updateEditorialReviewAssignment(
   ];
   const feedbackStageCondition = `status = 'in-review'
     AND publication_review_stage IS NULL
-    AND archived_at IS NULL
+    AND deleted_at IS NULL
     AND NOT EXISTS (
       SELECT 1 FROM editorial_feedback_task_links link
       JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
       WHERE link.document_id=?
-        AND t.status IN ('open','doing')
+        AND t.status IN ('open','doing') AND t.cancelled_at IS NULL
         AND ${duplicateAssigneePredicate}
         AND NOT EXISTS (
           SELECT 1 FROM workflow_transition_events e
@@ -18571,7 +18875,7 @@ async function withdrawEditorialFeedbackRequest(
     return json({ error: "記事を再読み込みしてから、依頼を取り下げてください。" }, 400);
 
   const document = await env.REPORTS.prepare(
-    `SELECT subject,status,publication_review_stage,title,updated_at,archived_at
+    `SELECT subject,status,publication_review_stage,title,updated_at,deleted_at
        FROM editorial_documents WHERE id=?`,
   ).bind(documentId).first<{
     subject: string;
@@ -18579,7 +18883,7 @@ async function withdrawEditorialFeedbackRequest(
     publication_review_stage: EditorialPublicationReviewStage | null;
     title: string;
     updated_at: string;
-    archived_at: string | null;
+    deleted_at: string | null;
   }>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
   if (!canReviewDocument(scope, document))
@@ -18589,7 +18893,7 @@ async function withdrawEditorialFeedbackRequest(
     `SELECT t.title,t.created_by,t.status,t.updated_at
        FROM editorial_feedback_task_links link
        JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
-      WHERE link.document_id=? AND t.id=?`,
+      WHERE link.document_id=? AND t.id=? AND t.cancelled_at IS NULL`,
   ).bind(documentId, taskId).first<{
     title: string;
     created_by: string;
@@ -18609,7 +18913,7 @@ async function withdrawEditorialFeedbackRequest(
   if (previousWithdrawal)
     return json({ ok: true, withdrawn: true, alreadyWithdrawn: true, documentStatus: document.status, updatedAt: document.updated_at });
 
-  if (document.status !== "in-review" || document.publication_review_stage || document.archived_at)
+  if (document.status !== "in-review" || document.publication_review_stage || document.deleted_at)
     return json({ error: "フィードバック中で審査開始前の記事だけ依頼を取り下げられます。" }, 409);
   if (document.updated_at !== expectedUpdatedAt)
     return json({ error: "記事が先に更新されています。最新内容を読み込んでから再試行してください。", code: "STALE_STATE", updatedAt: document.updated_at }, 409);
@@ -18624,7 +18928,7 @@ async function withdrawEditorialFeedbackRequest(
           AND EXISTS (SELECT 1 FROM editorial_feedback_task_links WHERE task_id=? AND document_id=?)
           AND EXISTS (SELECT 1 FROM editorial_documents
             WHERE id=? AND status='in-review' AND publication_review_stage IS NULL
-              AND archived_at IS NULL AND updated_at=?)`,
+              AND deleted_at IS NULL AND updated_at=?)`,
     ).bind(now, taskId, task.status, task.updated_at, taskId, documentId, documentId, expectedUpdatedAt),
     workflowEventStatement(env, {
       entityType: "task",
@@ -18670,7 +18974,7 @@ async function withdrawEditorialFeedbackRequest(
     env.REPORTS.prepare(
       `UPDATE editorial_documents SET status='draft',updated_by=?,updated_at=?
         WHERE id=? AND status='in-review' AND publication_review_stage IS NULL
-          AND archived_at IS NULL AND updated_at=?
+          AND deleted_at IS NULL AND updated_at=?
           AND NOT EXISTS (
             SELECT 1 FROM editorial_feedback_task_links link
             JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
@@ -21141,6 +21445,13 @@ const claimEditorialPublicationRun = async (
     .first<EditorialPublicationRun>();
   if (active) return { run: active, created: false };
 
+  const deletionPending = action === "publish"
+    ? await env.REPORTS.prepare(
+        "SELECT 1 AS pending FROM editorial_document_deletion_requests WHERE document_id=? AND status='pending' LIMIT 1",
+      ).bind(documentId).first<{ pending: number }>()
+    : null;
+  if (deletionPending) return { run: null, created: false, blockedByDeletion: true };
+
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const publicationVersion = document?.current_version_id
@@ -21160,11 +21471,14 @@ const claimEditorialPublicationRun = async (
   const idempotencyKey = snapshot
     ? `${documentId}:${action}:${snapshot.updatedAt}:${snapshot.hash}`
     : `${documentId}:${action}:${id}`;
+  const deletionGuard = action === "publish"
+    ? " AND EXISTS(SELECT 1 FROM editorial_documents d WHERE d.id=? AND d.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM editorial_document_deletion_requests r WHERE r.document_id=d.id AND r.status='pending'))"
+    : "";
   const result = (await env.REPORTS.prepare(
     `INSERT OR IGNORE INTO editorial_publication_runs
       (id, document_id, action, state, attempt, idempotency_key, lease_until,
        snapshot_updated_at, snapshot_hash, snapshot_version_id, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     SELECT ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ? WHERE 1=1${deletionGuard}`,
   )
     .bind(
       id,
@@ -21178,6 +21492,7 @@ const claimEditorialPublicationRun = async (
       createdBy,
       now,
       now,
+      ...(action === "publish" ? [documentId] : []),
     )
     .run()) as { meta?: { changes?: number } };
   if (result.meta?.changes === 0 && snapshot) {
@@ -21186,7 +21501,7 @@ const claimEditorialPublicationRun = async (
       `INSERT OR IGNORE INTO editorial_publication_runs
         (id, document_id, action, state, attempt, idempotency_key, lease_until,
          snapshot_updated_at, snapshot_hash, snapshot_version_id, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       SELECT ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ? WHERE 1=1${deletionGuard}`,
     )
       .bind(
         id,
@@ -21200,9 +21515,19 @@ const claimEditorialPublicationRun = async (
         createdBy,
         now,
         now,
+        ...(action === "publish" ? [documentId] : []),
       )
       .run();
   }
+  const racedDeletion = action === "publish"
+    ? await env.REPORTS.prepare(
+        `SELECT 1 AS blocked FROM editorial_documents d
+          WHERE d.id=? AND (d.deleted_at IS NOT NULL OR EXISTS(
+            SELECT 1 FROM editorial_document_deletion_requests r
+             WHERE r.document_id=d.id AND r.status='pending')) LIMIT 1`,
+      ).bind(documentId).first<{ blocked: number }>()
+    : null;
+  if (racedDeletion) return { run: null, created: false, blockedByDeletion: true };
   const run = await getLatestEditorialPublicationRun(env, documentId);
   await notifyEditorialDocumentChange(env, documentId);
   return { run, created: result.meta?.changes === 1 || run?.id === id };
@@ -21805,6 +22130,10 @@ const hexDigest = (bytes: ArrayBuffer) =>
   [...new Uint8Array(bytes)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+// Webhook payloads contain status metadata only. Keep room for the decoded text
+// and parsed object inside a 128 MB Worker isolate; the scheduled reconciler
+// can recover status updates that exceed this application-level limit.
+const githubWebhookMaxBytes = 2_000_000;
 
 const verifyGithubWebhookSignature = async (
   secret: string,
@@ -21895,7 +22224,9 @@ async function receiveGithubPublicationWebhook(
   const secret = env.GITHUB_WEBHOOK_SECRET?.trim();
   if (!secret)
     return json({ error: "GitHub Webhook Secretが設定されていません。" }, 503);
-  const body = await request.text();
+  const body = await readRequestTextLimited(request, githubWebhookMaxBytes);
+  if (body === null)
+    return json({ error: "GitHub Webhookが大きすぎます。" }, 413);
   if (
     !(await verifyGithubWebhookSignature(
       secret,
@@ -22085,11 +22416,8 @@ async function registerEditorialReleaseCandidate(
   env: Env,
 ): Promise<Response> {
   if (request.method !== "POST") return json({ error: "POSTのみ利用できます。" }, 405);
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > editorialReleaseRequestMaxBytes)
-    return json({ error: "公開候補マニフェストが大きすぎます。" }, 413);
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > editorialReleaseRequestMaxBytes)
+  const body = await readRequestTextLimited(request, editorialReleaseRequestMaxBytes);
+  if (body === null)
     return json({ error: "公開候補マニフェストが大きすぎます。" }, 413);
   const signatureFailure = await verifyEditorialReleaseRequest(request, body, env);
   if (signatureFailure) return signatureFailure;
@@ -22166,9 +22494,9 @@ async function registerEditorialReleaseCandidate(
     }));
   } else {
     const documents = await env.REPORTS.prepare(
-      `SELECT id, source_article_id, locale, subject, category, slug, current_version_id, published_version_id
-         FROM editorial_documents`,
-    ).all<Pick<EditorialDocument, "id" | "source_article_id" | "locale" | "subject" | "category" | "slug" | "current_version_id" | "published_version_id">>();
+      `SELECT id, source_article_id, locale, subject, category, slug, current_version_id, published_version_id, deleted_at
+       FROM editorial_documents`,
+    ).all<Pick<EditorialDocument, "id" | "source_article_id" | "locale" | "subject" | "category" | "slug" | "current_version_id" | "published_version_id" | "deleted_at">>();
     const documentsById = new Map<string, EditorialDocument>();
     const documentsByPath = new Map<string, EditorialDocument[]>();
     for (const document of documents.results ?? []) {
@@ -22284,6 +22612,19 @@ async function registerEditorialReleaseCandidate(
           ),
         };
       const document = catalogDocument ?? pathDocuments[0];
+      if (entry.status === "published" && document?.deleted_at)
+        return {
+          ...entry,
+          documentId: null,
+          versionId: null,
+          identityError: json(
+            {
+              error: `削除済みの記事「${entry.articleId}」は公開候補に含められません（${entry.path}）。`,
+              code: "release_deleted_article",
+            },
+            409,
+          ),
+        };
       if (
         document?.source_article_id &&
         document.source_article_id !== entry.articleId
@@ -22496,11 +22837,8 @@ async function receiveEditorialReleaseEvent(
 ): Promise<Response> {
   if (request.method !== "POST") return json({ error: "POSTのみ利用できます。" }, 405);
   if (event === "candidate") return registerEditorialReleaseCandidate(request, env);
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > editorialReleaseRequestMaxBytes)
-    return json({ error: "公開候補通知が大きすぎます。" }, 413);
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > editorialReleaseRequestMaxBytes)
+  const body = await readRequestTextLimited(request, editorialReleaseRequestMaxBytes);
+  if (body === null)
     return json({ error: "公開候補通知が大きすぎます。" }, 413);
   const signatureFailure = await verifyEditorialReleaseRequest(request, body, env);
   if (signatureFailure) return signatureFailure;
@@ -22535,7 +22873,16 @@ async function reconcileEditorialReleaseCandidates(env: Env) {
     ).bind(versions[0].version_id).first<{ version_id: string }>();
     if (activeCandidate) await activateEditorialReleaseCandidate(env, activeCandidate.version_id);
   } catch (error) {
-    console.error("editorial release reconciliation failed", error);
+    const failure = publicationFailureDetails(error);
+    console.error(
+      JSON.stringify({
+        event: "editorial_release_reconciliation_failed",
+        correlationId: crypto.randomUUID(),
+        failureKind: failure.kind,
+        errorCode: failure.code,
+        retryable: failure.retryable,
+      }),
+    );
   }
 }
 
@@ -23119,6 +23466,12 @@ async function publishEditorialDocument(
     .bind(documentId)
     .first<EditorialDocument>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
+  if (document.deleted_at) return json({ error: "削除済みの記事は公開できません。" }, 410);
+  const pendingDeletion = await env.REPORTS.prepare(
+    "SELECT 1 AS pending FROM editorial_document_deletion_requests WHERE document_id=? AND status='pending' LIMIT 1",
+  ).bind(documentId).first<{ pending: number }>();
+  if (pendingDeletion)
+    return json({ error: "削除申請の審査中は公開できません。申請を却下するか、処理後に公開してください。" }, 409);
   const latestPublicationRun = await getLatestEditorialPublicationRun(env, documentId);
   if (document.publication_pr_number && document.publication_pr_url) {
     const existingPullRequest = await getEditorialPublicationPullRequest(
@@ -23192,6 +23545,8 @@ async function publishEditorialDocument(
   )
     return json({ error: "この記事はすでに公開済みです。" }, 400);
   const claim = await claimEditorialPublicationRun(env, documentId, "publish", scope.email, document);
+  if ("blockedByDeletion" in claim && claim.blockedByDeletion)
+    return json({ error: "削除申請の審査中に公開処理が始まりました。再読み込みしてください。" }, 409);
   if (!claim.run)
     return json({ error: "公開処理のRunを作成できませんでした。" }, 503);
   const claimedRun = claim.run;
@@ -23309,7 +23664,7 @@ async function editorialFeedbackTaskState(
     `SELECT t.id AS task_id, t.assignee_email, t.status
        FROM editorial_feedback_task_links link
        JOIN editorial_tasks t ON t.id = link.task_id
-      WHERE link.document_id = ?
+      WHERE link.document_id = ? AND t.cancelled_at IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM workflow_transition_events e
            WHERE e.entity_type='task' AND e.entity_id=t.id
@@ -23359,6 +23714,7 @@ async function scheduleEditorialPublication(request: Request, env: Env, document
     .bind(documentId)
     .first<EditorialDocument>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
+  if (document.deleted_at) return json({ error: "削除済みの記事は公開予約できません。" }, 410);
   if (document.status !== "approved" || document.publication_review_stage)
     return json({ error: "公開審査が完了した原稿だけ公開予約できます。" }, 400);
   if (document.published_at)
@@ -23371,6 +23727,10 @@ async function scheduleEditorialPublication(request: Request, env: Env, document
       .run();
     return json({ ok: true, scheduledPublishAt: null });
   }
+  const pendingDeletion = await env.REPORTS.prepare(
+    "SELECT 1 AS pending FROM editorial_document_deletion_requests WHERE document_id=? AND status='pending' LIMIT 1",
+  ).bind(documentId).first<{ pending: number }>();
+  if (pendingDeletion) return json({ error: "削除申請の審査中は公開予約できません。" }, 409);
   // datetime-local has no offset. Treat the operations site's wall-clock
   // value as Japan time instead of letting the Worker runtime interpret it
   // as UTC (which shifts a reservation by nine hours).
@@ -23378,7 +23738,7 @@ async function scheduleEditorialPublication(request: Request, env: Env, document
   if (!Number.isFinite(timestampEpoch) || timestampEpoch <= Date.now())
     return json({ error: "公開日時は現在より後に設定してください。" }, 400);
   const scheduledPublishAt = new Date(timestampEpoch).toISOString();
-  await env.REPORTS.prepare("UPDATE editorial_documents SET scheduled_publish_at=?, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=?").bind(scheduledPublishAt, new Date().toISOString(), scope.email, documentId).run();
+  await env.REPORTS.prepare("UPDATE editorial_documents SET scheduled_publish_at=?, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM editorial_document_deletion_requests r WHERE r.document_id=editorial_documents.id AND r.status='pending')").bind(scheduledPublishAt, new Date().toISOString(), scope.email, documentId).run();
   return json({ ok: true, scheduledPublishAt });
 }
 
@@ -23499,16 +23859,17 @@ export async function dispatchScheduledEditorialPublications(env: Env) {
       }),
     );
   const due = await env.REPORTS.prepare(
-    `${editorialDocumentSelect} WHERE status='approved' AND published_at IS NULL AND publication_pr_number IS NULL AND scheduled_publish_at IS NOT NULL AND scheduled_publish_at <= ? AND scheduled_publish_claimed_at IS NULL LIMIT 20`,
+    `${editorialDocumentSelect} WHERE status='approved' AND deleted_at IS NULL AND published_at IS NULL AND publication_pr_number IS NULL AND scheduled_publish_at IS NOT NULL AND scheduled_publish_at <= ? AND scheduled_publish_claimed_at IS NULL AND NOT EXISTS(SELECT 1 FROM editorial_document_deletion_requests r WHERE r.document_id=editorial_documents.id AND r.status='pending') LIMIT 20`,
   ).bind(now).all<EditorialDocument>();
   let requested = 0;
   for (const document of due.results ?? []) {
     if (!document.scheduled_publish_at) continue;
     const claim = (await env.REPORTS.prepare(
       `UPDATE editorial_documents SET scheduled_publish_claimed_at=?
-        WHERE id=? AND status='approved' AND published_at IS NULL
+        WHERE id=? AND status='approved' AND deleted_at IS NULL AND published_at IS NULL
           AND publication_pr_number IS NULL AND scheduled_publish_at=?
-          AND scheduled_publish_at <= ? AND scheduled_publish_claimed_at IS NULL`,
+          AND scheduled_publish_at <= ? AND scheduled_publish_claimed_at IS NULL
+          AND NOT EXISTS(SELECT 1 FROM editorial_document_deletion_requests r WHERE r.document_id=editorial_documents.id AND r.status='pending')`,
     )
       .bind(now, document.id, document.scheduled_publish_at, now)
       .run()) as { meta?: { changes?: number } };
@@ -23582,7 +23943,7 @@ async function getPublicationReviewState(
     stage: document.publication_review_stage,
     round: document.publication_review_round,
     canCompleteWriting:
-      !document.archived_at &&
+      !document.deleted_at &&
       (!document.published_at || editorialDocumentHasUnpublishedChanges(document)) &&
       !document.publication_review_stage &&
       (document.status === "in-review" || document.status === "draft") &&
@@ -23591,7 +23952,7 @@ async function getPublicationReviewState(
     feedbackTaskDone: feedbackTasks.done,
     feedbackComplete,
     canDecide:
-      !document.archived_at &&
+      !document.deleted_at &&
       document.status === "in-review" &&
       Boolean(document.publication_review_stage) &&
       (Boolean(scope.isManager) ||
@@ -23600,7 +23961,7 @@ async function getPublicationReviewState(
         (document.publication_review_stage === "project-leader" &&
           Boolean(scope.isProjectLeader))),
     managerOverride: Boolean(scope.isManager),
-    archived: Boolean(document.archived_at),
+    deleted: Boolean(document.deleted_at),
     coordinatorCount: coordinators.length,
     leaderCount: leaders.length,
   });
@@ -23628,8 +23989,13 @@ async function startPublicationReview(
     document.created_by !== scope.email
   )
     return json({ error: "執筆担当者だけが執筆完了にできます。" }, 403);
-  if (document.archived_at)
-    return json({ error: "アーカイブ中の原稿は公開審査へ進められません。先に一覧から復元してください。" }, 409);
+  if (document.deleted_at)
+    return json({ error: "削除済みの記事は公開審査へ進められません。" }, 409);
+  const pendingDeletion = await env.REPORTS.prepare(
+    "SELECT 1 AS pending FROM editorial_document_deletion_requests WHERE document_id=? AND status='pending' LIMIT 1",
+  ).bind(documentId).first<{ pending: number }>();
+  if (pendingDeletion)
+    return json({ error: "削除申請の審査中は公開審査へ進められません。申請を却下するか、処理後に再開してください。" }, 409);
   if (
     document.published_at &&
     !editorialDocumentHasUnpublishedChanges(document)
@@ -23645,7 +24011,7 @@ async function startPublicationReview(
   if (managerCanBypassReview) {
     const now = new Date().toISOString();
     const update = await env.REPORTS.prepare(
-      `UPDATE editorial_documents SET status='approved', publication_review_stage=NULL, publication_review_started_at=NULL, reviewed_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND (published_at IS NULL OR (current_version_id IS NOT NULL AND published_version_id IS NOT NULL AND current_version_id <> published_version_id)) AND publication_review_stage IS NULL AND updated_at=?`,
+      `UPDATE editorial_documents SET status='approved', publication_review_stage=NULL, publication_review_started_at=NULL, reviewed_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM editorial_document_deletion_requests r WHERE r.document_id=editorial_documents.id AND r.status='pending') AND (published_at IS NULL OR (current_version_id IS NOT NULL AND published_version_id IS NOT NULL AND current_version_id <> published_version_id)) AND publication_review_stage IS NULL AND updated_at=?`,
     ).bind(now, now, scope.email, documentId, document.updated_at).run();
     if (Number(update.meta?.changes ?? 0) !== 1)
       return json({ error: "原稿の状態が変わりました。再読み込みしてから公開審査へ進んでください。" }, 409);
@@ -23677,7 +24043,7 @@ async function startPublicationReview(
   const now = new Date().toISOString();
   const round = (document.publication_review_round ?? 0) + 1;
   const update = await env.REPORTS.prepare(
-    `UPDATE editorial_documents SET status='in-review', publication_review_stage=?, publication_review_round=?, publication_review_started_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND (published_at IS NULL OR (current_version_id IS NOT NULL AND published_version_id IS NOT NULL AND current_version_id <> published_version_id)) AND publication_review_stage IS NULL AND status IN ('draft', 'in-review') AND updated_at=?`,
+    `UPDATE editorial_documents SET status='in-review', publication_review_stage=?, publication_review_round=?, publication_review_started_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM editorial_document_deletion_requests r WHERE r.document_id=editorial_documents.id AND r.status='pending') AND (published_at IS NULL OR (current_version_id IS NOT NULL AND published_version_id IS NOT NULL AND current_version_id <> published_version_id)) AND publication_review_stage IS NULL AND status IN ('draft', 'in-review') AND updated_at=?`,
   )
     .bind(stage, round, now, now, scope.email, documentId, document.updated_at)
     .run();
@@ -23722,7 +24088,7 @@ async function decidePublicationReview(
     .bind(documentId)
     .first<EditorialDocument>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (document.archived_at)
+  if (document.deleted_at)
     return json({ error: "アーカイブ中の原稿は公開審査を処理できません。先に復元してください。" }, 409);
   const stage = document.publication_review_stage;
   if (document.status !== "in-review" || !stage)
@@ -25515,12 +25881,14 @@ async function adminNotifications(
     applicationRows,
     taskReminderRows,
     taskRows,
+    deletionRequestRows,
+    deletionResultRows,
   ] = await Promise.all([
     queryNotificationSource<{
       id: string; body: string; parent_comment_id: string | null; created_at: string;
       document_id: string; title: string;
     }>(
-      "SELECT c.id, c.body, c.parent_comment_id, c.created_at, d.id AS document_id, d.title FROM editorial_comments c JOIN editorial_documents d ON d.id = c.document_id WHERE d.created_by = ? AND c.created_by != ? ORDER BY c.created_at DESC",
+      "SELECT c.id, c.body, c.parent_comment_id, c.created_at, d.id AS document_id, d.title FROM editorial_comments c JOIN editorial_documents d ON d.id = c.document_id WHERE d.deleted_at IS NULL AND d.created_by = ? AND c.created_by != ? ORDER BY c.created_at DESC",
       [scope.email, scope.email],
     ),
     mentionNeedle
@@ -25531,7 +25899,7 @@ async function adminNotifications(
           `SELECT c.id, c.body, c.parent_comment_id, c.created_at, d.id AS document_id, d.title
              FROM editorial_comments c
              JOIN editorial_documents d ON d.id = c.document_id
-            WHERE ${documentVisibility.sql}
+            WHERE d.deleted_at IS NULL AND ${documentVisibility.sql}
               AND d.created_by != ? AND c.created_by != ? AND instr(c.body, ?) > 0
         ORDER BY c.created_at DESC`,
           [...documentVisibility.bindings, scope.email, scope.email, mentionNeedle],
@@ -25547,16 +25915,16 @@ async function adminNotifications(
           }[],
         }),
     queryNotificationSource<{ id: string; title: string; updated_at: string }>(
-      "SELECT id, title, updated_at FROM editorial_documents WHERE created_by = ? AND status = 'approved' AND published_at IS NULL ORDER BY updated_at DESC",
+      "SELECT id, title, updated_at FROM editorial_documents WHERE deleted_at IS NULL AND created_by = ? AND status = 'approved' AND published_at IS NULL ORDER BY updated_at DESC",
       [scope.email],
     ),
     queryNotificationSource<{ id: string; title: string; published_at: string }>(
-      "SELECT id, title, published_at FROM editorial_documents WHERE created_by = ? AND published_at IS NOT NULL ORDER BY published_at DESC",
+      "SELECT id, title, published_at FROM editorial_documents WHERE deleted_at IS NULL AND created_by = ? AND published_at IS NOT NULL ORDER BY published_at DESC",
       [scope.email],
     ),
     scope.isManager
       ? queryNotificationSource<{ id: string; title: string; subject: string; updated_at: string }>(
-          "SELECT id, title, subject, updated_at FROM editorial_documents WHERE status = 'approved' AND published_at IS NULL AND publication_pr_number IS NULL ORDER BY updated_at DESC",
+          "SELECT id, title, subject, updated_at FROM editorial_documents WHERE deleted_at IS NULL AND status = 'approved' AND published_at IS NULL AND publication_pr_number IS NULL ORDER BY updated_at DESC",
           [],
         )
       : Promise.resolve({
@@ -25569,7 +25937,7 @@ async function adminNotifications(
         }),
     scope.isManager
       ? queryNotificationSource<{ id: string; subject: string; title: string; updated_by: string; updated_at: string }>(
-        "SELECT d.id, d.subject, d.title, d.updated_by, d.updated_at FROM editorial_documents d LEFT JOIN editorial_review_assignments r ON r.document_id = d.id WHERE d.status = 'in-review' AND r.task_id IS NULL ORDER BY d.updated_at ASC",
+        "SELECT d.id, d.subject, d.title, d.updated_by, d.updated_at FROM editorial_documents d LEFT JOIN editorial_review_assignments r ON r.document_id = d.id WHERE d.deleted_at IS NULL AND d.status = 'in-review' AND r.task_id IS NULL ORDER BY d.updated_at ASC",
         [],
       )
       : Promise.resolve({
@@ -25605,7 +25973,7 @@ async function adminNotifications(
       `SELECT r.id AS reminder_id,r.remind_at,r.remind_at_utc,r.timezone,r.label,t.id,t.title,t.project_id,p.slug AS project_slug
          FROM editorial_task_reminders r JOIN editorial_tasks t ON t.id=r.task_id
          JOIN atlasez_projects p ON p.id=t.project_id
-         WHERE t.status != 'done' AND t.archived_at IS NULL AND t.is_test_data=0 AND (lower(t.created_by)=lower(?) OR lower(t.assignee_email)=lower(?) OR instr(',' || lower(COALESCE(t.assignee_email,'')) || ',', ',' || lower(?) || ',') > 0 OR (t.task_kind='feedback' AND t.assignee_email='*'))${notificationProjectFilter}
+         WHERE t.status != 'done' AND t.archived_at IS NULL AND t.cancelled_at IS NULL AND t.is_test_data=0 AND (lower(t.created_by)=lower(?) OR lower(t.assignee_email)=lower(?) OR instr(',' || lower(COALESCE(t.assignee_email,'')) || ',', ',' || lower(?) || ',') > 0 OR (t.task_kind='feedback' AND t.assignee_email='*'))${notificationProjectFilter}
            AND (NULLIF(TRIM(t.reminder_email),'') IS NULL OR lower(TRIM(t.reminder_email))=lower(?))
          ORDER BY r.remind_at ASC`,
       [scope.email, scope.email, scope.email, ...notificationProjectBindings, scope.email],
@@ -25620,7 +25988,7 @@ async function adminNotifications(
        FROM editorial_tasks t
        LEFT JOIN atlasez_projects p ON p.id=t.project_id
        LEFT JOIN editorial_feedback_task_links feedback_link ON feedback_link.task_id=t.id
-       WHERE t.status != 'done' AND t.archived_at IS NULL AND t.is_test_data=0 AND ${
+       WHERE t.status != 'done' AND t.archived_at IS NULL AND t.cancelled_at IS NULL AND t.is_test_data=0 AND ${
          scope.isManager
            ? "1=1"
            : `(lower(t.created_by)=lower(?) OR lower(t.assignee_email)=lower(?) OR instr(',' || lower(COALESCE(t.assignee_email,'')) || ',', ',' || lower(?) || ',') > 0 OR (t.task_kind='feedback' AND t.assignee_email='*'))${
@@ -25641,6 +26009,32 @@ async function adminNotifications(
               ...notificationProjectBindings,
             ],
     ),
+    scope.isManager || scope.isProjectLeader
+      ? queryNotificationSource<{
+          id: string; document_id: string; title: string; subject: string; requested_by: string; created_at: string; updated_at: string;
+        }>(
+          `SELECT r.id,r.document_id,d.title,d.subject,r.requested_by,r.created_at,r.updated_at
+             FROM editorial_document_deletion_requests r
+             JOIN editorial_documents d ON d.id=r.document_id
+            WHERE r.status='pending' AND d.deleted_at IS NULL
+              AND lower(r.requested_by)<>lower(?)
+              ${scope.isManager ? "" : "AND EXISTS(SELECT 1 FROM editorial_workflow_roles wr WHERE wr.role='project-leader' AND lower(wr.email)=lower(?))"}
+            ORDER BY r.created_at DESC`,
+          scope.isManager ? [scope.email] : [scope.email, scope.email],
+        )
+      : Promise.resolve({
+          results: [] as Array<{ id: string; document_id: string; title: string; subject: string; requested_by: string; created_at: string; updated_at: string }>,
+        }),
+    queryNotificationSource<{
+      id: string; document_id: string; title: string; status: "approved" | "rejected"; decision_reason: string; updated_at: string;
+    }>(
+      `SELECT r.id,r.document_id,d.title,r.status,r.decision_reason,r.updated_at
+         FROM editorial_document_deletion_requests r
+         JOIN editorial_documents d ON d.id=r.document_id
+        WHERE r.status IN ('approved','rejected') AND lower(r.requested_by)=lower(?)
+        ORDER BY r.updated_at DESC`,
+      [scope.email],
+    ),
   ]);
   const [publicationReviewRows, publicationReturnedRows] = await Promise.all([
     queryNotificationSource<{
@@ -25649,7 +26043,7 @@ async function adminNotifications(
     }>(
       `SELECT d.id, d.title, d.subject, d.publication_review_stage, d.updated_at
        FROM editorial_documents d
-       WHERE d.published_at IS NULL AND (
+       WHERE d.deleted_at IS NULL AND d.published_at IS NULL AND (
          (d.publication_review_stage='subject-coordinator' AND EXISTS (
            SELECT 1 FROM editorial_workflow_roles r
            WHERE r.role='subject-coordinator' AND (r.subject=d.subject OR r.subject='*') AND lower(r.email)=lower(?)
@@ -25668,7 +26062,7 @@ async function adminNotifications(
       `SELECT d.id, d.title, r.stage, r.note, r.created_at
        FROM editorial_publication_reviews r
        JOIN editorial_documents d ON d.id=r.document_id
-       WHERE r.decision='rejected' AND lower(d.created_by)=lower(?)
+       WHERE d.deleted_at IS NULL AND r.decision='rejected' AND lower(d.created_by)=lower(?)
          AND r.created_at=(SELECT MAX(r2.created_at) FROM editorial_publication_reviews r2 WHERE r2.document_id=r.document_id)
        ORDER BY r.created_at DESC`,
       [scope.email],
@@ -25752,6 +26146,22 @@ async function adminNotifications(
         : !scope.memberAccess && item.task_kind === "feedback" && item.feedback_document_id
           ? `/admin/editor/?document=${encodeURIComponent(item.feedback_document_id)}`
           : `/admin/task-detail/?task=${encodeURIComponent(item.id)}`,
+      updatedAt: item.updated_at,
+    })),
+    ...(deletionRequestRows.results ?? []).map((item) => ({
+      id: `article-deletion-${item.id}`,
+      kind: "article-deletion",
+      title: `記事の削除申請：${item.title}`,
+      detail: `${item.subject} ／ 申請者：${item.requested_by}`,
+      href: `/admin/deletion-requests/`,
+      updatedAt: item.updated_at || item.created_at,
+    })),
+    ...(deletionResultRows.results ?? []).map((item) => ({
+      id: `article-deletion-result-${item.id}-${item.status}`,
+      kind: "article-deletion",
+      title: item.status === "approved" ? `記事の削除申請が承認されました：${item.title}` : `記事の削除申請が却下されました：${item.title}`,
+      detail: item.decision_reason || (item.status === "approved" ? "申請が承認されました。" : "申請が却下されました。"),
+      href: item.status === "approved" ? "/admin/articles/" : `/admin/editor/?document=${encodeURIComponent(item.document_id)}`,
       updatedAt: item.updated_at,
     })),
     ...(applicationRows.results ?? []).map((item) => ({
@@ -25862,7 +26272,7 @@ async function markAdminNotificationsRead(
             .filter(
               (id): id is string =>
                 typeof id === "string" &&
-                /^(comment|mention|approved|published|publication-ready|review|publication-review|publication-review-returned|application|feedback-request|task-request|task-reminder|task-reminder-rule)-[a-zA-Z0-9:._+\-]{8,}$/.test(
+                /^(comment|mention|approved|published|publication-ready|review|publication-review|publication-review-returned|application|feedback-request|task-request|task-reminder|task-reminder-rule|article-deletion)-[a-zA-Z0-9:._+\-]{8,}$/.test(
                   id,
                 ),
             ),
@@ -25901,7 +26311,7 @@ async function markAdminNotificationsRead(
       ? notificationData.unreadNotificationIds.filter(
           (id): id is string =>
             typeof id === "string" &&
-            /^(comment|mention|approved|published|publication-ready|review|publication-review|publication-review-returned|application|feedback-request|task-request|task-reminder|task-reminder-rule)-[a-zA-Z0-9:._+\-]{8,}$/.test(id),
+            /^(comment|mention|approved|published|publication-ready|review|publication-review|publication-review-returned|application|feedback-request|task-request|task-reminder|task-reminder-rule|article-deletion)-[a-zA-Z0-9:._+\-]{8,}$/.test(id),
         )
       : [];
     await writeReadIds(ids);
@@ -26771,16 +27181,33 @@ async function handleAdminRequest(
     if (request.method === "POST") return createEditorialDocument(request, env);
     return json({ error: "GET、POSTのみ利用できます。" }, 405);
   }
-  const editorialArchiveMatch = url.pathname.match(
-    /^\/api\/admin\/editor\/documents\/([0-9a-f-]{36})\/(archive|unarchive)$/i,
+  if (url.pathname === "/api/admin/editor/deletion-requests" && request.method === "GET")
+    return listEditorialDocumentDeletionRequests(request, env);
+  const editorialDeletionDecisionMatch = url.pathname.match(
+    /^\/api\/admin\/editor\/deletion-requests\/([0-9a-f-]{36})$/i,
   );
-  if (editorialArchiveMatch && request.method === "POST")
-    return updateEditorialDocumentArchive(
-      request,
-      env,
-      editorialArchiveMatch[1],
-      editorialArchiveMatch[2].toLowerCase() === "archive",
-    );
+  if (editorialDeletionDecisionMatch && request.method === "POST")
+    return decideEditorialDocumentDeletionRequest(request, env, editorialDeletionDecisionMatch[1]);
+  const editorialDeletionRequestMatch = url.pathname.match(
+    /^\/api\/admin\/editor\/documents\/([0-9a-f-]{36})\/deletion-request$/i,
+  );
+  if (editorialDeletionRequestMatch) {
+    if (request.method === "GET")
+      return getEditorialDocumentDeletionRequest(request, env, editorialDeletionRequestMatch[1]);
+    if (request.method === "POST")
+      return requestEditorialDocumentDeletion(request, env, editorialDeletionRequestMatch[1]);
+    return json({ error: "GET、POSTのみ利用できます。" }, 405);
+  }
+  const editorialDocumentSubrouteMatch = url.pathname.match(
+    /^\/api\/admin\/editor\/documents\/([0-9a-f-]{36})(?:\/|$)/i,
+  );
+  if (editorialDocumentSubrouteMatch) {
+    const deletedDocument = await env.REPORTS.prepare(
+      "SELECT deleted_at FROM editorial_documents WHERE id=?",
+    ).bind(editorialDocumentSubrouteMatch[1]).first<{ deleted_at: string | null }>();
+    if (deletedDocument?.deleted_at)
+      return json({ error: "削除済みの記事は操作できません。" }, 410);
+  }
   if (url.pathname === "/api/admin/editor/board" && request.method === "GET")
     return editorialBoard(request, env);
   if (
@@ -27035,6 +27462,12 @@ async function handleAdminRequest(
       "/admin/portal-prototype/",
       ...globalAdminPrototypePaths,
     ]);
+    if (url.pathname === "/admin/deletion-requests" || url.pathname === "/admin/deletion-requests/") {
+      const reviewScope = await getAdminScope(request, env);
+      if (isResponse(reviewScope)) return reviewScope;
+      if (!canReviewEditorialDeletionRequests(reviewScope))
+        return json({ error: "削除申請を審査する権限がありません。" }, 403);
+    }
     if (managerPages.has(url.pathname)) {
       const managerScope =
         url.pathname === "/admin/applications" ||

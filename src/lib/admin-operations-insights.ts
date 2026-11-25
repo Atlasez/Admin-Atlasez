@@ -17,7 +17,7 @@ export async function readOperationsInsights(
   const subjectSql = subjects.length
     ? `subject IN (${subjects.map(() => "?").join(",")})`
     : "0=1";
-  const taskWhere = `project_id=? AND archived_at IS NULL${allSubjects ? "" : ` AND (lower(created_by)=lower(?) OR instr(',' || lower(COALESCE(assignee_email,'')) || ',', ',' || lower(?) || ',')>0 OR (task_kind='feedback' AND assignee_email='*') OR subject IS NULL OR ${subjectSql})`}`;
+  const taskWhere = `project_id=? AND archived_at IS NULL AND cancelled_at IS NULL${allSubjects ? "" : ` AND (lower(created_by)=lower(?) OR instr(',' || lower(COALESCE(assignee_email,'')) || ',', ',' || lower(?) || ',')>0 OR (task_kind='feedback' AND assignee_email='*') OR subject IS NULL OR ${subjectSql})`}`;
   const taskValues = allSubjects
     ? [projectId]
     : [projectId, email, email, ...subjects];
@@ -47,7 +47,7 @@ export async function readOperationsInsights(
   const otherSubjectWhere = allSubjects
     ? ""
     : ` AND (subject IS NULL OR ${subjectSql})`;
-  const documentWhere = `archived_at IS NULL AND status='in-review' AND publication_review_stage IS NOT NULL${allSubjects ? "" : ` AND (${subjectSql})`}`;
+  const documentWhere = `deleted_at IS NULL AND status='in-review' AND publication_review_stage IS NOT NULL${allSubjects ? "" : ` AND (${subjectSql})`}`;
   const [tasks, workload, events, reports, approval, waiting] =
     await Promise.all([
       db

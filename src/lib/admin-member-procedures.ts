@@ -64,7 +64,7 @@ const audit = (
 const handover = async (db: D1Database, row: Procedure) => {
   const tasks = await db
     .prepare(
-      `SELECT id,title FROM editorial_tasks WHERE project_id=? AND is_test_data=0 AND archived_at IS NULL AND status!='done' AND instr(','||lower(COALESCE(assignee_email,''))||',',','||lower(?)||',')>0 LIMIT 101`,
+      `SELECT id,title FROM editorial_tasks WHERE project_id=? AND is_test_data=0 AND archived_at IS NULL AND cancelled_at IS NULL AND status!='done' AND instr(','||lower(COALESCE(assignee_email,''))||',',','||lower(?)||',')>0 LIMIT 101`,
     )
     .bind(row.project_id, row.email)
     .all<{ id: string; title: string }>();
@@ -72,7 +72,7 @@ const handover = async (db: D1Database, row: Procedure) => {
     row.project_id === "atlas"
       ? await db
           .prepare(
-            `SELECT id,title FROM editorial_documents WHERE lower(created_by)=lower(?) AND archived_at IS NULL AND status IN ('draft','in-review') LIMIT 101`,
+            `SELECT id,title FROM editorial_documents WHERE lower(created_by)=lower(?) AND deleted_at IS NULL AND status IN ('draft','in-review') LIMIT 101`,
           )
           .bind(row.email)
           .all<{ id: string; title: string }>()
@@ -173,9 +173,9 @@ export async function applyDueMemberProcedures(
            WHERE r.id=? AND r.status='scheduled' AND r.effective_at<=?
              AND COALESCE(current.state,'active')=r.expected_state
              AND NOT EXISTS(SELECT 1 FROM admin_member_lifecycle a WHERE lower(a.email)=lower(r.email) AND a.status='archived' AND r.project_id='atlas')
-             AND (r.procedure_type='restart' OR NOT EXISTS(SELECT 1 FROM editorial_tasks t WHERE t.project_id=r.project_id AND t.is_test_data=0 AND t.archived_at IS NULL AND t.status!='done' AND instr(','||lower(COALESCE(t.assignee_email,''))||',',','||lower(r.email)||',')>0))
+             AND (r.procedure_type='restart' OR NOT EXISTS(SELECT 1 FROM editorial_tasks t WHERE t.project_id=r.project_id AND t.is_test_data=0 AND t.archived_at IS NULL AND t.cancelled_at IS NULL AND t.status!='done' AND instr(','||lower(COALESCE(t.assignee_email,''))||',',','||lower(r.email)||',')>0))
              AND (r.procedure_type='restart' OR r.project_id!='atlas' OR length(trim(COALESCE(r.handover_note,'')))>0 OR NOT EXISTS(
-               SELECT 1 FROM editorial_documents d WHERE lower(d.created_by)=lower(r.email) AND d.archived_at IS NULL AND d.status IN ('draft','in-review')
+               SELECT 1 FROM editorial_documents d WHERE lower(d.created_by)=lower(r.email) AND d.deleted_at IS NULL AND d.status IN ('draft','in-review')
              ))
              AND (r.procedure_type='restart' OR m.role!='manager' OR EXISTS(
                SELECT 1 FROM atlasez_project_memberships successor

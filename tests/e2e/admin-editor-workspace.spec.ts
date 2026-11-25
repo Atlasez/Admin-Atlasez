@@ -180,6 +180,145 @@ test("E-5: 記事設定には担当分野だけを表示する", async ({ page }
   await expect(personalNotebook).toHaveAttribute("open", "");
 });
 
+test("削除は記事編集画面から申請し、申請中は公開・審査操作を止める", async ({
+  page,
+}) => {
+  await mockAdminApi(page, undefined, {
+    ...documentItem,
+    current_version_id: "version-1",
+  });
+  let requested = false;
+  let submittedReason = "";
+  await page.route(
+    "**/api/admin/editor/documents/doc-1/deletion-request",
+    async (route) => {
+      if (route.request().method() === "POST") {
+        const body = route.request().postDataJSON() as { reason?: string };
+        submittedReason = body.reason ?? "";
+        requested = true;
+        await route.fulfill({
+          json: {
+            ok: true,
+            request: {
+              id: "request-1",
+              requested_version_id: "version-1",
+              requested_by: "alice@example.com",
+              status: "pending",
+            },
+          },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: {
+          request: requested
+            ? {
+                id: "request-1",
+                requested_version_id: "version-1",
+                requested_by: "alice@example.com",
+                status: "pending",
+              }
+            : null,
+          canRequest: true,
+          deleted: false,
+        },
+      });
+    },
+  );
+
+  await page.goto("./admin/editor/?document=doc-1");
+  const requestButton = page.locator("[data-request-deletion]");
+  await expect(requestButton).toBeVisible();
+  await requestButton.click();
+  const dialog = page.locator("[data-deletion-request-dialog]");
+  await dialog.locator("[data-deletion-request-reason]").fill("重複記事のため");
+  await dialog.locator("[data-deletion-request-submit]").click();
+
+  await expect(page.locator("[data-deletion-request-state]")).toContainText(
+    "削除申請中です",
+  );
+  await expect(requestButton).toBeDisabled();
+  await expect(page.locator("[data-publish-document]")).toBeDisabled();
+  await expect(page.locator("[data-request-review]")).toBeDisabled();
+  expect(requested).toBe(true);
+  expect(submittedReason).toBe("重複記事のため");
+});
+
+test("削除申請中に版を保存すると申請が無効になり編集操作を再開できる", async ({
+  page,
+}) => {
+  const savedDocument = { ...documentItem, current_version_id: "version-1" };
+  await mockAdminApi(page, undefined, savedDocument);
+  let requested = false;
+  let currentVersionId = "version-1";
+  let patchCount = 0;
+  let deletionRequestStateLoads = 0;
+  await page.route(
+    "**/api/admin/editor/documents/doc-1/deletion-request",
+    async (route) => {
+      if (route.request().method() === "POST") {
+        requested = true;
+        await route.fulfill({
+          json: {
+            ok: true,
+            request: {
+              id: "request-1",
+              requested_version_id: "version-1",
+              requested_by: "alice@example.com",
+              status: "pending",
+            },
+          },
+        });
+        return;
+      }
+      deletionRequestStateLoads += 1;
+      const stale = requested && currentVersionId !== "version-1";
+      await route.fulfill({
+        json: {
+          request: requested
+            ? {
+                id: "request-1",
+                requested_version_id: "version-1",
+                requested_by: "alice@example.com",
+                status: stale ? "stale" : "pending",
+                decision_reason: stale ? "申請後に版が更新されました。" : "",
+              }
+            : null,
+          canRequest: true,
+          deleted: false,
+        },
+      });
+    },
+  );
+  await page.route("**/api/admin/editor/documents/doc-1", async (route) => {
+    if (route.request().method() !== "PATCH") return route.fallback();
+    patchCount += 1;
+    Object.assign(savedDocument, route.request().postDataJSON());
+    currentVersionId = "version-2";
+    savedDocument.current_version_id = currentVersionId;
+    await route.fulfill({
+      json: { ok: true, updatedAt: "2026-11-23T00:00:00.000Z" },
+    });
+  });
+
+  await page.goto("./admin/editor/?document=doc-1");
+  await page.locator("[data-request-deletion]").click();
+  await page.locator("[data-deletion-request-submit]").click();
+  await expect(page.locator("[data-request-review]")).toBeDisabled();
+
+  await page.locator("details.metadata > summary").click();
+  await page.locator('[name="title"]').fill("群の定義・更新");
+  await expect.poll(() => patchCount).toBe(1);
+  await expect.poll(() => deletionRequestStateLoads).toBeGreaterThanOrEqual(3);
+  await expect(page.locator("[data-deletion-request-state]")).toContainText(
+    "申請後に版が更新されました。",
+  );
+  await expect(page.locator("[data-request-deletion]")).toHaveText(
+    "削除を再申請",
+  );
+  await expect(page.locator("[data-request-review]")).toBeEnabled();
+});
+
 test("記事編集画面で該当記事の問題報告を確認できる", async ({ page }) => {
   const sourceArticleId = "ja-mathematics-group-definition";
   await mockAdminApi(
@@ -2866,6 +3005,13 @@ test("既存の未完了依頼を重ねず、画面上部から取り下げら�
     "依頼を取り下げ、記事を下書きに戻しました。",
   );
 
+  // The compact toolbar hides while scrolling down. Scroll back up before
+  // using its next action so the test follows the toolbar's reveal behavior.
+  await page.mouse.wheel(0, -1000);
+  await expect(page.locator(".editor-workspace")).not.toHaveAttribute(
+    "data-toolbar-hidden",
+    "",
+  );
   await page
     .getByRole("button", { name: "追加でフィードバックを依頼" })
     .click();

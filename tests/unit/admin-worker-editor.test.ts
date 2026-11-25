@@ -1724,14 +1724,14 @@ describe("admin worker editor APIs", () => {
     });
     expect(
       actionQueries.some((query) =>
-        query.includes("t.status='done' OR t.archived_at IS NOT NULL"),
+        query.includes(
+          "t.status='done' OR t.archived_at IS NOT NULL OR t.cancelled_at IS NOT NULL",
+        ),
       ),
     ).toBe(false);
     expect(
       actionQueries.some((query) =>
-        query.includes(
-          "d.archived_at IS NOT NULL OR d.published_at IS NOT NULL",
-        ),
+        query.includes("d.published_at IS NOT NULL OR d.status='approved'"),
       ),
     ).toBe(false);
 
@@ -1756,14 +1756,14 @@ describe("admin worker editor APIs", () => {
     });
     expect(
       historyQueries.some((query) =>
-        query.includes("t.status='done' OR t.archived_at IS NOT NULL"),
+        query.includes(
+          "t.status='done' OR t.archived_at IS NOT NULL OR t.cancelled_at IS NOT NULL",
+        ),
       ),
     ).toBe(true);
     expect(
       historyQueries.some((query) =>
-        query.includes(
-          "d.archived_at IS NOT NULL OR d.published_at IS NOT NULL",
-        ),
+        query.includes("d.published_at IS NOT NULL OR d.status='approved'"),
       ),
     ).toBe(true);
   });
@@ -2513,9 +2513,6 @@ describe("admin worker editor APIs", () => {
             return {
               id: documentId,
               creator_kind: "person",
-              document_kind: "canonical",
-              base_document_id: null,
-              base_document_updated_at: null,
               source_article_id: null,
               subject: "mathematics",
               category: "algebra",
@@ -2537,9 +2534,8 @@ describe("admin worker editor APIs", () => {
               updated_at: "2026-10-12T00:00:00.000Z",
               reviewed_at: null,
               published_at: null,
-              archived_at: null,
-              archived_by: null,
-              archive_expires_at: null,
+              deleted_at: null,
+              deleted_by: null,
               scheduled_publish_at: null,
               scheduled_publish_claimed_at: null,
               publication_review_stage: stage,
@@ -2583,6 +2579,210 @@ describe("admin worker editor APIs", () => {
       else await expect(response.json()).resolves.not.toHaveProperty("body");
     },
   );
+
+  it("lets project leaders inspect a pending deletion request and its revisions read-only", async () => {
+    const documentId = "22222222-2222-4222-8222-222222222222";
+    const requester = "author@example.test";
+    const article = {
+      id: documentId,
+      creator_kind: "person",
+      source_article_id: null,
+      subject: "mathematics",
+      category: "algebra",
+      locale: "ja",
+      slug: "deletion-review",
+      title: "削除審査の記事",
+      summary: "審査用の要約",
+      concept_id: "",
+      concept_name: null,
+      concept_name_en: null,
+      concept_is_new: 0,
+      body: "削除申請の対象本文",
+      writing_memo: "編集メモ",
+      latex_engine: "katex",
+      status: "draft",
+      created_by: requester,
+      updated_by: requester,
+      created_at: "2026-10-12T00:00:00.000Z",
+      updated_at: "2026-10-12T00:00:00.000Z",
+      reviewed_at: null,
+      published_at: null,
+      deleted_at: null,
+      deleted_by: null,
+      current_version_id: "version-current",
+      published_version_id: null,
+      scheduled_publish_at: null,
+      scheduled_publish_claimed_at: null,
+      publication_review_stage: null,
+      publication_review_round: 0,
+      publication_pr_number: null,
+      publication_pr_url: null,
+      publication_branch: null,
+      publication_action: null,
+      publication_requested_at: null,
+      locked_ranges: "[]",
+      article_references: "[]",
+    };
+    class DeletionReviewStatement extends EmptyStatement {
+      private values: unknown[] = [];
+
+      bind(...values: unknown[]) {
+        super.bind(...values);
+        this.values = values;
+        return this;
+      }
+
+      async all<T>() {
+        if (this.query.includes("SELECT subject FROM report_admin_permissions"))
+          return { results: [] as T[] };
+        if (
+          this.query.includes(
+            "SELECT role, subject FROM editorial_workflow_roles",
+          )
+        )
+          return {
+            results: [{ role: "project-leader", subject: "" }] as T[],
+          };
+        if (this.query.includes("FROM editorial_document_revisions r"))
+          return {
+            results: [
+              {
+                id: "version-current",
+                title: "削除審査の記事",
+                summary: "審査用の要約",
+                body: "削除申請の対象本文",
+                status: "draft",
+                saved_by: requester,
+                saved_at: "2026-10-12T00:00:00.000Z",
+                snapshot_json: null,
+                is_current_version: 1,
+                is_published_version: 0,
+                saved_by_display_name: requester,
+                saved_by_avatar_url: "",
+              },
+            ] as T[],
+          };
+        return { results: [] as T[] };
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM atlasez_project_member_lifecycle"))
+          return null as T | null;
+        if (this.query.includes("FROM editorial_document_deletion_requests r"))
+          return this.values[1] === requester
+            ? (null as T | null)
+            : ({ can_read: 1 } as T);
+        if (this.query.includes("FROM editorial_documents WHERE id = ?"))
+          return article as T;
+        return null as T | null;
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      ADMIN_AUTH_MODE: "cloudflare-access",
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new DeletionReviewStatement(query),
+      },
+    };
+    const headers = {
+      "Cf-Access-Authenticated-User-Email": "leader@example.test",
+    };
+
+    const documentResponse = await worker.fetch(
+      new Request(
+        `https://admin.example/api/admin/editor/documents/${documentId}`,
+        { headers },
+      ),
+      env as never,
+    );
+    expect(documentResponse.status).toBe(200);
+    await expect(documentResponse.json()).resolves.toMatchObject({
+      document: {
+        id: documentId,
+        body: "削除申請の対象本文",
+        read_only: true,
+      },
+      comments: [],
+    });
+
+    const revisionsResponse = await worker.fetch(
+      new Request(
+        `https://admin.example/api/admin/editor/documents/${documentId}/revisions`,
+        { headers },
+      ),
+      env as never,
+    );
+    expect(revisionsResponse.status).toBe(200);
+    await expect(revisionsResponse.json()).resolves.toMatchObject({
+      revisions: [{ id: "version-current", body: "削除申請の対象本文" }],
+      feedbackRequests: [],
+    });
+  });
+
+  it("does not grant deletion-review article access to the requester", async () => {
+    const documentId = "22222222-2222-4222-8222-222222222222";
+    class RequesterStatement extends EmptyStatement {
+      private values: unknown[] = [];
+
+      bind(...values: unknown[]) {
+        super.bind(...values);
+        this.values = values;
+        return this;
+      }
+
+      async all<T>() {
+        if (
+          this.query.includes(
+            "SELECT role, subject FROM editorial_workflow_roles",
+          )
+        )
+          return {
+            results: [{ role: "project-leader", subject: "" }] as T[],
+          };
+        return { results: [] as T[] };
+      }
+
+      async first<T>() {
+        if (this.query.includes("FROM atlasez_project_member_lifecycle"))
+          return null as T | null;
+        if (this.query.includes("FROM editorial_document_deletion_requests r"))
+          return this.values[1] === "requester@example.test"
+            ? (null as T | null)
+            : ({ can_read: 1 } as T);
+        if (this.query.includes("FROM editorial_documents WHERE id = ?"))
+          return {
+            id: documentId,
+            subject: "physics",
+            status: "draft",
+            publication_review_stage: null,
+            created_by: "requester@example.test",
+            deleted_at: null,
+          } as T;
+        return null as T | null;
+      }
+    }
+    const response = await worker.fetch(
+      new Request(
+        `https://admin.example/api/admin/editor/documents/${documentId}`,
+        {
+          headers: {
+            "Cf-Access-Authenticated-User-Email": "requester@example.test",
+          },
+        },
+      ),
+      {
+        ...emptyEnv,
+        ADMIN_AUTH_MODE: "cloudflare-access",
+        REPORTS: {
+          ...emptyEnv.REPORTS,
+          prepare: (query: string) => new RequesterStatement(query),
+        },
+      } as never,
+    );
+
+    expect(response.status).toBe(403);
+  });
 
   it("returns all article scope for the designated primary operator", async () => {
     const documentQueries: string[] = [];
@@ -2665,9 +2865,8 @@ describe("admin worker editor APIs", () => {
       updated_at: `2026-09-${String(20 - index).padStart(2, "0")}T00:00:00.000Z`,
       reviewed_at: null,
       published_at: null,
-      archived_at: null,
-      archived_by: null,
-      archive_expires_at: null,
+      deleted_at: null,
+      deleted_by: null,
       scheduled_publish_at: null,
       publication_review_stage: null,
       created_by_display_name: "ローカル編集者",
@@ -3423,7 +3622,7 @@ describe("admin worker editor APIs", () => {
       published_version_id: "previous-published-version",
       publication_review_stage: null,
       publication_review_round: 0,
-      archived_at: null,
+      deleted_at: null,
       updated_at: "2026-08-31T00:00:00.000Z",
     };
     const executed: { query: string; values: unknown[] }[] = [];
@@ -3501,15 +3700,15 @@ describe("admin worker editor APIs", () => {
     ).toBe(true);
   });
 
-  it("does not change feedback assignments for archived articles", async () => {
+  it("does not change feedback assignments for deleted articles", async () => {
     const documentId = "55555555-5555-4555-8555-555555555555";
     const document = {
       subject: "mathematics",
       status: "in-review",
       publication_review_stage: null,
-      title: "アーカイブ済みの記事",
+      title: "削除済みの記事",
       created_by: "local-editor@atlasez.test",
-      archived_at: "2026-08-30T00:00:00.000Z",
+      deleted_at: "2026-08-30T00:00:00.000Z",
     };
     let batchCalled = false;
     class ArchivedAssignmentStatement extends EmptyStatement {
@@ -3547,8 +3746,7 @@ describe("admin worker editor APIs", () => {
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
-      error:
-        "アーカイブ中の記事のフィードバック担当者は変更できません。先に一覧から復元してください。",
+      error: "削除済みの記事のフィードバック担当者は変更できません。",
     });
     expect(batchCalled).toBe(false);
   });
@@ -3565,7 +3763,7 @@ describe("admin worker editor APIs", () => {
             publication_review_stage: null,
             title: "依頼取り下げテスト",
             created_by: "local-editor@atlasez.test",
-            archived_at: null,
+            deleted_at: null,
           } as T;
         return null as T | null;
       }
@@ -3603,7 +3801,7 @@ describe("admin worker editor APIs", () => {
     expect(batchCalled).toBe(false);
   });
 
-  it("guards feedback assignment writes if an article is archived after it is read", async () => {
+  it("guards feedback assignment writes if an article is deleted after it is read", async () => {
     const documentId = "66666666-6666-4666-8666-666666666666";
     const document = {
       subject: "mathematics",
@@ -3611,7 +3809,7 @@ describe("admin worker editor APIs", () => {
       publication_review_stage: null,
       title: "フィードバック中の記事",
       created_by: "local-editor@atlasez.test",
-      archived_at: null,
+      deleted_at: null,
     };
     const batchQueries: string[] = [];
     class ConcurrentAssignmentStatement extends EmptyStatement {
@@ -3661,7 +3859,7 @@ describe("admin worker editor APIs", () => {
     );
 
     expect(response.status).toBe(409);
-    expect(batchQueries[0]).toContain("archived_at IS NULL");
+    expect(batchQueries[0]).toContain("deleted_at IS NULL");
     expect(batchQueries.slice(1)).toHaveLength(5);
     const recipientDeleteIndex = batchQueries.findIndex((query) =>
       query.includes("DELETE FROM editorial_review_assignment_recipients"),
@@ -3678,7 +3876,7 @@ describe("admin worker editor APIs", () => {
     expect(
       batchQueries
         .slice(1)
-        .every((query) => query.includes("archived_at IS NULL")),
+        .every((query) => query.includes("deleted_at IS NULL")),
     ).toBe(true);
     expect(batchQueries[0]).toContain("editorial_feedback_task_links");
     expect(batchQueries[0]).toContain("assignee_email");
@@ -3692,7 +3890,7 @@ describe("admin worker editor APIs", () => {
       publication_review_stage: null,
       title: "フィードバック重複テスト",
       created_by: "local-editor@atlasez.test",
-      archived_at: null,
+      deleted_at: null,
     };
     let batchCalled = false;
     class DuplicateAssignmentStatement extends EmptyStatement {
@@ -3772,7 +3970,7 @@ describe("admin worker editor APIs", () => {
             publication_review_stage: null,
             title: "フィードバック中の記事",
             updated_at: "2026-11-20T00:00:00.000Z",
-            archived_at: null,
+            deleted_at: null,
           } as T;
         if (this.query.includes("FROM editorial_feedback_task_links link"))
           return {
@@ -3855,7 +4053,7 @@ describe("admin worker editor APIs", () => {
             publication_review_stage: null,
             title: "複数依頼の記事",
             updated_at: "2026-11-20T00:00:00.000Z",
-            archived_at: null,
+            deleted_at: null,
           } as T;
         if (this.query.includes("FROM editorial_feedback_task_links link"))
           return {
@@ -3903,27 +4101,97 @@ describe("admin worker editor APIs", () => {
     });
   });
 
-  it("allows archiving a feedback-stage article but rejects publication-review stages", async () => {
+  it("removes the article archive endpoint", async () => {
     const documentId = "33333333-3333-4333-8333-333333333333";
-    const executed: string[] = [];
-    const document = {
-      id: documentId,
-      subject: "mathematics",
-      status: "in-review",
-      created_by: "local-editor@atlasez.test",
-      published_at: null,
-      published_version_id: null as string | null,
-      publication_review_stage: null as
-        "subject-coordinator" | "project-leader" | null,
-      scheduled_publish_at: null,
-      archived_at: null,
-      archived_by: null,
-      archive_expires_at: null,
-    };
-    class ArchiveStatement extends EmptyStatement {
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/documents/${documentId}/archive`,
+        { method: "POST", headers: { origin: "http://localhost" } },
+      ),
+      emptyEnv as never,
+    );
+    expect(response.status).toBe(404);
+  });
+
+  it("requires a saved version before accepting an article deletion request", async () => {
+    const documentId = "33333333-3333-4333-8333-333333333333";
+    let batchCalled = false;
+    class UnsavedDocumentStatement extends EmptyStatement {
       async first<T>() {
-        if (this.query.includes("SELECT id, subject, status, created_by"))
-          return document as T;
+        if (this.query.includes("FROM editorial_documents"))
+          return {
+            id: documentId,
+            subject: "mathematics",
+            title: "未保存の記事",
+            created_by: "local-editor@atlasez.test",
+            current_version_id: null,
+            updated_at: "2026-11-22T00:00:00.000Z",
+            deleted_at: null,
+          } as T;
+        return null as T | null;
+      }
+    }
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/documents/${documentId}/deletion-request`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reason: "重複記事" }),
+        },
+      ),
+      {
+        ...emptyEnv,
+        REPORTS: {
+          ...emptyEnv.REPORTS,
+          prepare: (query: string) => new UnsavedDocumentStatement(query),
+          batch: async () => {
+            batchCalled = true;
+            return [];
+          },
+        },
+      } as never,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error:
+        "保存済みの版がない記事には削除を申請できません。記事を保存してからお試しください。",
+    });
+    expect(batchCalled).toBe(false);
+  });
+
+  it("approves a logical article deletion and records linked feedback as cancelled", async () => {
+    const documentId = "33333333-3333-4333-8333-333333333333";
+    const requestId = "44444444-4444-4444-8444-444444444444";
+    const executed: string[] = [];
+    class DeletionApprovalStatement extends EmptyStatement {
+      get queryText() {
+        return this.query;
+      }
+
+      async first<T>() {
+        if (
+          this.query.includes(
+            "FROM editorial_document_deletion_requests r JOIN editorial_documents d",
+          )
+        )
+          return {
+            id: requestId,
+            document_id: documentId,
+            requested_version_id: "version-7",
+            requested_by: "requester@example.com",
+            status: "pending",
+            current_version_id: "version-7",
+            title: "未公開の記事",
+            published_at: null,
+            published_version_id: null,
+            publication_review_stage: null,
+            scheduled_publish_at: null,
+            publication_action: null,
+            publication_pr_number: null,
+            deleted_at: null,
+          } as T;
         return null as T | null;
       }
 
@@ -3936,51 +4204,261 @@ describe("admin worker editor APIs", () => {
       ...emptyEnv,
       REPORTS: {
         ...emptyEnv.REPORTS,
-        prepare: (query: string) => new ArchiveStatement(query),
+        prepare: (query: string) => new DeletionApprovalStatement(query),
+        batch: async (statements: DeletionApprovalStatement[]) => {
+          executed.push(...statements.map((statement) => statement.queryText));
+          return statements.map(() => ({ meta: { changes: 1 } }));
+        },
       },
     };
     const response = await worker.fetch(
       new Request(
-        `http://localhost/api/admin/editor/documents/${documentId}/archive`,
-        { method: "POST", headers: { origin: "http://localhost" } },
+        `http://localhost/api/admin/editor/deletion-requests/${requestId}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ decision: "approved", reason: "重複記事" }),
+        },
       ),
       env as never,
     );
 
     expect(response.status).toBe(200);
-    expect(executed).toHaveLength(1);
-    expect(executed[0]).toContain("status IN ('draft', 'in-review')");
-    expect(executed[0]).toContain("published_version_id IS NULL");
-    expect(executed[0]).toContain("publication_review_stage IS NULL");
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      status: "approved",
+    });
+    expect(executed[0]).toContain(
+      "UPDATE editorial_documents SET deleted_at=?",
+    );
+    expect(executed[1]).toContain("SET status='approved'");
+    expect(executed[2]).toContain("cancelled_at=?");
+    expect(executed[2]).toContain("記事削除の承認に伴う取消");
+    expect(executed[2]).not.toContain("SET status='done'");
+    expect(
+      executed.some((query) =>
+        query.includes("DELETE FROM editorial_documents"),
+      ),
+    ).toBe(false);
+  });
 
-    document.published_version_id = "published-revision";
-    executed.length = 0;
-    const publishedResponse = await worker.fetch(
+  it("fails closed when a publication-linked article cannot be matched to the active Cloudflare release", async () => {
+    const documentId = "55555555-5555-4555-8555-555555555555";
+    const requestId = "66666666-6666-4666-8666-666666666666";
+    let batchCalled = false;
+    class UnverifiedReleaseStatement extends EmptyStatement {
+      async first<T>() {
+        if (
+          this.query.includes(
+            "FROM editorial_document_deletion_requests r JOIN editorial_documents d",
+          )
+        )
+          return {
+            id: requestId,
+            document_id: documentId,
+            requested_version_id: "version-7",
+            requested_by: "requester@example.com",
+            status: "pending",
+            current_version_id: "version-7",
+            source_article_id: "ja-mathematics-article",
+            title: "公開履歴がある記事",
+            published_at: null,
+            published_version_id: null,
+            publication_review_stage: null,
+            scheduled_publish_at: null,
+            publication_action: null,
+            publication_pr_number: null,
+            deleted_at: null,
+          } as T;
+        return null as T | null;
+      }
+    }
+    const response = await worker.fetch(
       new Request(
-        `http://localhost/api/admin/editor/documents/${documentId}/archive`,
-        { method: "POST", headers: { origin: "http://localhost" } },
+        `http://localhost/api/admin/editor/deletion-requests/${requestId}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ decision: "approved" }),
+        },
+      ),
+      {
+        ...emptyEnv,
+        REPORTS: {
+          ...emptyEnv.REPORTS,
+          prepare: (query: string) => new UnverifiedReleaseStatement(query),
+          batch: async () => {
+            batchCalled = true;
+            return [];
+          },
+        },
+      } as never,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "deletion_publication_state_unavailable",
+    });
+    expect(batchCalled).toBe(false);
+  });
+
+  it("allows deletion after the active 100-percent release and D1 history confirm the article is absent", async () => {
+    const documentId = "77777777-7777-4777-8777-777777777777";
+    const requestId = "88888888-8888-4888-8888-888888888888";
+    const versionId = "99999999-9999-4999-8999-999999999999";
+    const deploymentId = "deployment-7";
+    const executed: string[] = [];
+    class VerifiedReleaseStatement extends EmptyStatement {
+      get queryText() {
+        return this.query;
+      }
+
+      async first<T>() {
+        if (
+          this.query.includes(
+            "FROM editorial_document_deletion_requests r JOIN editorial_documents d",
+          )
+        )
+          return {
+            id: requestId,
+            document_id: documentId,
+            requested_version_id: "article-version-7",
+            requested_by: "requester@example.com",
+            status: "pending",
+            current_version_id: "article-version-7",
+            source_article_id: "ja-mathematics-article",
+            title: "公開停止済みの記事",
+            published_at: null,
+            published_version_id: null,
+            publication_review_stage: null,
+            scheduled_publish_at: null,
+            publication_action: null,
+            publication_pr_number: null,
+            deleted_at: null,
+          } as T;
+        if (this.query.includes("AS found")) return { found: 1 } as T;
+        if (this.query.includes("FROM editorial_release_candidates c"))
+          return { version_id: versionId } as T;
+        return null as T | null;
+      }
+
+      async all<T>() {
+        if (this.query.includes("FROM editorial_release_candidate_articles"))
+          return { results: [{ article_status: "draft" }] as T[] };
+        return { results: [] as T[] };
+      }
+
+      async run() {
+        executed.push(this.query);
+        return { meta: { changes: 1 } };
+      }
+    }
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          success: true,
+          result: {
+            deployments: [
+              {
+                id: deploymentId,
+                versions: [{ version_id: versionId, percentage: 100 }],
+              },
+            ],
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+    );
+    try {
+      const response = await worker.fetch(
+        new Request(
+          `http://localhost/api/admin/editor/deletion-requests/${requestId}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ decision: "approved" }),
+          },
+        ),
+        {
+          ...emptyEnv,
+          CLOUDFLARE_WORKERS_READ_TOKEN: "read-only-token",
+          REPORTS: {
+            ...emptyEnv.REPORTS,
+            prepare: (query: string) => new VerifiedReleaseStatement(query),
+            batch: async (statements: VerifiedReleaseStatement[]) => {
+              executed.push(
+                ...statements.map((statement) => statement.queryText),
+              );
+              return statements.map(() => ({ meta: { changes: 1 } }));
+            },
+          },
+        } as never,
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        ok: true,
+        status: "approved",
+      });
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining("/workers/scripts/atlasez01/deployments"),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            authorization: "Bearer read-only-token",
+          }),
+        }),
+      );
+      expect(executed[0]).toContain(
+        "UPDATE editorial_documents SET deleted_at=?",
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("rejects a document action after deletion", async () => {
+    const documentId = "44444444-4444-4444-8444-444444444444";
+    const executed: string[] = [];
+    class DeletedDocumentStatement extends EmptyStatement {
+      async first<T>() {
+        return { deleted_at: "2026-08-30T00:00:00.000Z" } as T;
+      }
+
+      async run() {
+        executed.push(this.query);
+        return {};
+      }
+    }
+    const env = {
+      ...emptyEnv,
+      REPORTS: {
+        ...emptyEnv.REPORTS,
+        prepare: (query: string) => new DeletedDocumentStatement(query),
+      },
+    };
+    const response = await worker.fetch(
+      new Request(
+        `http://localhost/api/admin/editor/documents/${documentId}/publication-review`,
+        {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: "{}",
+        },
       ),
       env as never,
     );
-    expect(publishedResponse.status).toBe(400);
-    expect(executed).toEqual([]);
-
-    document.published_version_id = null;
-    document.publication_review_stage = "subject-coordinator";
-    executed.length = 0;
-    const reviewStageResponse = await worker.fetch(
-      new Request(
-        `http://localhost/api/admin/editor/documents/${documentId}/archive`,
-        { method: "POST", headers: { origin: "http://localhost" } },
-      ),
-      env as never,
-    );
-    expect(reviewStageResponse.status).toBe(400);
+    expect(response.status).toBe(410);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "削除済みの記事は操作できません。",
+    });
     expect(executed).toEqual([]);
   });
 
-  it("does not start publication review for an archived article", async () => {
-    const documentId = "44444444-4444-4444-8444-444444444444";
+  it("does not start publication review for a deleted article", async () => {
+    const documentId = "55555555-5555-4555-8555-555555555555";
     const document = {
       id: documentId,
       subject: "mathematics",
@@ -3988,10 +4466,10 @@ describe("admin worker editor APIs", () => {
       created_by: "local-editor@atlasez.test",
       published_at: null,
       publication_review_stage: null,
-      archived_at: "2026-08-30T00:00:00.000Z",
+      deleted_at: "2026-08-30T00:00:00.000Z",
     };
     const executed: string[] = [];
-    class ArchivedPublicationStatement extends EmptyStatement {
+    class DeletedPublicationStatement extends EmptyStatement {
       async first<T>() {
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
@@ -4007,7 +4485,7 @@ describe("admin worker editor APIs", () => {
       ...emptyEnv,
       REPORTS: {
         ...emptyEnv.REPORTS,
-        prepare: (query: string) => new ArchivedPublicationStatement(query),
+        prepare: (query: string) => new DeletedPublicationStatement(query),
       },
     };
     const response = await worker.fetch(
@@ -4025,10 +4503,9 @@ describe("admin worker editor APIs", () => {
       env as never,
     );
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(410);
     await expect(response.json()).resolves.toMatchObject({
-      error:
-        "アーカイブ中の原稿は公開審査へ進められません。先に一覧から復元してください。",
+      error: "削除済みの記事は操作できません。",
     });
     expect(executed).toEqual([]);
   });
@@ -4484,10 +4961,12 @@ describe("admin worker editor APIs", () => {
       publication_branch: null,
       publication_action: null,
       publication_requested_at: null,
+      deleted_at: null,
       locked_ranges: "[]",
       article_references: "[]",
     };
     const executed: { query: string; values: unknown[] }[] = [];
+    let publicationRunInsertCount = 0;
     const publicationRun = {
       id: "33333333-3333-4333-8333-333333333333",
       document_id: documentId,
@@ -4526,6 +5005,8 @@ describe("admin worker editor APIs", () => {
       async first<T>() {
         if (this.query.includes("FROM editorial_document_revisions"))
           return publicationRevision({ ...document, status: "draft" }) as T;
+        if (this.query.includes("SELECT 1 AS blocked FROM editorial_documents"))
+          return null as T | null;
         if (this.query.includes("FROM editorial_documents"))
           return document as T;
         if (this.query.includes("FROM editorial_publication_runs"))
@@ -4539,8 +5020,12 @@ describe("admin worker editor APIs", () => {
           this.query.includes(
             "INSERT OR IGNORE INTO editorial_publication_runs",
           )
-        )
+        ) {
+          publicationRunInsertCount += 1;
+          if (publicationRunInsertCount === 1) return { meta: { changes: 0 } };
+          publicationRun.id = String(this.values[0]);
           currentPublicationRun = publicationRun;
+        }
         return { meta: { changes: 1 } };
       }
     }
@@ -4620,6 +5105,20 @@ describe("admin worker editor APIs", () => {
           "INSERT OR IGNORE INTO editorial_publication_runs",
         ),
       );
+      const publicationRunInserts = executed.filter((entry) =>
+        entry.query.includes(
+          "INSERT OR IGNORE INTO editorial_publication_runs",
+        ),
+      );
+      expect(publicationRunInserts).toHaveLength(2);
+      expect(
+        publicationRunInserts.every(
+          ({ query, values }) =>
+            query.includes(
+              "editorial_documents d WHERE d.id=? AND d.deleted_at IS NULL",
+            ) && values.at(-1) === documentId,
+        ),
+      ).toBe(true);
       expect(runInsert?.values[5]).toBe(savedRevision.updated_at);
       expect(runInsert?.values[6]).toBe(
         await publicationSnapshotHash(savedRevision),

@@ -777,7 +777,7 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(page.locator("[data-subject]")).toHaveValue("all");
     await expect(page.locator("[data-status]")).toHaveValue("all");
     await expect(page.locator("[data-test]")).toHaveValue("exclude");
-    await expect(page.locator("[data-archive]")).toHaveValue("active");
+    await expect(page.locator("[data-archive]")).toHaveCount(0);
     await expect(page.locator("[data-scope-note]")).toHaveText(
       "担当範囲：数学（1分野）",
     );
@@ -992,155 +992,24 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     );
   });
 
-  test("D-4: 下書きをアーカイブし、30日以内なら一覧から復元できる", async ({
-    page,
-  }) => {
-    const activeId = "11111111-1111-4111-8111-111111111111";
-    const archivedId = "22222222-2222-4222-8222-222222222222";
-    const now = Date.now();
-    const activeArchivedAt = new Date(now - 60 * 60 * 1_000).toISOString();
-    const activeArchiveExpiresAt = new Date(
-      now + 29 * 24 * 60 * 60 * 1_000,
-    ).toISOString();
-    const existingArchivedAt = new Date(
-      now - 2 * 24 * 60 * 60 * 1_000,
-    ).toISOString();
-    const existingArchiveExpiresAt = new Date(
-      now + 28 * 24 * 60 * 60 * 1_000,
-    ).toISOString();
-    let activeArchived = false;
+  test("記事一覧から記事の削除・アーカイブを実行できない", async ({ page }) => {
+    const feedbackId = "33333333-3333-4333-8333-333333333333";
+    const reviewId = "44444444-4444-4444-8444-444444444444";
     await page.route("**/api/admin/editor/documents**", async (route) => {
       await route.fulfill({
         json: {
           scope: { email: "alice@example.com" },
           documents: [
             {
-              id: activeId,
+              id: feedbackId,
               subject: "mathematics",
               category: "algebra",
-              title: "整理前の下書き",
-              status: "draft",
+              title: "フィードバック中の記事",
+              status: "in-review",
               created_by: "alice@example.com",
               updated_at: "2026-08-28T00:00:00.000Z",
               published_at: null,
-              ...(activeArchived
-                ? {
-                    archived_at: activeArchivedAt,
-                    archive_expires_at: activeArchiveExpiresAt,
-                  }
-                : {}),
             },
-            {
-              id: archivedId,
-              subject: "mathematics",
-              category: "algebra",
-              title: "保管中の下書き",
-              status: "draft",
-              created_by: "alice@example.com",
-              updated_at: "2026-08-27T00:00:00.000Z",
-              published_at: null,
-              archived_at: existingArchivedAt,
-              archive_expires_at: existingArchiveExpiresAt,
-            },
-          ],
-        },
-      });
-    });
-    await page.route(
-      `**/api/admin/editor/documents/${activeId}/archive`,
-      async (route) => {
-        activeArchived = true;
-        await route.fulfill({
-          json: {
-            ok: true,
-            archived: true,
-            archived_at: activeArchivedAt,
-            archive_expires_at: activeArchiveExpiresAt,
-          },
-        });
-      },
-    );
-    await page.route(
-      `**/api/admin/editor/documents/${activeId}/unarchive`,
-      async (route) => {
-        activeArchived = false;
-        await route.fulfill({
-          json: {
-            ok: true,
-            archived: false,
-            archived_at: null,
-            archive_expires_at: null,
-          },
-        });
-      },
-    );
-
-    await page.goto("admin/articles/?verify=archive");
-    await expect(page.locator("[data-archive]")).toHaveValue("active");
-    await expect(page.locator("[data-list] .article")).toHaveCount(1);
-    await expect(page.locator("[data-list]")).toContainText("整理前の下書き");
-    await expect(page.locator("[data-list]")).not.toContainText(
-      "保管中の下書き",
-    );
-
-    await page
-      .locator(
-        `[data-document-id="${activeId}"] [data-archive-action="archive"]`,
-      )
-      .click();
-    await expect(page).toHaveURL(/admin\/articles\/\?verify=archive$/);
-    await expect(page.locator("[data-list]")).not.toContainText(
-      "整理前の下書き",
-    );
-
-    await page.locator(".advanced-filters > summary").click();
-    await page.locator("[data-archive]").selectOption("archived");
-    await expect(page.locator("[data-list] .article")).toHaveCount(2);
-    await expect(page.locator("[data-list]")).toContainText("整理前の下書き");
-    await expect(page.locator("[data-list]")).toContainText("保管中の下書き");
-    await page
-      .locator(
-        `[data-document-id="${activeId}"] [data-archive-action="unarchive"]`,
-      )
-      .click();
-    await expect(page.locator("[data-list] .article")).toHaveCount(1);
-    await expect(page.locator("[data-list]")).toContainText("保管中の下書き");
-    await expect(page.locator("[data-list]")).not.toContainText(
-      "整理前の下書き",
-    );
-  });
-
-  test("D-5: フィードバック中はアーカイブでき、公開審査中はできない", async ({
-    page,
-  }) => {
-    const feedbackId = "33333333-3333-4333-8333-333333333333";
-    const reviewId = "44444444-4444-4444-8444-444444444444";
-    let archived = false;
-    const feedbackDocument = {
-      id: feedbackId,
-      subject: "mathematics",
-      category: "algebra",
-      title: "フィードバック中の記事",
-      status: "in-review",
-      publication_review_stage: null,
-      created_by: "alice@example.com",
-      updated_at: "2026-08-28T00:00:00.000Z",
-      published_at: null,
-      archived_at: null,
-    };
-    await page.route("**/api/admin/editor/documents**", async (route) => {
-      await route.fulfill({
-        json: {
-          scope: { email: "alice@example.com" },
-          documents: [
-            ...(archived
-              ? [
-                  {
-                    ...feedbackDocument,
-                    archived_at: "2026-08-28T01:00:00.000Z",
-                  },
-                ]
-              : [feedbackDocument]),
             {
               id: reviewId,
               subject: "mathematics",
@@ -1151,39 +1020,22 @@ test.describe("A/D 原稿一覧の作業導線", () => {
               created_by: "alice@example.com",
               updated_at: "2026-08-27T00:00:00.000Z",
               published_at: null,
-              archived_at: null,
             },
           ],
         },
       });
     });
-    await page.route(
-      `**/api/admin/editor/documents/${feedbackId}/archive`,
-      async (route) => {
-        archived = true;
-        await route.fulfill({
-          json: {
-            ok: true,
-            archived: true,
-            archived_at: "2026-08-28T01:00:00.000Z",
-            archive_expires_at: "2026-09-27T01:00:00.000Z",
-          },
-        });
-      },
-    );
 
-    await page.goto("admin/articles/?verify=feedback-archive");
-    const feedbackRow = page.locator(`[data-document-id="${feedbackId}"]`);
-    const reviewRow = page.locator(`[data-document-id="${reviewId}"]`);
+    await page.goto("admin/articles/?verify=no-delete-actions");
     await expect(
-      feedbackRow.locator('[data-archive-action="archive"]'),
+      page.locator(`[data-document-id="${feedbackId}"]`),
     ).toBeVisible();
-    await expect(reviewRow.locator("[data-archive-action]")).toHaveCount(0);
-
-    await feedbackRow.locator('[data-archive-action="archive"]').click();
-    await expect(page.locator("[data-list]")).not.toContainText(
-      "フィードバック中の記事",
-    );
+    await expect(
+      page.locator(`[data-document-id="${reviewId}"]`),
+    ).toBeVisible();
+    await expect(page.locator("[data-archive]")).toHaveCount(0);
+    await expect(page.locator("[data-archive-action]")).toHaveCount(0);
+    await expect(page.locator("[data-request-deletion]")).toHaveCount(0);
   });
 
   test("V-1 フィードバックは原稿一覧で未確認に絞り、自分への依頼を優先する", async ({

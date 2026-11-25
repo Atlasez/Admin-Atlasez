@@ -247,7 +247,13 @@ test("通知要約・重要度・再表示予約を操作できる", async ({ pa
   await expect(page.locator("[data-notification-snooze]")).toHaveText(
     "再表示する",
   );
+  const restoreRequest = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/admin/notifications/snooze") &&
+      request.postDataJSON()?.until === null,
+  );
   await page.locator("[data-notification-snooze]").click();
+  await restoreRequest;
   expect(restored).toBe(true);
   expect(importantQuery).toBe(true);
 });
