@@ -2110,9 +2110,14 @@ describe("admin worker editor APIs", () => {
       },
     };
 
-    const result = await dispatchScheduledEditorialPublications(env as never);
+    const report = vi.fn();
+    const result = await dispatchScheduledEditorialPublications(
+      env as never,
+      report,
+    );
 
     expect(result).toEqual({ requested: 0, due: 1 });
+    expect(report).not.toHaveBeenCalled();
     expect(
       updates.some((update) =>
         update.query.includes(
@@ -2120,6 +2125,64 @@ describe("admin worker editor APIs", () => {
         ),
       ),
     ).toBe(true);
+  });
+
+  it("reports each failed reservation without interrupting later due publications", async () => {
+    const due = ["first-document", "second-document"].map((id) => ({
+      id,
+      status: "approved",
+      published_at: null,
+      publication_pr_number: null,
+      scheduled_publish_at: "2026-11-20T11:00:00.000Z",
+      scheduled_publish_claimed_at: null,
+    }));
+    const releasedIds: string[] = [];
+    class DispatchStatement extends EmptyStatement {
+      private values: unknown[] = [];
+
+      bind(...values: unknown[]) {
+        super.bind(...values);
+        this.values = values;
+        return this;
+      }
+
+      async all<T>() {
+        return {
+          results: this.query.includes(
+            "scheduled_publish_claimed_at IS NOT NULL",
+          )
+            ? []
+            : (due as T[]),
+        };
+      }
+
+      async first<T>(): Promise<T | null> {
+        throw new Error("publication claim database unavailable");
+      }
+
+      async run() {
+        if (this.query.includes("SET scheduled_publish_claimed_at=NULL"))
+          releasedIds.push(String(this.values[0]));
+        return { meta: { changes: 1 } };
+      }
+    }
+    const env = {
+      REPORTS: { prepare: (query: string) => new DispatchStatement(query) },
+    };
+    const report = vi.fn();
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        dispatchScheduledEditorialPublications(env as never, report),
+      ).resolves.toEqual({ requested: 0, due: 2 });
+      expect(releasedIds).toEqual(["first-document", "second-document"]);
+      expect(report.mock.calls).toEqual([
+        [{ status: "warning", code: "partial_failure" }],
+        [{ status: "warning", code: "partial_failure" }],
+      ]);
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   it("uses the requested document's D1 version pointer for publication status", async () => {
