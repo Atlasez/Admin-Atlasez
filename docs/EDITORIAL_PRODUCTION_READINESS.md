@@ -48,6 +48,30 @@ Cloudflareの[Workers Builds設定](https://developers.cloudflare.com/workers/ci
 - `atlasez-admin`には`CLOUDFLARE_WORKERS_READ_TOKEN`が未設定です。PR #627のパス解決修正だけで公開Buildを再試行すると、履歴照合に失敗する可能性があるため、読み取り資格情報を候補登録前に検証するガードを追加しています。このガードが本番反映されるまでは公開Buildを再試行しません。
 - 公開候補Webhookは`release_article_ambiguous`を返すところまで到達しており、Endpointと署名鍵は候補API通信に使われています。残る設定ブロッカーは`atlasez01`限定のMetadata Read-Only Tokenです。読み取りTokenがCloudflareで作成・設定されるまで、記事の公開・取り消し受入試験は行いません。
 
+## Phase II read-only recheck — 2026-11-25
+
+以下は2026-11-25の読み取り確認です。2026-11-21/22の設定・配信状態は当時の記録として保持し、この節を現在の状態とします。
+
+- ADMIN本番 `atlasez-admin` はBuild-info SHA/ref `97422553003630e0665f37788f561a9179e83fd1` / `main`。CloudflareはVersion `6891b8e9-fbd1-456c-85d3-989c394d3be9`を100%配信しています。
+- 公開Worker `atlasez01` のWorkers Buildsには `EDITORIAL_RELEASE_ENDPOINT=https://admin.atlasez.org/api/internal/editorial-release` と暗号化された `EDITORIAL_RELEASE_WEBHOOK_SECRET` が存在します。ADMIN runtimeの同名secretも存在しますが、secret値は読み出さず、現在の値同士の一致は直接比較していません。
+- ADMINの `CLOUDFLARE_WORKERS_READ_TOKEN` は未設定です。候補登録前にこのTokenを必須検査する現行コードで再実行すると、`cloudflare_read_token_missing` で停止します。
+- 公開Build用Tokenは選択され、過去のBuildがcandidate Versionをuploadできたことを確認しました。ただし現在のtoken scopeは読み取れていません。対象WorkerのWorkers Scripts:Edit以外のscopeを残していないか、管理者によるread-backが必要です。
+- 公開Build `ef66113c-4666-405a-a404-9e8e9e50391c` / main SHA `9eb801ca86eab67f5a6c51212f9ff7d8fc43e46e` は候補 `a745728d-9677-4b83-b6e8-9943ce283630` をupload後、候補登録APIの `release_article_ambiguous` で失敗しました。候補は0%のままです。公開Workerは旧Version `2fa6da6b` が100%配信中で、公開 `build-info.json` は旧SHA `f8f97a4375a67e6c6b44a96839d0c50784d928e8` を返します。
+- 固定D1 `atlasez-reports` / `d5112a62-7ed6-49c8-b6a2-18ee2dbab678` は、mainにある0139までmigration適用済みで、mainのmigration一覧はpendingなしでした。0140はPR #630の新規migrationで、まだ本番には適用していません。候補登録テーブルと公開履歴は空、読み取りのforeign-key checkは違反0件でした。Cloudflare D1の `integrity_check` は `SQLITE_AUTH` で拒否されたため、本番integrity checkは未検証です。
+- 公開候補応答はコードしかBuildログへ記録しておらず、失敗した記事パスは得られていません。読めたD1の重複運営原稿パスは数学分野の `new-article.md` 2パス（各5件、4件）でしたが、失敗した候補パスとの一致は確認できず、原因として断定しません。公開mainと同じ記事内容から生成したmanifestは170件（published 164件、draft 6件）です。
+- 公開Build失敗時点のEndpoint/署名確認と、現在のCloudflare read-token欠落は時点の異なる観測です。現在の設定で署名鍵が一致するか、Build用tokenに必要最小scopeだけがあるか、Ambiguous応答の対象pathがどれかは、設定更新や再Buildなしには確定できません。
+- 公開Buildの安全な切り分け用に、既存公開PR [#149](https://github.com/Atlasez/Atlasez01/pull/149)へ、ambiguous/identity mismatchに限って制御文字除去後300文字のpath診断をBuild errorへ残す小修正を追加しました。candidate失敗時にversion deployを呼ばない回帰テストを含み、最新HEADのCIは実行待ちです。本番Buildは再実行していません。
+
+### 承認後の順序
+
+1. Cloudflare管理者が固定Account `812021e62fa20465950b61be55dfe064`内の `atlasez01` だけに `Individual Workers Metadata Read-Only` を付与した `CLOUDFLARE_WORKERS_READ_TOKEN` を作り、ADMIN Worker secretへ登録する。Worker source、secret読取、配信write権限は付与しない。
+2. Workers Builds管理者がBuild Endpointと暗号化Secretの登録状態を再確認し、公開Build用Tokenを同一Accountの必要scopeに限定してread-backする。Secret値は表示・記録せず、必要なら専用の安全な変更手順で両Workerを一致させる。
+3. 以前の失敗Build pathを明らかにするには、Cloudflare BuildログとADMIN Worker診断ログを承認済みの読み取り経路で照合する。次の候補Buildを実行する前に、D1管理者が対象pathと候補article IDをread-onlyで照合する。候補が複数なら推測して選ばず、既存のsource ID/版履歴を保全するレビュー済みdata修正計画を用意する。
+4. PR #149の最新CIとreview、PR #630/#545のCIとreview、mainのWorkers Builds配信経路を確認する。PR #630/545の必要migrationを本番適用する場合は、独立したD1 backup・migration承認・対象SHA確認・適用後read-only確認を別途先に完了する。
+5. これらの確認と明示された本番設定変更承認が揃った後だけ、公開Workers Buildsからmain候補を一度実行し、checkout SHA、候補登録、Worker `atlasez01`のVersion/100%配信、公開build-info、ADMIN D1のcandidate/history、認証済み主要画面を照合する。異常時は停止し、rollback/promote/cache purge/route変更を推測で実行しない。
+
+本再確認ではCloudflare設定・D1・Worker配信を変更していません。
+
 ## 適用順と受入確認
 
 1. 最新mainのコードと本番migration一覧が一致し、候補APIに必要なmigrationが適用済みであることを確認する。未適用なら、バックアップ・migrationレビュー・明示した適用手順を先に完了する。
