@@ -652,6 +652,78 @@ describe("progress report Discord acknowledgement", () => {
   });
 });
 
+describe("Discord retry health reporting", () => {
+  it("distinguishes a missing queue from a successfully empty queue without changing returns", async () => {
+    const report = vi.fn();
+    const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
+    const missingQueue = openDatabase([]);
+    const emptyQueue = openDatabase(["0133_discord_notifications.sql"]);
+    const expected = { notified: false, sent: 0, failed: 0, skipped: 0 };
+
+    await expect(
+      dispatchDueDiscordNotifications(notificationEnv(missingQueue), {
+        report,
+        logger: silentLogger,
+        fetcher,
+      }),
+    ).resolves.toEqual(expected);
+    expect(report.mock.calls).toEqual([
+      [{ status: "warning", code: "queue_unavailable" }],
+    ]);
+
+    report.mockClear();
+    await expect(
+      dispatchDueDiscordNotifications(notificationEnv(emptyQueue), {
+        report,
+        logger: silentLogger,
+        fetcher,
+      }),
+    ).resolves.toEqual(expected);
+    expect(report).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("reports an unconfigured destination and keeps the existing retry behavior", async () => {
+    const db = openDatabase(["0133_discord_notifications.sql"]);
+    const now = new Date("2026-11-25T00:00:00.000Z");
+    db.prepare(
+      `INSERT INTO discord_notifications
+        (id,dedupe_key,kind,destination_kind,destination_ref,content,next_attempt_at,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      "unconfigured-1",
+      "unconfigured-1",
+      "progress",
+      "webhook",
+      "DISCORD_ATLAS_WEBHOOK_URL",
+      progressBody,
+      now.toISOString(),
+      now.toISOString(),
+      now.toISOString(),
+    );
+    const report = vi.fn();
+    const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
+
+    await expect(
+      dispatchDueDiscordNotifications(notificationEnv(db), {
+        now,
+        report,
+        fetcher,
+        logger: silentLogger,
+      }),
+    ).resolves.toEqual({ notified: false, sent: 0, failed: 1, skipped: 0 });
+    expect(report.mock.calls).toEqual([
+      [{ status: "warning", code: "not_configured" }],
+    ]);
+    expect(notificationRow(db, "unconfigured-1")).toMatchObject({
+      status: "retry",
+      attempt_count: 1,
+      last_error: "not_configured",
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
 describe("five-minute Discord retry", () => {
   it("retries a queued notification even when another cron job fails", async () => {
     const { db, env } = workerEnvironment(true);

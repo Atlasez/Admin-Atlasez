@@ -69,7 +69,7 @@ const RETRY_DELAYS_MS = [
 ];
 const RETRY_WINDOW_MS = 23 * 60 * 60_000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const ACTIVE_REMINDER_RECIPIENT_SQL = `
+export const ACTIVE_REMINDER_RECIPIENT_SQL = `
   AND NOT EXISTS (
     SELECT 1 FROM atlasez_project_member_lifecycle lifecycle
     WHERE lifecycle.project_id=t.project_id

@@ -999,6 +999,63 @@ describe("Discord to admin role synchronization", () => {
     },
   });
 
+  it("reports missing Discord configuration without changing the empty result", async () => {
+    const report = vi.fn();
+    const prepare = vi.fn(() => {
+      throw new Error("unconfigured synchronization must not query D1");
+    });
+
+    await expect(
+      syncDiscordRolesToAdmin({ REPORTS: { prepare } } as never, { report }),
+    ).resolves.toEqual({
+      accounts: 0,
+      synced: 0,
+      skipped: 0,
+      updated: 0,
+      assignmentsRevoked: 0,
+      warnings: [],
+    });
+    expect(report.mock.calls).toEqual([
+      [{ status: "skipped", code: "not_configured" }],
+    ]);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("reports a swallowed database failure while preserving the warning result", async () => {
+    const report = vi.fn();
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await syncDiscordRolesToAdmin(
+        {
+          DISCORD_BOT_TOKEN: "test-token",
+          DISCORD_GUILD_ID: "guild-1",
+          REPORTS: {
+            prepare: () => {
+              throw new Error("database unavailable");
+            },
+          },
+        } as never,
+        { report },
+      );
+
+      expect(result).toEqual({
+        accounts: 0,
+        synced: 0,
+        skipped: 0,
+        updated: 0,
+        assignmentsRevoked: 0,
+        warnings: ["Discordから運営サイトへの同期処理でエラーが発生しました。"],
+      });
+      expect(report.mock.calls).toEqual([
+        [{ status: "warning", code: "execution_failed" }],
+      ]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
   it("imports mapped Discord roles and ignores unknown roles", async () => {
     const state: State = {
       roles: ["role-math", "role-zen", "role-b2", "unknown-role"],
@@ -1137,12 +1194,16 @@ describe("Discord to admin role synchronization", () => {
     };
     const writes: Array<{ query: string; args: unknown[] }> = [];
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    const report = vi.fn();
     fetchSpy.mockRejectedValue(new Error("network unavailable"));
 
     try {
       await expect(
-        syncDiscordRolesToAdmin(makeEnv(state, writes) as never),
+        syncDiscordRolesToAdmin(makeEnv(state, writes) as never, { report }),
       ).resolves.toMatchObject({ skipped: 1 });
+      expect(report.mock.calls).toEqual([
+        [{ status: "warning", code: "dependency_failed" }],
+      ]);
       expect(errorLog.mock.calls).toEqual([
         [
           "discord to admin member lookup failed",
