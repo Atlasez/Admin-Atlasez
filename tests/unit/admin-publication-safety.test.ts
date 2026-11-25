@@ -215,9 +215,59 @@ function currentDeploymentResponse() {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("記事公開候補の永続化と切替復旧", () => {
+  it("候補照合の失敗を分類し相関ID付きで記録する", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ success: false }), { status: 403 }),
+        ),
+    );
+    const pending: Promise<unknown>[] = [];
+    const database = {
+      prepare: () => ({
+        bind: () => ({ all: async () => ({ results: [] }) }),
+      }),
+    };
+
+    await worker.scheduled(
+      { cron: "*/1 * * * *" },
+      {
+        REPORTS: database,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+      } as never,
+      {
+        waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+      } as never,
+    );
+    await Promise.all(pending);
+
+    const eventText = errorLog.mock.calls
+      .map(([message]) => message)
+      .find(
+        (message): message is string =>
+          typeof message === "string" &&
+          message.includes("editorial_release_reconciliation_failed"),
+      );
+    expect(eventText).toBeDefined();
+    const event = JSON.parse(eventText!);
+    expect(event).toMatchObject({
+      event: "editorial_release_reconciliation_failed",
+      failureKind: "configuration",
+      errorCode: "cloudflare_deployment_lookup_failed",
+      retryable: false,
+    });
+    expect(event.correlationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+  });
+
   it("候補に含まれる記事とD1版IDを切替前に一括保存する", async () => {
     const database = new ReleaseDatabase();
     const body = JSON.stringify(candidatePayload());

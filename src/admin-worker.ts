@@ -21550,7 +21550,16 @@ async function reconcileEditorialReleaseCandidates(env: Env) {
     ).bind(versions[0].version_id).first<{ version_id: string }>();
     if (activeCandidate) await activateEditorialReleaseCandidate(env, activeCandidate.version_id);
   } catch (error) {
-    console.error("editorial release reconciliation failed", error);
+    const failure = publicationFailureDetails(error);
+    console.error(
+      JSON.stringify({
+        event: "editorial_release_reconciliation_failed",
+        correlationId: crypto.randomUUID(),
+        failureKind: failure.kind,
+        errorCode: failure.code,
+        retryable: failure.retryable,
+      }),
+    );
   }
 }
 
