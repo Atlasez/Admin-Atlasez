@@ -6,10 +6,40 @@ const migration = (name: string) =>
   readFileSync(new URL(`../../migrations/${name}`, import.meta.url), "utf8");
 
 describe("ADMIN D1 migration history", () => {
-  it("keeps every migration sequence number unique", () => {
-    // These prefixes already have multiple deployed filenames. D1 records the
-    // full filename, so preserve that history but reject new collisions.
-    const legacySharedSequences = new Set(["0055", "0081", "0082", "0088"]);
+  it("rejects new sequence collisions while preserving exact legacy filenames", () => {
+    // D1 records full filenames, and these exact duplicates are already part
+    // of the deployed ledger. Keep them unchanged and reject any new reuse.
+    const legacySharedSequenceFiles = new Map([
+      [
+        "0055",
+        [
+          "0055_application_google_form_fields.sql",
+          "0055_search_console_oauth_tokens.sql",
+        ],
+      ],
+      [
+        "0081",
+        [
+          "0081_atlasez_google_account_identities.sql",
+          "0081_editorial_article_catalog.sql",
+          "0081_editorial_document_archives.sql",
+        ],
+      ],
+      [
+        "0082",
+        [
+          "0082_editorial_article_catalog_provenance.sql",
+          "0082_editorial_publication_pull_requests.sql",
+        ],
+      ],
+      [
+        "0088",
+        [
+          "0088_editorial_concept_metadata.sql",
+          "0088_editorial_publication_run_resilience.sql",
+        ],
+      ],
+    ]);
     const files = readdirSync(new URL("../../migrations/", import.meta.url))
       .filter((name) => name.endsWith(".sql"))
       .sort();
@@ -19,12 +49,15 @@ describe("ADMIN D1 migration history", () => {
       expect(sequence).toBeDefined();
       if (sequence) counts.set(sequence, (counts.get(sequence) ?? 0) + 1);
     }
-    expect(
-      [...counts.entries()].filter(
-        ([sequence, count]) =>
-          count > 1 && !legacySharedSequences.has(sequence),
-      ),
-    ).toEqual([]);
+    const duplicateSequences = [...counts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([sequence]) => sequence);
+    expect(duplicateSequences).toEqual([...legacySharedSequenceFiles.keys()]);
+    for (const [sequence, expectedFiles] of legacySharedSequenceFiles) {
+      expect(files.filter((name) => name.startsWith(`${sequence}_`))).toEqual(
+        expectedFiles,
+      );
+    }
   });
 
   it("keeps source for migrations already recorded in production", () => {
