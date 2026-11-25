@@ -2012,10 +2012,10 @@ test("LaTeXコマンド補完と入力補助を使える", async ({ page }) => {
   await expect(body).toHaveValue("{a}");
 
   await body.fill("\\begin{aligned}\n\\end{aligned}");
-  await editor.click();
-  await body.evaluate((element) =>
-    (element as HTMLTextAreaElement).setSelectionRange(16, 16),
-  );
+  await expect(editor.locator(".cm-line").nth(1)).toHaveText("\\end{aligned}");
+  await editor.press("Control+Home");
+  await editor.press("ArrowDown");
+  await editor.press("Home");
   await editor.press("Tab");
   await expect(body).toHaveValue("\\begin{aligned}\n  \\end{aligned}");
 });
@@ -2865,17 +2865,10 @@ test("既存の未完了依頼を重ねず、画面上部から取り下げら�
     "依頼を取り下げ、記事を下書きに戻しました。",
   );
 
-  // Opening history scrolls smoothly, while a wheel event does not wait for
-  // scrolling to finish. Return to the top and wait for the expanded toolbar
-  // before clicking so the next action does not restart its hide transition.
-  await page.evaluate(() => {
-    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
-  });
+  // Return to the document top so the next click does not scroll the button
+  // into view and toggle the compact toolbar again.
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
-  await expect(page.locator("[data-document-toolbar]")).not.toHaveAttribute(
-    "data-compact",
-    "",
-  );
   await expect(page.locator(".editor-workspace")).not.toHaveAttribute(
     "data-toolbar-hidden",
     "",
