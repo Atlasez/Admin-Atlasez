@@ -9,5 +9,8 @@ it("runs migration 0141, verifies backfill and old-column compatibility, then re
     stagingBootstrapRolesSanitized: true,
     legacyInsertCompatible: true,
     isolatedBackupRestore: true,
+    integrityCheck: "ok",
+    foreignKeyViolations: 0,
+    restoredIntegrityCheck: "ok",
   });
 });

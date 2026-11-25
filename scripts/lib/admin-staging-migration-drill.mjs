@@ -27,6 +27,14 @@ function count(db, sql, ...values) {
   return Number(db.prepare(sql).get(...values)?.count ?? 0);
 }
 
+function assertDatabaseIntegrity(db) {
+  assert.equal(
+    db.prepare("PRAGMA integrity_check").get()?.integrity_check,
+    "ok",
+  );
+  assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+}
+
 export function runAdminStagingMigrationDrill({
   migrationDirectory = resolve("migrations"),
 } = {}) {
@@ -224,6 +232,7 @@ export function runAdminStagingMigrationDrill({
       .get();
     assert.equal(oldWorkerRow?.operator_notification_recipients_json, null);
     assert.equal(oldWorkerRow?.intake_reconciliation_required, 0);
+    assertDatabaseIntegrity(db);
     db.close();
     db = undefined;
 
@@ -256,6 +265,7 @@ export function runAdminStagingMigrationDrill({
       ),
       0,
     );
+    assertDatabaseIntegrity(db);
     return {
       preMigrationFiles: targetIndex,
       migration: TARGET_MIGRATION,
@@ -264,6 +274,9 @@ export function runAdminStagingMigrationDrill({
       stagingBootstrapRolesSanitized: true,
       legacyInsertCompatible: true,
       isolatedBackupRestore: true,
+      integrityCheck: "ok",
+      foreignKeyViolations: 0,
+      restoredIntegrityCheck: "ok",
     };
   } finally {
     db?.close();
