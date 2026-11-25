@@ -12,6 +12,26 @@ test("確定済みの審査は読み取り専用として表示される", async
       });
       return;
     }
+    if (url.pathname === "/api/admin/applications") {
+      await route.fulfill({
+        json: {
+          applications: [
+            {
+              id: applicationId,
+              name: "検証応募者",
+              email: "applicant@example.invalid",
+              status: "accepted",
+              project_slug: "thinking-cafe",
+            },
+          ],
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/member-intake") {
+      await route.fulfill({ json: { entries: [], responsibleCandidates: [] } });
+      return;
+    }
     if (
       url.pathname.endsWith("/interview-review") &&
       route.request().method() === "PUT"
@@ -52,6 +72,7 @@ test("確定済みの審査は読み取り専用として表示される", async
     `./admin/application-interview/?application=${applicationId}&project=thinking-cafe`,
   );
 
+  await expect(page.locator("[data-applicant-name]")).toHaveText("検証応募者");
   await expect(page.locator("[data-notice]")).toContainText("採否は確定済み");
   await expect(page.locator("[data-notes]")).toBeDisabled();
   await expect(page.locator("[data-decision]")).toBeDisabled();
@@ -74,6 +95,26 @@ test("審査メモ保存後に履歴確認が失敗したら採否確定を止�
       await route.fulfill({
         json: { email: "reviewer@example.invalid", isManager: true },
       });
+      return;
+    }
+    if (url.pathname === "/api/admin/applications") {
+      await route.fulfill({
+        json: {
+          applications: [
+            {
+              id: applicationId,
+              name: "検証応募者",
+              email: "applicant@example.invalid",
+              status: "reviewing",
+              project_slug: "thinking-cafe",
+            },
+          ],
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/member-intake") {
+      await route.fulfill({ json: { entries: [], responsibleCandidates: [] } });
       return;
     }
     if (url.pathname.endsWith("/interview-review") && method === "PUT") {
@@ -127,6 +168,7 @@ test("審査メモ保存後に履歴確認が失敗したら採否確定を止�
   await page.goto(
     `./admin/application-interview/?application=${applicationId}&project=thinking-cafe`,
   );
+  await expect(page.locator("[data-applicant-name]")).toHaveText("検証応募者");
   await page.locator("[data-notes]").fill("保存済みの再読込メモ");
   await page.locator("[data-decision]").selectOption("rejected");
   await page.locator("[data-save]").click();
@@ -137,7 +179,7 @@ test("審査メモ保存後に履歴確認が失敗したら採否確定を止�
   await expect(page.locator("[data-notes]")).toHaveValue(
     "保存済みの再読込メモ",
   );
-  expect(reviewReads).toBe(2);
+  await expect.poll(() => reviewReads).toBe(2);
   expect(reviewWrites).toBe(1);
   expect(completionCalls).toBe(0);
 });

@@ -906,34 +906,71 @@ test("既送信の同一面談通知は再送キーに頼らず重複登録し�
   page,
 }) => {
   const id = "11111111-1111-4111-8111-111111111111";
+  let notificationCalls = 0;
   let notificationBody: string | null = null;
   await page.route("**/api/admin/**", async (route) => {
     const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/admin/auth-status") {
+      await route.fulfill({
+        json: { email: "reviewer@example.invalid", isManager: true },
+      });
+      return;
+    }
     if (url.pathname === "/api/admin/applications") {
       await route.fulfill({
         json: {
-          project: { slug: "thinking-cafe", name: "Thinking Cafe" },
           applications: [
             {
               id,
+              name: "検証応募者",
               family_name: "検証",
               given_name: "応募者",
               email: "applicant@example.invalid",
               status: "new",
               project_slug: "thinking-cafe",
               interview_scheduled_at: "2026-11-10T10:00:00.000Z",
-              interview_timezone: "Asia/Tokyo",
-              interview_mode: "in_person",
-              interview_location: "会議室A",
-              interview_notified_at: "2026-11-04T10:00:00.000Z",
             },
           ],
         },
       });
       return;
     }
+    if (url.pathname === "/api/admin/member-intake") {
+      await route.fulfill({ json: { entries: [], responsibleCandidates: [] } });
+      return;
+    }
+    if (url.pathname.endsWith("/interview") && method === "GET") {
+      await route.fulfill({
+        json: {
+          application: {
+            id,
+            name: "検証応募者",
+            email: "applicant@example.invalid",
+            status: "new",
+          },
+          interview: {
+            id: "interview-1",
+            scheduledAt: "2026-11-10T10:00:00.000Z",
+            timezone: "Asia/Tokyo",
+            mode: "in_person",
+            location: "会議室A",
+            status: "scheduled",
+            notifiedAt: "2026-11-04T10:00:00.000Z",
+          },
+          review: { decision: "pending", assignedSubjects: [] },
+          subjectLabels: { mathematics: "数学" },
+        },
+      });
+      return;
+    }
+    if (url.pathname.endsWith("/interview") && method === "PUT") {
+      await route.fulfill({ json: { ok: true } });
+      return;
+    }
     if (url.pathname.endsWith("/interview/notify")) {
       notificationBody = route.request().postData();
+      notificationCalls++;
       await route.fulfill({
         json: {
           ok: true,
@@ -947,12 +984,18 @@ test("既送信の同一面談通知は再送キーに頼らず重複登録し�
     await route.fulfill({ json: { ok: true } });
   });
 
-  await page.goto("./admin/applications/?project=thinking-cafe");
-  await page.locator(`[data-interview-notify="${id}"]`).click();
-  await expect(page.locator("[data-notice]")).toContainText("送信済みです");
+  await page.goto(
+    `./admin/application-interview/?application=${id}&project=thinking-cafe`,
+  );
+  await expect(page.locator("[data-applicant-name]")).toHaveText("検証応募者");
+  await page.locator("[data-interview-notify]").click();
+  await expect(page.locator("[data-notice]")).toContainText(
+    "通知は送信済みです",
+  );
   await expect(page.locator("[data-notice]")).toContainText(
     "重複送信しませんでした",
   );
+  expect(notificationCalls).toBe(1);
   expect(notificationBody).toBeNull();
 });
 
@@ -962,40 +1005,86 @@ test("面談通知の成功表示は配送完了ではなくキュー登録を�
   const id = "22222222-2222-4222-8222-222222222222";
   await page.route("**/api/admin/**", async (route) => {
     const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/admin/auth-status") {
+      await route.fulfill({
+        json: { email: "reviewer@example.invalid", isManager: true },
+      });
+      return;
+    }
     if (url.pathname === "/api/admin/applications") {
       await route.fulfill({
         json: {
-          project: { slug: "thinking-cafe", name: "Thinking Cafe" },
           applications: [
             {
               id,
+              name: "検証応募者",
               family_name: "検証",
               given_name: "応募者",
               email: "applicant@example.invalid",
               status: "new",
               project_slug: "thinking-cafe",
+              interview_scheduled_at: "2026-11-15T10:00:00.000Z",
+              interview_timezone: "Asia/Tokyo",
+              interview_mode: "in_person",
+              interview_location: "検証会場",
             },
           ],
         },
       });
       return;
     }
+    if (url.pathname === "/api/admin/member-intake") {
+      await route.fulfill({ json: { entries: [], responsibleCandidates: [] } });
+      return;
+    }
+    if (url.pathname.endsWith("/interview") && method === "GET") {
+      await route.fulfill({
+        json: {
+          application: {
+            id,
+            name: "検証応募者",
+            email: "applicant@example.invalid",
+            status: "new",
+          },
+          interview: {
+            id: "interview-1",
+            scheduledAt: "2026-11-15T10:00:00.000Z",
+            timezone: "Asia/Tokyo",
+            mode: "in_person",
+            location: "検証会場",
+            status: "scheduled",
+          },
+          review: { decision: "pending", assignedSubjects: [] },
+          subjectLabels: { mathematics: "数学" },
+        },
+      });
+      return;
+    }
+    if (url.pathname.endsWith("/interview") && method === "PUT") {
+      await route.fulfill({ json: { ok: true } });
+      return;
+    }
     if (url.pathname.endsWith("/interview/notify")) {
-      await route.fulfill({ json: { ok: true, notificationQueued: true } });
+      await route.fulfill({
+        json: {
+          ok: true,
+          notificationQueued: true,
+          notifiedAt: "2026-11-04T10:00:00.000Z",
+        },
+      });
       return;
     }
     await route.fulfill({ json: { ok: true } });
   });
 
-  await page.goto("./admin/applications/?project=thinking-cafe");
-  await page.locator(`[data-interview-date="${id}"]`).fill("2026-11-15T10:00");
-  await page
-    .locator(`[data-interview-format="${id}"]`)
-    .selectOption("in_person");
-  await page.locator(`[data-interview-location="${id}"]`).fill("検証会場");
-  await page.locator(`[data-interview-notify="${id}"]`).click();
+  await page.goto(
+    `./admin/application-interview/?application=${id}&project=thinking-cafe`,
+  );
+  await expect(page.locator("[data-applicant-name]")).toHaveText("検証応募者");
+  await page.locator("[data-interview-notify]").click();
   await expect(page.locator("[data-notice]")).toContainText(
-    "通知キューに登録しました",
+    "面談日程を保存しました。通知キューに登録しました。",
   );
   await expect(page.locator("[data-notice]")).not.toContainText(
     "応募者へ通知しました",
@@ -1009,28 +1098,63 @@ test("面談保存済み・履歴未確定の応答は通知せず保存状態�
   let notificationCalls = 0;
   await page.route("**/api/admin/**", async (route) => {
     const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/admin/auth-status") {
+      await route.fulfill({
+        json: { email: "reviewer@example.invalid", isManager: true },
+      });
+      return;
+    }
     if (url.pathname === "/api/admin/applications") {
       await route.fulfill({
         json: {
-          project: { slug: "thinking-cafe", name: "Thinking Cafe" },
           applications: [
             {
               id,
+              name: "検証応募者",
               family_name: "検証",
               given_name: "応募者",
               email: "applicant@example.invalid",
               status: "new",
               project_slug: "thinking-cafe",
+              interview_scheduled_at: "2026-11-15T10:00:00.000Z",
+              interview_timezone: "Asia/Tokyo",
+              interview_mode: "in_person",
+              interview_location: "検証会場",
             },
           ],
         },
       });
       return;
     }
-    if (
-      url.pathname.endsWith("/interview") &&
-      route.request().method() === "PUT"
-    ) {
+    if (url.pathname === "/api/admin/member-intake") {
+      await route.fulfill({ json: { entries: [], responsibleCandidates: [] } });
+      return;
+    }
+    if (url.pathname.endsWith("/interview") && method === "GET") {
+      await route.fulfill({
+        json: {
+          application: {
+            id,
+            name: "検証応募者",
+            email: "applicant@example.invalid",
+            status: "new",
+          },
+          interview: {
+            id: "interview-1",
+            scheduledAt: "2026-11-15T10:00:00.000Z",
+            timezone: "Asia/Tokyo",
+            mode: "in_person",
+            location: "検証会場",
+            status: "scheduled",
+          },
+          review: { decision: "pending", assignedSubjects: [] },
+          subjectLabels: { mathematics: "数学" },
+        },
+      });
+      return;
+    }
+    if (url.pathname.endsWith("/interview") && method === "PUT") {
       await route.fulfill({
         status: 503,
         json: {
@@ -1044,15 +1168,13 @@ test("面談保存済み・履歴未確定の応答は通知せず保存状態�
     await route.fulfill({ json: { ok: true } });
   });
 
-  await page.goto("./admin/applications/?project=thinking-cafe");
-  await page.locator(`[data-interview-date="${id}"]`).fill("2026-11-15T10:00");
-  await page
-    .locator(`[data-interview-format="${id}"]`)
-    .selectOption("in_person");
-  await page.locator(`[data-interview-location="${id}"]`).fill("検証会場");
-  await page.locator(`[data-interview-notify="${id}"]`).click();
+  await page.goto(
+    `./admin/application-interview/?application=${id}&project=thinking-cafe`,
+  );
+  await expect(page.locator("[data-applicant-name]")).toHaveText("検証応募者");
+  await page.locator("[data-interview-notify]").click();
   await expect(page.locator("[data-notice]")).toContainText(
-    "面談情報は保存済みです。履歴の確定を確認できません",
+    "面談日程は保存済みです。履歴の確定を確認できません",
   );
   expect(notificationCalls).toBe(0);
 });
