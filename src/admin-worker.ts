@@ -65,6 +65,7 @@ import {
   isProfileImageDataUrl,
   profileImageMaxStoredUrlLength,
 } from "./lib/profile-image";
+import { readRequestTextLimited } from "./lib/request-body-text";
 // ローカルWrangler開発時だけ同一Workerのexportをフォールバックとして使う。
 // Preview/本番は外部の専用Worker bindingを必ず経由する。
 export { EditorialCollaborationRoom } from "./editorial-collaboration-worker";
@@ -1870,6 +1871,8 @@ const isTrustedArticleUrl = (value: string) => {
   }
 };
 
+const articleReportIngestRequestMaxBytes = 64_000;
+
 async function ingestArticleReport(
   request: Request,
   env: Env,
@@ -1881,9 +1884,19 @@ async function ingestArticleReport(
   )
     return json({ error: "JSON形式で送信してください。" }, 415);
 
+  const body = await readRequestTextLimited(
+    request,
+    articleReportIngestRequestMaxBytes,
+  );
+  if (body === null)
+    return json({ error: "送信内容が大きすぎます。" }, 413);
+
   let payload: ArticleReportIngestPayload;
   try {
-    payload = (await request.json()) as ArticleReportIngestPayload;
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return json({ error: "入力内容を読み取れませんでした。" }, 400);
+    payload = parsed as ArticleReportIngestPayload;
   } catch {
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
@@ -20535,54 +20548,6 @@ const hexDigest = (bytes: ArrayBuffer) =>
 // and parsed object inside a 128 MB Worker isolate; the scheduled reconciler
 // can recover status updates that exceed this application-level limit.
 const githubWebhookMaxBytes = 2_000_000;
-
-const readRequestTextLimited = async (
-  request: Request,
-  maxBytes: number,
-): Promise<string | null> => {
-  const contentLength = request.headers.get("content-length");
-  const declaredLength = contentLength && /^\d+$/.test(contentLength)
-    ? Number(contentLength)
-    : null;
-  if (
-    declaredLength !== null &&
-    declaredLength > maxBytes
-  ) {
-    await request.body?.cancel().catch(() => undefined);
-    return null;
-  }
-
-  const reader = request.body?.getReader();
-  if (!reader) return "";
-  let bytes = new Uint8Array(declaredLength ?? 0);
-  let byteLength = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const nextByteLength = byteLength + value.byteLength;
-      if (nextByteLength > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        return null;
-      }
-      if (nextByteLength > bytes.byteLength) {
-        const capacity = Math.min(
-          maxBytes,
-          Math.max(16_384, bytes.byteLength * 2, nextByteLength),
-        );
-        const grown = new Uint8Array(capacity);
-        grown.set(bytes.subarray(0, byteLength));
-        bytes = grown;
-      }
-      bytes.set(value, byteLength);
-      byteLength = nextByteLength;
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  return new TextDecoder().decode(bytes.subarray(0, byteLength));
-};
 
 const verifyGithubWebhookSignature = async (
   secret: string,

@@ -58,9 +58,8 @@ describe("scheduled health alerts", () => {
     await reconcileScheduledHealthAlerts(env.REPORTS, [signal("bad")], at(1));
     db.exec("UPDATE discord_notifications SET status='failed'");
     await reconcileScheduledHealthAlerts(env.REPORTS, [signal("ok")], at(2));
-    expect(db.prepare("SELECT kind FROM discord_notifications").all()).toEqual([
-      { kind: "admin-health-alert" },
-    ]);
+    const messages = db.prepare("SELECT kind FROM discord_notifications").all();
+    expect(messages).toEqual([{ kind: "admin-health-alert" }]);
     expect(
       db.prepare("SELECT * FROM admin_scheduled_alert_incidents").all(),
     ).toEqual([]);
@@ -85,13 +84,11 @@ describe("scheduled health alerts", () => {
       collectHealthAlertSignals(jobs, []),
       at(2),
     );
-    expect(db.prepare("SELECT kind FROM discord_notifications").all()).toEqual([
-      { kind: "admin-health-alert" },
-    ]);
+    const messages = db.prepare("SELECT kind FROM discord_notifications").all();
+    expect(messages).toEqual([{ kind: "admin-health-alert" }]);
     target.status = "ok";
-    expect(collectHealthAlertSignals({ ...jobs, available: false }, [])).toEqual(
-      [],
-    );
+    const unavailable = { ...jobs, available: false };
+    expect(collectHealthAlertSignals(unavailable, [])).toEqual([]);
   });
 
   it("rolls back incident and watermark when the outbox is unavailable", async () => {
@@ -127,6 +124,46 @@ describe("scheduled health alerts", () => {
       }),
     ).toBe(true);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("pauses only health notifications without consuming retries", async () => {
+    const { env, db } = createAdminTestEnvironment();
+    await reconcileScheduledHealthAlerts(env.REPORTS, [signal("bad")], at(1));
+    db.prepare(
+      `INSERT INTO discord_notifications
+         (id,dedupe_key,kind,destination_kind,destination_ref,content,
+          next_attempt_at,created_at,updated_at)
+       VALUES ('ordinary','ordinary','progress','webhook',
+         'DISCORD_PROGRESS_WEBHOOK_URL','ordinary progress',?,?,?)`,
+    ).run(at(1).toISOString(), at(1).toISOString(), at(1).toISOString());
+    const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
+    const ordinary = "https://discord.com/api/webhooks/1234567890/ordinary";
+    const disabled = { ...env, DISCORD_PROGRESS_WEBHOOK_URL: ordinary };
+    const first = await dispatchDueDiscordNotifications(disabled, {
+      now: at(2),
+      fetcher,
+      limit: 1,
+    });
+    expect(first.sent).toBe(1);
+    const health = () =>
+      db
+        .prepare(
+          "SELECT status,attempt_count FROM discord_notifications WHERE kind='admin-health-alert'",
+        )
+        .get();
+    expect(health()).toEqual({ status: "pending", attempt_count: 0 });
+    expect(fetcher.mock.calls).toHaveLength(1);
+    const enabled = {
+      ...disabled,
+      DISCORD_ADMIN_HEALTH_WEBHOOK_URL: webhook,
+    };
+    const resumed = await dispatchDueDiscordNotifications(enabled, {
+      now: at(3),
+      fetcher,
+    });
+    expect(resumed.sent).toBe(1);
+    expect(health()).toEqual({ status: "sent", attempt_count: 1 });
+    expect(fetcher.mock.calls).toHaveLength(2);
   });
 
   it("uses only the dedicated destination and the existing queued sender", async () => {

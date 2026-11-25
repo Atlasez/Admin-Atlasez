@@ -334,6 +334,12 @@ const claimAndSend = async (
   nowDate: Date,
 ): Promise<"sent" | "failed" | "skipped"> => {
   const logger = options.logger ?? console;
+  if (
+    row.destination_kind === "webhook" &&
+    row.destination_ref === "DISCORD_ADMIN_HEALTH_WEBHOOK_URL" &&
+    !hasScheduledHealthWebhook(env)
+  )
+    return "skipped";
   if (row.status === "sent") return "sent";
   if (row.status === "failed") return "failed";
   const now = nowDate.toISOString();
@@ -493,24 +499,28 @@ export async function dispatchDueDiscordNotifications(
     nowDate.getTime() - CLAIM_LEASE_MS,
   ).toISOString();
   const limit = Math.min(25, Math.max(1, options.limit ?? 25));
+  const healthEnabled = Number(hasScheduledHealthWebhook(env));
   try {
     await env.REPORTS.prepare(
       `UPDATE discord_notifications
           SET status='failed',claim_token=NULL,claimed_at=NULL,last_error='claim_expired_max_attempts',updated_at=?
-        WHERE status='sending' AND attempt_count>=? AND COALESCE(claimed_at,updated_at)<=?`,
+        WHERE status='sending' AND attempt_count>=? AND COALESCE(claimed_at,updated_at)<=?
+          AND (destination_kind<>'webhook' OR destination_ref<>'DISCORD_ADMIN_HEALTH_WEBHOOK_URL' OR ?=1)`,
     )
-      .bind(now, MAX_ATTEMPTS, staleClaimCutoff)
+      .bind(now, MAX_ATTEMPTS, staleClaimCutoff, healthEnabled)
       .run();
     const ready = await env.REPORTS.prepare(
       `SELECT id,dedupe_key,kind,destination_kind,destination_ref,content,status,attempt_count
          FROM discord_notifications
-        WHERE attempt_count<? AND (
+        WHERE attempt_count<?
+          AND (destination_kind<>'webhook' OR destination_ref<>'DISCORD_ADMIN_HEALTH_WEBHOOK_URL' OR ?=1)
+          AND (
           (status IN ('pending','retry') AND next_attempt_at<=?)
           OR (status='sending' AND COALESCE(claimed_at,updated_at)<=?)
         )
         ORDER BY next_attempt_at ASC,created_at ASC LIMIT ?`,
     )
-      .bind(MAX_ATTEMPTS, now, staleClaimCutoff, limit)
+      .bind(MAX_ATTEMPTS, healthEnabled, now, staleClaimCutoff, limit)
       .all<NotificationRow>();
     return deliverRows(env, ready.results ?? [], options, nowDate);
   } catch {
