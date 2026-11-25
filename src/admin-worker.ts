@@ -6,6 +6,7 @@ import type { D1Database, D1PreparedStatement } from "./lib/admin-database";
 import { readScheduledJobHealth, type ScheduledJobReporter } from "./lib/admin-scheduled-job-health";
 import { readScheduledJobQueues } from "./lib/admin-scheduled-job-queues";
 import { executeAdminScheduledJobs, reportScheduledDeliveryResult } from "./lib/admin-scheduled-jobs";
+import { dispatchScheduledHealthAlerts } from "./lib/admin-scheduled-health-alerts";
 import { planAtlasManagerRevocation, permissionDerivedAtlasManagerStatements, handleManagerGrants, resolveAtlasManagerDisposition, planDiscordAtlasManagerRevocation } from "./lib/admin-manager-provenance";
 import { readOperationsInsights } from "./lib/admin-operations-insights";
 import { handleNotificationFeatures, loadGlobalNotificationCutoff, loadNotificationPreferences, notificationSourceMetadata, notificationFeatureFilter, importantKinds } from "./lib/admin-notification-features";
@@ -120,6 +121,8 @@ interface Env {
   /** 分野別・全体進捗の通知用。値はCloudflare Secretにのみ保存する。 */
   DISCORD_ATLAS_WEBHOOK_URL?: string;
   DISCORD_PROGRESS_WEBHOOK_URL?: string;
+  /** Optional private operations alert destination; stored only as a Secret. */
+  DISCORD_ADMIN_HEALTH_WEBHOOK_URL?: string;
   /** Discordの既存ロールを読み取り、運営サイト側の対応表を更新するBot。 */
   DISCORD_BOT_TOKEN?: string;
   DISCORD_GUILD_ID?: string;
@@ -26394,6 +26397,8 @@ export default {
             env.ADMIN_PERSONAL_DATA_RETENTION_ENABLED?.trim().toLowerCase() ===
             "true",
         }),
+      }).then(async () => {
+        if (cron === "*/5 * * * *") await dispatchScheduledHealthAlerts(env);
       }),
     );
   },
