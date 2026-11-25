@@ -96,6 +96,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
 </style>
 
 <script>
+  import { parseApplicationAttentionFilter } from "../../lib/application-attention";
   import { createAdminLoadRetry } from "../../scripts/admin-load-retry";
   const initializeInterviewPage = () => {
     const root = document.querySelector<HTMLElement>("[data-interview-page]");
@@ -540,7 +541,10 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       }
     });
 
-    const back = `/admin/applications/?project=${encodeURIComponent(project)}&application=${encodeURIComponent(applicationId)}`;
+    const backParams = new URLSearchParams({project, application: applicationId});
+    const attention = parseApplicationAttentionFilter(params.get("attention"));
+    if (attention !== "all") backParams.set("attention", attention);
+    const back = `/admin/applications/?${backParams}`;
     get<HTMLAnchorElement>("[data-back-link]").href = back;
     get<HTMLAnchorElement>("[data-cancel-link]").href = back;
     void load().catch(() => undefined);

@@ -34,6 +34,7 @@ import {
   SEMINAR_REVIEW_PATH,
 } from "./lib/admin-routes";
 import { getAdminApiAccessPolicy } from "./lib/admin-api-access-policy";
+import { applicationInterviewPath } from "./lib/application-attention";
 import { applicationAcceptanceEmail } from "./lib/application-acceptance-email";
 import {
   canAccess,
@@ -10784,7 +10785,7 @@ async function actionCenterOverview(request: Request, env: Env): Promise<Respons
       kind: "application",
       title: `応募：${APPLICATION_FORM_LABELS[row.project_slug] ?? row.project_slug}`,
       detail: `${row.name}（${row.email}）の応募を確認してください。`,
-      href: `/admin/applications/?project=${encodeURIComponent(row.project_slug)}`,
+      href: applicationInterviewPath(row.project_slug, row.id),
       status: row.status,
       priority: row.status === "new" ? "new" : actionCenterPriority(null, row.updated_at, now),
       updatedAt: row.updated_at || row.created_at,
@@ -10839,7 +10840,7 @@ async function actionCenterOverview(request: Request, env: Env): Promise<Respons
     history.push({ id: `document:${row.id}`, kind: "document", title: row.title, detail: row.archived_at ? "アーカイブ済みの記事です。" : row.published_at ? "公開済みの記事です。" : "承認済みの記事です。", href: `/admin/editor/?document=${encodeURIComponent(row.id)}`, status: row.archived_at ? "archived" : row.published_at ? "published" : "approved", priority: "read", updatedAt: row.updated_at, dueAt: null, project: "アトラス", subject: row.subject, read: true, archived: Boolean(row.archived_at), actions: [] });
   }
   for (const row of applicationHistoryRows.results ?? []) {
-    history.push({ id: `application:${row.id}`, kind: "application", title: `応募：${APPLICATION_FORM_LABELS[row.project_slug] ?? row.project_slug}`, detail: `${row.name}（${row.email}）の応募は${row.status === "accepted" ? "受け入れ済み" : "見送り済み"}です。`, href: `/admin/applications/?project=${encodeURIComponent(row.project_slug)}`, status: row.status, priority: "read", updatedAt: row.updated_at || row.created_at, dueAt: null, project: APPLICATION_FORM_LABELS[row.project_slug] ?? row.project_slug, subject: null, read: true, actions: [] });
+    history.push({ id: `application:${row.id}`, kind: "application", title: `応募：${APPLICATION_FORM_LABELS[row.project_slug] ?? row.project_slug}`, detail: `${row.name}（${row.email}）の応募は${row.status === "accepted" ? "受け入れ済み" : "見送り済み"}です。`, href: applicationInterviewPath(row.project_slug, row.id), status: row.status, priority: "read", updatedAt: row.updated_at || row.created_at, dueAt: null, project: APPLICATION_FORM_LABELS[row.project_slug] ?? row.project_slug, subject: null, read: true, actions: [] });
   }
   for (const row of memberApprovalHistoryRows.results ?? []) {
     history.push({ id: `approval:${row.id}`, kind: "approval", title: `メンバー情報の承認：${row.display_name || row.email}`, detail: `${row.email}のプロフィール変更は${row.status === "approved" ? "承認済み" : "却下済み"}です。`, href: "/admin/profile-requests/", status: row.status, priority: "read", updatedAt: row.submitted_at, dueAt: null, project: "運営事務局", subject: null, read: true, actions: [] });
@@ -24598,7 +24599,7 @@ async function adminNotifications(
       kind: "application",
       title: `新しい応募：${APPLICATION_FORM_LABELS[item.project_slug] ?? item.project_slug}`,
       detail: `${item.name}（${item.email}）の応募を確認してください。`,
-      href: `/admin/applications/?project=${encodeURIComponent(item.project_slug)}`,
+      href: applicationInterviewPath(item.project_slug, item.id),
       updatedAt: item.created_at,
     })),
     ...(taskReminderRows.results ?? [])
