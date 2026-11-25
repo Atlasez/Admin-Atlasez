@@ -15,6 +15,7 @@ export type DiscordNotificationEnv = {
   REPORTS: D1Database;
   DISCORD_ATLAS_WEBHOOK_URL?: string;
   DISCORD_PROGRESS_WEBHOOK_URL?: string;
+  DISCORD_ADMIN_HEALTH_WEBHOOK_URL?: string;
   DISCORD_PROGRESS_CHANNEL_ID?: string;
   DISCORD_BOT_TOKEN?: string;
 };
@@ -118,18 +119,35 @@ const webhookUrl = (env: DiscordNotificationEnv, ref: string) => {
       ? env.DISCORD_ATLAS_WEBHOOK_URL
       : ref === "DISCORD_PROGRESS_WEBHOOK_URL"
         ? env.DISCORD_PROGRESS_WEBHOOK_URL
-        : undefined;
+        : ref === "DISCORD_ADMIN_HEALTH_WEBHOOK_URL"
+          ? env.DISCORD_ADMIN_HEALTH_WEBHOOK_URL
+          : undefined;
   const trimmed = raw?.trim() ?? "";
   if (!trimmed) return { error: "not_configured" as const };
   try {
     const url = new URL(trimmed);
     if (url.protocol !== "https:" || !DISCORD_HOSTS.has(url.hostname))
       return { error: "invalid_destination" as const };
+    if (
+      ref === "DISCORD_ADMIN_HEALTH_WEBHOOK_URL" &&
+      (url.username ||
+        url.password ||
+        url.port ||
+        url.search ||
+        url.hash ||
+        !/^\/api\/(?:v\d+\/)?webhooks\/\d{15,22}\/[A-Za-z0-9._-]+$/.test(
+          url.pathname,
+        ))
+    )
+      return { error: "invalid_destination" as const };
     return { url: url.toString() };
   } catch {
     return { error: "invalid_destination" as const };
   }
 };
+
+export const hasScheduledHealthWebhook = (env: DiscordNotificationEnv) =>
+  "url" in webhookUrl(env, "DISCORD_ADMIN_HEALTH_WEBHOOK_URL");
 
 const progressMessage = (subject: string | null, body: string) => {
   const subjectLabel = subject ? `【${subject}】` : "【全体】";
