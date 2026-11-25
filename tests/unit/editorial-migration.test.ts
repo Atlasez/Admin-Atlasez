@@ -36,6 +36,10 @@ class RecordingStatement {
     this.calls.push({ query: this.query, values: this.values });
     return {};
   }
+
+  recordCall() {
+    return { query: this.query, values: this.values };
+  }
 }
 
 const baseEnv = {
@@ -439,14 +443,17 @@ const withSuccessfulGithubApi = async <T>(
   }
 };
 
-describe("既存公開記事の運営原稿移行契約", () => {
-  it("既存公開記事の取り込みは公開せず、sourceArticleId付き下書きとして保存する", async () => {
+describe("公開記事との運営原稿連携契約", () => {
+  it("sourceArticleIdを指定した新規原稿は未公開の正規原稿として保存する", async () => {
     const calls: SqlCall[] = [];
     const env = {
       ...baseEnv,
       REPORTS: {
         prepare: (query: string) => new RecordingStatement(query, calls),
-        batch: async () => [],
+        batch: async (statements: RecordingStatement[]) => {
+          calls.push(...statements.map((statement) => statement.recordCall()));
+          return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
+        },
       },
     };
 
@@ -480,6 +487,9 @@ describe("既存公開記事の運営原稿移行契約", () => {
       ...importedArticle,
       source_article_id: importedArticle.sourceArticleId,
       concept_id: importedArticle.conceptId,
+      concept_name: null,
+      concept_name_en: null,
+      concept_is_new: 0,
       writing_memo: "",
       latex_engine: importedArticle.latexEngine,
       created_by: "author@example.com",
@@ -502,7 +512,10 @@ describe("既存公開記事の運営原稿移行契約", () => {
       REPORTS: {
         prepare: (query: string) =>
           new RecordingStatement(query, calls, existing),
-        batch: async () => [],
+        batch: async (statements: RecordingStatement[]) => {
+          calls.push(...statements.map((statement) => statement.recordCall()));
+          return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
+        },
       },
     };
     const documentId = existing.id;
@@ -528,13 +541,16 @@ describe("既存公開記事の運営原稿移行契約", () => {
     expect(update?.values).toContain(importedArticle.category);
   });
 
-  it("公開済み記事の更新案でも同じ公開パスとarticleIdを維持する", async () => {
+  it("公開済み記事の編集は公開版を保ったまま新しい版を保存する", async () => {
     const calls: SqlCall[] = [];
     const existing = {
       id: "33333333-3333-4333-8333-333333333333",
       ...importedArticle,
       source_article_id: importedArticle.sourceArticleId,
       concept_id: importedArticle.conceptId,
+      concept_name: null,
+      concept_name_en: null,
+      concept_is_new: 0,
       writing_memo: "",
       latex_engine: importedArticle.latexEngine,
       created_by: "author@example.com",
@@ -551,13 +567,18 @@ describe("既存公開記事の運営原稿移行契約", () => {
       article_references: "[]",
       body: importedArticle.body,
       status: "approved",
+      current_version_id: "published-version",
+      published_version_id: "published-version",
     };
     const env = {
       ...baseEnv,
       REPORTS: {
         prepare: (query: string) =>
           new RecordingStatement(query, calls, existing),
-        batch: async () => [],
+        batch: async (statements: RecordingStatement[]) => {
+          calls.push(...statements.map((statement) => statement.recordCall()));
+          return [{ meta: { changes: 1 } }, { meta: { changes: 1 } }];
+        },
       },
     };
 
@@ -567,7 +588,7 @@ describe("既存公開記事の運営原稿移行契約", () => {
         {
           ...importedArticle,
           status: "approved",
-          body: `${importedArticle.body}\n\n## 更新案\n\n公開済み記事への追記です。`,
+          body: `${importedArticle.body}\n\n## 追記\n\n公開版とは別の新しい版です。`,
         },
         "PATCH",
       ),
@@ -575,6 +596,11 @@ describe("既存公開記事の運営原稿移行契約", () => {
     );
 
     expect(response.status).toBe(200);
+    const result = (await response.json()) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      status: "draft",
+      statusResetForPublishedEdit: true,
+    });
     const update = calls.find((call) =>
       call.query.includes("UPDATE editorial_documents SET source_article_id"),
     );
@@ -585,10 +611,21 @@ describe("既存公開記事の運営原稿移行契約", () => {
       importedArticle.locale,
       importedArticle.slug,
     ]);
-    expect(update?.values[11]).toContain("## 更新案");
-    // The update changes the existing file in place; it must not create a new
-    // path or replace the stable article identifier with the editorial UUID.
-    expect(update?.query).not.toContain("published_at = NULL");
+    expect(update?.values[11]).toContain("## 追記");
+    expect(update?.values[14]).toBe("draft");
+    expect(update?.values[18]).not.toBe("published-version");
+    expect(update?.query).toContain("current_version_id = ?");
+    expect(update?.query).not.toContain("published_version_id = ?");
+    const revisionInsert = calls.find((call) =>
+      call.query.includes("INSERT INTO editorial_document_revisions"),
+    );
+    expect(revisionInsert?.query).toContain("snapshot_json");
+    expect(revisionInsert?.values[0]).toBe(update?.values[18]);
+    expect(result).toMatchObject({
+      status: "draft",
+      currentVersionId: update?.values[18],
+      versionId: update?.values[18],
+    });
     expect(
       calls.some((call) =>
         call.query.includes("INSERT INTO editorial_documents"),
@@ -596,137 +633,20 @@ describe("既存公開記事の運営原稿移行契約", () => {
     ).toBe(false);
   });
 
-  it("公開取消なしで公開記事から更新案を分離して作成できる", async () => {
-    const calls: SqlCall[] = [];
-    const canonical = {
-      id: "44444444-4444-4444-8444-444444444444",
-      document_kind: "canonical",
-      base_document_id: null,
-      base_document_updated_at: null,
-      ...importedArticle,
-      source_article_id: importedArticle.sourceArticleId,
-      concept_id: importedArticle.conceptId,
-      writing_memo: "",
-      latex_engine: importedArticle.latexEngine,
-      created_by: "author@example.com",
-      updated_by: "author@example.com",
-      created_at: "2026-08-30T00:00:00.000Z",
-      updated_at: "2026-08-31T00:00:00.000Z",
-      reviewed_at: "2026-08-31T00:00:00.000Z",
-      published_at: "2026-08-31T00:00:00.000Z",
-      archived_at: null,
-      archived_by: null,
-      archive_expires_at: null,
-      scheduled_publish_at: null,
-      scheduled_publish_claimed_at: null,
-      publication_review_stage: null,
-      publication_review_round: 0,
-      locked_ranges: "[]",
-      article_references: "[]",
-      body: importedArticle.body,
-      status: "approved",
-    };
-    class ProposalStatement extends RecordingStatement {
-      async first<T>() {
-        if (this.query.includes("base_document_id=?")) return null as T | null;
-        if (this.query.includes("FROM editorial_documents"))
-          return canonical as T;
-        return null as T | null;
-      }
-    }
-    const env = {
-      ...baseEnv,
-      REPORTS: {
-        prepare: (query: string) => new ProposalStatement(query, calls),
-        batch: async () => [],
-      },
-    };
-    const response = await worker.fetch(
-      sameOriginJsonRequest(
-        `/api/admin/editor/documents/${canonical.id}/update-proposal`,
-        {},
-        "POST",
-      ),
-      env as never,
+  it("旧更新案APIを公開せず編集対象を記事IDに統一する", async () => {
+    const workerSource = await readFile(
+      new URL("../../src/admin-worker.ts", import.meta.url),
+      "utf8",
     );
-    expect(response.status).toBe(201);
-    const data = (await response.json()) as {
-      id?: string;
-      baseDocumentId?: string;
-    };
-    expect(data.id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(data.baseDocumentId).toBe(canonical.id);
-    const insert = calls.find((call) =>
-      call.query.includes("document_kind, base_document_id"),
-    );
-    expect(insert?.query).toContain("'update-proposal'");
-    expect(insert?.query).not.toContain("'organization'");
-    expect(insert?.values).toContain(canonical.id);
-  });
-
-  it("別分野の担当者には既存の更新案本文を返さない", async () => {
-    const proposal = {
-      id: "55555555-5555-4555-8555-555555555555",
-      document_kind: "update-proposal",
-      subject: "mathematics",
-      title: "非公開の更新案",
-      body: "機密扱いの下書き本文",
-      writing_memo: "編集者だけのメモ",
-      status: "draft",
-    };
-    const calls: string[] = [];
-    const env = {
-      ADMIN_AUTH_MODE: "cloudflare-access",
-      ADMIN_PRIMARY_EMAIL: "global-admin@atlasez.test",
-      ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
-      REPORTS: {
-        prepare(query: string) {
-          calls.push(query);
-          return {
-            bind() {
-              return this;
-            },
-            async first<T>() {
-              return query.includes("FROM editorial_documents")
-                ? (proposal as T)
-                : null;
-            },
-            async all<T>() {
-              if (
-                query.includes("SELECT subject FROM report_admin_permissions")
-              )
-                return { results: [{ subject: "physics" }] as T[] };
-              return { results: [] as T[] };
-            },
-            async run() {
-              return {};
-            },
-          };
-        },
-      },
-    };
-    const request = new Request(
-      `https://admin.atlasez.org/api/admin/editor/documents/${proposal.id}/update-proposal`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          origin: "https://admin.atlasez.org",
-          "cf-access-authenticated-user-email": "physics-editor@atlasez.test",
-        },
-        body: "{}",
-      },
+    const editorSource = await readFile(
+      new URL("../../src/pages/admin/editor.astro", import.meta.url),
+      "utf8",
     );
 
-    const response = await worker.fetch(request, env as never);
-    const body = await response.text();
-
-    expect(response.status).toBe(403);
-    expect(body).not.toContain("機密扱いの下書き本文");
-    expect(body).not.toContain("編集者だけのメモ");
-    expect(
-      calls.some((query) => query.includes("INSERT INTO editorial_documents")),
-    ).toBe(false);
+    expect(workerSource).not.toContain("/update-proposal");
+    expect(editorSource).not.toContain("data-create-update-proposal");
+    expect(editorSource).not.toContain("mode=update");
+    expect(editorSource).toContain("data-document-version-label");
   });
 
   it("公開用Markdownでも既存記事のarticleIdを維持する", () => {
@@ -764,26 +684,18 @@ describe("既存公開記事の運営原稿移行契約", () => {
     expect(markdown).toContain("## 更新後の環の定義");
   });
 
-  it("UIは既存公開記事を自動公開せず、紐付け用の下書きを作る", async () => {
+  it("公開記事取り込みの画面入口とURL入口を廃止し、新規作成を残す", async () => {
     const editorSource = await readFile(
       new URL("../../src/pages/admin/editor.astro", import.meta.url),
       "utf8",
     );
-    const importHandlerStart = editorSource.indexOf(
-      'root.querySelector<HTMLButtonElement>("[data-import-source]")',
-    );
-    const importHandler = editorSource.slice(
-      importHandlerStart,
-      importHandlerStart + 1_000,
-    );
 
-    expect(editorSource).toContain(
-      "source_article_id: source?.articleId || null",
-    );
-    expect(editorSource).toContain('status: "draft"');
-    expect(editorSource).toContain("published_at: null");
-    expect(importHandler).toContain("emptyDocument(source)");
-    expect(importHandler).not.toContain("/publish");
+    expect(editorSource).not.toContain("data-import-source");
+    expect(editorSource).not.toContain("data-source-article");
+    expect(editorSource).not.toContain('routeQuery.has("sourceArticle")');
+    expect(editorSource).toContain("data-new-document");
+    expect(editorSource).toContain("learningSiteHasPublishedSource");
+    expect(editorSource).toContain("source_article_id: null");
   });
 
   it("GET catalogは公開記事と未登録状態を同じidentityで返す", async () => {
@@ -818,153 +730,36 @@ describe("既存公開記事の運営原稿移行契約", () => {
     });
   });
 
-  it("registerを同じidentityで繰り返しても同じ原稿へ冪等に紐付け、公開処理を開始しない", async () => {
+  it("公開記事カタログの移行用診断・登録APIは廃止済み", async () => {
     const store: CatalogStore = { documents: [], rows: new Map() };
     const calls: SqlCall[] = [];
-    const registrationPayload = {
-      locale: "ja",
-      subject: "mathematics",
-      category: "ring-theory",
-      slug: "ring-definition",
-    };
+    const env = catalogEnvironment(store, calls) as never;
+    const retiredRoutes = [
+      ["GET", "/api/admin/editor/catalog/diagnostics"],
+      ["POST", "/api/admin/editor/catalog/register"],
+      ["POST", "/api/admin/editor/catalog/register-bulk"],
+    ] as const;
 
-    await withSuccessfulGithubApi(async (githubRequests) => {
-      const firstResponse = await worker.fetch(
-        sameOriginJsonRequest(
-          "/api/admin/editor/catalog/register",
-          registrationPayload,
-        ),
-        catalogEnvironment(store, calls) as never,
-      );
-      const first = (await firstResponse.json()) as Record<string, unknown>;
-
-      const secondResponse = await worker.fetch(
-        sameOriginJsonRequest(
-          "/api/admin/editor/catalog/register",
-          registrationPayload,
-        ),
-        catalogEnvironment(store, calls) as never,
-      );
-      const second = (await secondResponse.json()) as Record<string, unknown>;
-      const catalogResponse = await worker.fetch(
-        new Request("http://localhost/api/admin/editor/catalog"),
-        catalogEnvironment(store, calls) as never,
-      );
-      const catalog = (await catalogResponse.json()) as {
-        catalog?: Array<Record<string, unknown>>;
-      };
-
-      expect(firstResponse.status).toBe(201);
-      expect(first).toMatchObject({
-        ok: true,
-        registered: true,
-        identityKey: "ja/mathematics/ring-theory/ring-definition",
-        publicationStarted: false,
-      });
-      expect(secondResponse.status).toBe(200);
-      expect(second).toMatchObject({
-        ok: true,
-        registered: false,
-        documentId: first.documentId,
-        identityKey: first.identityKey,
-        publicationStarted: false,
-      });
-      expect(catalogResponse.status).toBe(200);
-      expect(catalog.catalog?.[0]).toMatchObject({
-        identity_key: first.identityKey,
-        state: "managed",
-        editorial_document_id: first.documentId,
-        public_status: "published",
-      });
-      expect(store.documents).toHaveLength(1);
-      expect(store.documents[0]).toMatchObject({
-        creator_kind: "organization",
-        created_by: baseEnv.ADMIN_LOCAL_EMAIL,
-        updated_by: baseEnv.ADMIN_LOCAL_EMAIL,
-      });
-      expect([...store.rows.values()][0].registration_method).toBe(
-        "public-article-adoption",
-      );
-      expect(
-        calls
-          .filter((call) => call.query.startsWith("UPDATE editorial_documents"))
-          .every((call) => !call.query.includes("creator_kind")),
-      ).toBe(true);
-      expect(store.rows.size).toBe(1);
-      expect(
-        calls.filter((call) =>
-          call.query.includes("INSERT OR IGNORE INTO editorial_documents"),
-        ),
-      ).toHaveLength(1);
-      expect(
-        calls.find((call) =>
-          call.query.includes("INSERT OR IGNORE INTO editorial_documents"),
-        )?.query,
-      ).toContain("NULL, NULL, NULL, NULL, 0, '[]', ?");
-      expect(
-        calls.find((call) =>
-          call.query.includes("INSERT OR IGNORE INTO editorial_documents"),
-        )?.query,
-      ).toContain("VALUES (?, 'organization'");
-      expect(githubRequests.some((request) => request.method === "PUT")).toBe(
-        false,
-      );
-    });
-  });
-
-  it("既存の個人原稿を公開記事へ紐付けても初回作成主体を変更しない", async () => {
-    const document: CatalogDocument = {
-      id: "12345678-1234-4234-8234-123456789abc",
-      creator_kind: "person",
-      created_by: "original-author@example.com",
-      updated_by: "original-author@example.com",
-      source_article_id: null,
-      subject: importedArticle.subject,
-      category: importedArticle.category,
-      locale: importedArticle.locale,
-      slug: importedArticle.slug,
-      title: importedArticle.title,
-      summary: "個人原稿",
-      concept_id: importedArticle.conceptId,
-      body: "個人が執筆した本文",
-      status: "draft",
-      published_at: null,
-      created_at: "2026-08-30T00:00:00Z",
-      updated_at: "2026-08-30T00:00:00Z",
-    };
-    const store: CatalogStore = { documents: [document], rows: new Map() };
-    const calls: SqlCall[] = [];
-    await withSuccessfulGithubApi(async () => {
+    for (const [method, pathname] of retiredRoutes) {
       const response = await worker.fetch(
-        sameOriginJsonRequest("/api/admin/editor/catalog/register", {
-          locale: document.locale,
-          subject: document.subject,
-          category: document.category,
-          slug: document.slug,
+        new Request(`http://localhost${pathname}`, {
+          method,
+          ...(method === "POST"
+            ? {
+                headers: {
+                  "content-type": "application/json",
+                  origin: "http://localhost",
+                },
+                body: JSON.stringify({ articles: [] }),
+              }
+            : {}),
         }),
-        catalogEnvironment(store, calls) as never,
+        env,
       );
-      expect(response.status).toBe(200);
-      expect(document).toMatchObject({
-        creator_kind: "person",
-        created_by: "original-author@example.com",
-        body: "個人が執筆した本文",
-        source_article_id: importedArticle.sourceArticleId,
-      });
-      expect(
-        calls.some((call) =>
-          call.query.includes("INSERT OR IGNORE INTO editorial_documents"),
-        ),
-      ).toBe(false);
-      expect(
-        calls.find((call) =>
-          call.query.startsWith("UPDATE editorial_documents"),
-        )?.query,
-      ).not.toContain("creator_kind");
-      expect([...store.rows.values()][0].registration_method).toBe(
-        "public-article-link",
-      );
-    });
+      expect(response.status, pathname).toBe(404);
+    }
+    expect(store.documents).toEqual([]);
+    expect(calls).toEqual([]);
   });
 
   it("同じ公開identityの新規原稿作成を重複として拒否する", async () => {
@@ -1076,31 +871,26 @@ describe("既存公開記事の運営原稿移行契約", () => {
     expect(editorSource).toContain("esc(item.message)");
   });
 
-  it("記事一覧UIは公開済み・未登録を明示し、catalog/registerへ導く", async () => {
+  it("記事一覧から一時的な連携診断・登録UIを撤去し、公開状態を維持する", async () => {
     const articlesSource = await readFile(
       new URL("../../src/pages/admin/articles.astro", import.meta.url),
       "utf8",
     );
 
-    expect(articlesSource).toContain("運営原稿未登録");
-    expect(articlesSource).not.toContain("data-management");
-    expect(articlesSource).toContain("運営原稿を作成");
-    expect(articlesSource).toContain("公開記事と連携済み");
-    expect(articlesSource).toContain("原稿あり・公開記事ID未連携");
+    expect(articlesSource).toContain('fetch("/api/admin/editor/catalog"');
+    expect(articlesSource).toContain('class="badge public-live"');
+    expect(articlesSource).toContain("published_version_id");
     expect(articlesSource).toContain(
-      'fetch("/api/admin/editor/catalog/register"',
+      "current_version_id !== article.published_version_id",
     );
-    expect(articlesSource).toContain(
-      'body: JSON.stringify({ locale: "ja", subject: source.subject, category: source.category, slug: source.slug })',
+    expect(articlesSource).not.toContain("更新案を作成");
+    expect(articlesSource).not.toContain("data-run-catalog-diagnostics");
+    expect(articlesSource).not.toContain(
+      "/api/admin/editor/catalog/diagnostics",
     );
-    expect(articlesSource).toContain(
-      "registeredPublicArticleIds.set(publicArticleKey(source), data.documentId)",
-    );
-    expect(articlesSource).toContain(
-      'publicArticle.managementState === "managed"',
-    );
-    expect(articlesSource).toContain("editorial_document_id");
-    expect(articlesSource).toContain("instead of reloading the editorial");
+    expect(articlesSource).not.toContain("/api/admin/editor/catalog/register");
+    expect(articlesSource).not.toContain("data-register-link");
+    expect(articlesSource).not.toContain("運営連携");
   });
 
   it("編集画面は公開元が学習サイトの記事を下書き原稿にも公開済みとして表示する", async () => {
@@ -1130,19 +920,6 @@ describe("既存公開記事の運営原稿移行契約", () => {
     expect(editorSource).toContain('["prop", "命題"');
   });
 
-  it("記事一覧UIから公開記事カタログの診断を読み取り専用で実行できる", async () => {
-    const articlesSource = await readFile(
-      new URL("../../src/pages/admin/articles.astro", import.meta.url),
-      "utf8",
-    );
-
-    expect(articlesSource).toContain("data-run-catalog-diagnostics");
-    expect(articlesSource).toContain("/api/admin/editor/catalog/diagnostics");
-    expect(articlesSource).toContain('cache: "no-store"');
-    expect(articlesSource).toContain("catalogDiagnosticsIssues.append(item)");
-    expect(articlesSource).toContain("カタログを診断");
-  });
-
   it("公開原稿と同じ識別子を持つ更新案を重複防止トリガーが拒否しない", async () => {
     const migration = await readFile(
       new URL(
@@ -1163,7 +940,7 @@ describe("既存公開記事の運営原稿移行契約", () => {
     );
   });
 
-  it("更新案は現行版への切り替えと公開時点の比較元を表示する", async () => {
+  it("公開版と最新保存版を版IDで判定し、旧更新案操作を持たない", async () => {
     const editorSource = await readFile(
       new URL("../../src/pages/admin/editor.astro", import.meta.url),
       "utf8",
@@ -1173,29 +950,42 @@ describe("既存公開記事の運営原稿移行契約", () => {
       "utf8",
     );
 
-    expect(editorSource).toContain("data-open-current-version");
-    expect(editorSource).toContain("data-open-update-proposal");
-    expect(editorSource).toContain("現行版を開く");
-    expect(editorSource).toContain("更新案を開く");
-    expect(workerSource).toContain(
-      'document.document_kind === "update-proposal"',
+    expect(editorSource).toContain(
+      "current_version_id !== item.published_version_id",
     );
-    expect(workerSource).toContain("document.base_document_id");
-    expect(workerSource).toContain(
-      "COALESCE(d.document_kind, 'canonical') = 'canonical'",
-    );
-    expect(workerSource).toContain(
-      "versions: { canonicalId: canonicalId ?? null, proposalId }",
-    );
+    expect(editorSource).toContain("is_published_version");
+    expect(editorSource).toContain("is_current_version");
+    expect(editorSource).not.toContain("data-open-update-proposal");
+    expect(editorSource).not.toContain("data-create-update-proposal");
+    expect(workerSource).toContain("published_version_id");
+    expect(workerSource).toContain("snapshot_version_id");
+    expect(workerSource).not.toContain("/update-proposal");
     expect(editorSource).toContain(
       "PATCHの成功時点で本文と版履歴の保存は完了している",
     );
     expect(workerSource).toContain(
-      "競合や検証失敗で更新されなかったリクエストは版履歴へ記録しない",
+      "const saveResults = await env.REPORTS.batch([",
     );
-    expect(workerSource).toContain(
-      "editorial revision recording failed after document save",
-    );
+    expect(workerSource).toContain("INSERT INTO editorial_document_revisions");
+    expect(workerSource).toContain("snapshot_json");
     expect(workerSource).toContain("revisionWarning");
+  });
+
+  it("版管理migrationは更新案の履歴を記事IDへ統合し旧ID列を削除する", async () => {
+    const migration = await readFile(
+      new URL(
+        "../../migrations/0138_editorial_article_versions.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(migration).toContain("ADD COLUMN current_version_id");
+    expect(migration).toContain("ADD COLUMN published_version_id");
+    expect(migration).toContain("ADD COLUMN snapshot_version_id");
+    expect(migration).toContain("UPDATE editorial_comments");
+    expect(migration).toContain("UPDATE editorial_publication_runs");
+    expect(migration).toContain("DROP COLUMN base_document_id");
+    expect(migration).toContain("DROP COLUMN document_kind");
   });
 });

@@ -226,7 +226,7 @@ describe("ADMIN staging isolation preflight", () => {
     const confirmations = {
       ATLASEZ_STAGING_DEPLOY_CONFIRMED: "1",
       ATLASEZ_STAGING_PROVIDER_SETTINGS_VERIFIED: "1",
-      ATLASEZ_STAGING_0134_VERIFIED: "1",
+      ATLASEZ_STAGING_0141_VERIFIED: "1",
     };
     expect(
       missingAdminStagingDeployConfirmations(confirmations, { noCron: false }),

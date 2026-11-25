@@ -1,9 +1,15 @@
 # ADMIN専用stagingの実行基盤
 
-作成日: 2026-11-03 JST / read-only状態更新: 2026-11-04 UTC
-状態: **専用staging Worker/D1は存在し、migration一覧のread-only確認済み。実サービス受入は未実施。**
+作成日: 2026-11-03 JST / 最終staging資源read-only照合: 2026-11-04 UTC / migration sequence review: 2026-11-25
+状態: **専用staging Worker/D1は2026-11-04時点で存在し、当時のmigration一覧をread-only確認済み。現行stateは未再照合、実サービス受入は未実施。**
 
 本書は [PR #547のADMIN新規メンバー受入チェックリスト](https://github.com/Atlasez/Admin-Atlesez/pull/547) と連携し、設定ガード、fixture、migration drillを定めます。Cloudflare設定変更、staging deploy/migration、Google/Resend/Discordの実接続は、このPRだけでは実行しません。
+
+## 2026-11-25 current candidate sequence
+
+- Current main ends at `0139_editorial_release_candidates.sql`; #630 is `0140_editorial_document_deletion_requests.sql`; #545's intake migration is now `0141_application_intake_reconciliation.sql`. PR #549 inherits the updated #545 base and its local migration drill targets 0141.
+- The 2026-11-04 staging Worker/D1 read-back below is historical. Existing staging and production D1 ledgers were not re-read for this refresh; no remote migration, backup/restore, staging config, or deployment operation was performed.
+- References below that are explicitly dated 2026-11-04 or 2026-11-18 preserve those historical observations. Current drill steps and environment confirmations use 0141.
 
 ## 0. 既存stagingのread-only状態（2026-11-04）
 
@@ -13,12 +19,13 @@
 - staging D1には既存の運営者identityと試験データがあります。データを保持し、削除・初期化・復元をしません。Google Cloud ConsoleのOAuth origin/callback/test-user一覧は独立read-backできておらず、運営者と異なるsynthetic applicant/member・reviewer identityは未準備です。
 - Resend/Discordはstaging設定上disabledです。provider呼出し数は直接計測していないため、0回とは主張しません。実利用試験は行っていません。
 - 従ってCloudflare Worker/D1の作成は現在の開始条件ではありません。STG-01〜06は、独立Google identities、対象Worker buildのprovenanceとdeploy承認、role別live試験承認が揃うまでBLOCKEDです。read-back時刻以降に状態が変わっていれば、変更前に再確認します。
+- 2026-11-18: 応募受付reconciliation migrationは `0138_application_intake_reconciliation.sql` です。固定本番D1のread-only ledgerでは0137の適用済み、0138のpendingを確認しました。既存staging D1は0138について再照合しておらず、migration・deploy・データ変更は行っていません。
 
 ## 1. 隔離設定と検査
 
 - `wrangler.admin.staging.example.jsonc` は意図的に無効なAccount ID、D1 ID、Google OAuth IDを含む雛形です。Discordはdisabledが既定で、Guild/Client IDを含みません。deployに使わないでください。
 - ローカル設定は雛形を `wrangler.admin.staging.jsonc` へコピーして作成します。このファイルは `.gitignore` 対象です。secret値、synthetic recipient一覧、Cookie、OAuth state/code/tokenをGitへ追加しないでください。
-- 0134以前のWorker互換性をCloudflare上で確認する場合は、通常設定を複製した `wrangler.admin.staging.compat.jsonc` から `triggers` を削除し、`npm run verify:admin-staging-config:compat` で検査します。これは旧Worker用の一時設定であり、staging WorkerのスケジュールもDashboardで無効化・read-backしてから使います。
+- 0141以前のWorker互換性をCloudflare上で確認する場合は、通常設定を複製した `wrangler.admin.staging.compat.jsonc` から `triggers` を削除し、`npm run verify:admin-staging-config:compat` で検査します。これは旧Worker用の一時設定であり、staging WorkerのスケジュールもDashboardで無効化・read-backしてから使います。
 - `npm run verify:admin-staging-config:template` は雛形に対し静的検査をします。実設定は `npm run verify:admin-staging-config` で確認します。
 - 検査はWorker名を `atlasez-admin-staging`、D1名を `atlasez-admin-staging-reports`、`workers.dev` originのみ、Custom Routeなし、Preview URLなし、専用Google OAuth ID、test送信元/通知先に固定します。Discordは `ATLASEZ_STAGING_DISCORD_MODE=disabled` とし、Guild/Client IDは設定から省きます。STG-08を別途承認する場合だけ `test-guild` profileへ切り替え、専用test guild/client ID、staging/test表記のguild名、Bot token・OAuth secret・暗号鍵を検査し、承認・test guild read-back・secret名 read-backの3確認を必須にします。本番Worker、D1、route、production Discord ID、secrets in `vars`、production Cron群を拒否します。
 - stagingの `*/5 * * * *` CronはWorker側でstaging `workers.dev` originまたはstaging変数を認識した場合に `ATLASEZ_STAGING_MODE=true` と `ATLASEZ_STAGING_CRON_MODE=intake-only` を確認してから応募受付の照合だけを実行します。staging mode欠落・誤値・別scheduleではCron全体を停止します。GitHub同期、公開処理、タスクリマインダー、Discord role同期、通知dispatchは呼びません。Resend dispatchはAPI経由も含め `ATLASEZ_STAGING_EMAIL_DELIVERY=test-sink` とCloudflare Secretの完全一致allowlistがある場合だけで、`disabled`時はqueueのdispatch自体をしません。送信元とテスト宛先のドメインは `atlasez.test`、`staging.example.test`、`staging.example.invalid` の完全一致だけを認め、宛先は加えてResendの正確な予約済みsimulator address（`delivered@resend.dev`、`bounced@resend.dev`、`complained@resend.dev`）を認めます。substring、任意の`.test`/`.invalid`、`staging`を含むだけの外部ドメインは拒否します。実際のsink宛先を追加する場合は、管理者が所有確認済みtest domain/addressを別途承認してからコードの明示allowlistを変更し、再レビューします。その他のqueue rowはproviderへ送信しません。本番モードにはこのstaging専用の宛先制約を適用しません。
@@ -38,39 +45,33 @@ npm run test:admin-staging:isolated
 
 `npm run verify:admin-staging-migration` は一時SQLiteファイルに対して次を実施し、終了後に作成物を削除します。
 
-1. migration 0133までを適用し、synthetic応募・送信済み確認queue・運営通知queueを作成。
-2. SQLite snapshotをとり、実際のmigration 0134を適用。
+1. migration 0137までを適用し、synthetic応募・送信済み確認queue・運営通知queueを作成。
+2. SQLite snapshotをとり、実際のmigration 0141を適用。
 3. 通知先snapshot backfill、状態default、既存queue行数/送信済み状態を確認。
-4. 0134以前の列だけを指定する旧Worker型INSERTが動くことを確認。
-5. snapshotをrestoreし、0134列・ledger entryが戻り、元の応募/queueが残ることを確認。
+4. 0141以前の列だけを指定する旧Worker型INSERTが動くことを確認。
+5. snapshotをrestoreし、0141列・ledger entryが戻り、元の応募/queueが残ることを確認。
 
 この結果はlocal SQLite drillであり、Cloudflare D1のTime Travelやbackup/restoreを実証した証拠ではありません。
 
 ## 3. 管理されたstaging deploy
 
-現在は既存Worker/D1を再利用します。read-onlyのbinding・route・secret名・migration確認を行い、専用の実行承認なしに設定変更やdeployをしません。DiscordとResendは無効のまま、STG-01〜06に不要なsecretを登録しません。secret値をGit、Issue、shell historyへ記録しません。Workerには別用途のGitHub、公開サイト、本番Discord、本番メールsecretを設定しません。現在のD1に0134を含む未適用migrationはread-back上ありませんが、これは旧Worker互換性や復元試験の証拠ではありません。対象Worker buildの由来とstaging deploy承認が確認できるまで配信しません。
+現在は既存Worker/D1を再利用します。read-onlyのbinding・route・secret名・migration確認を行い、専用の実行承認なしに設定変更やdeployをしません。DiscordとResendは無効のまま、STG-01〜06に不要なsecretを登録しません。secret値をGit、Issue、shell historyへ記録しません。Workerには別用途のGitHub、公開サイト、本番Discord、本番メールsecretを設定しません。2026-11-04のread-backでは当時のcandidate migration（0134まで）にpendingはありませんでしたが、最新candidateの0141適用を確認したものではありません。対象Worker buildの由来とstaging deploy承認が確認できるまで配信しません。
 
 ```bash
-cp wrangler.admin.staging.example.jsonc wrangler.admin.staging.compat.jsonc
-# ignored configからtriggersを削除し、read-back済みstaging resource/client IDとoriginを設定
-npm run verify:admin-staging-config:compat
-npm run deploy:admin:staging -- --dry-run --no-cron
+cp wrangler.admin.staging.example.jsonc wrangler.admin.staging.jsonc
+# ローカルのignored configへstagingのresource/client IDとstaging originだけ記入
+npm run verify:admin-staging-config
+npm run deploy:admin:staging -- --dry-run
 ```
 
-現在のstaging WorkerにはCron triggerがなく、Cloudflareのquotaも満杯です。既存Cronを変更せず応募・認可APIを実証する配信は `--no-cron` モードに限定します。このモードではscheduled処理を実行しないため、Cron・queue処理の実証はPASSにできません。Cronありの通常configは、承認済み容量の使い捨て環境でのみ使用します。
-
-dry-runはAdmin向けartifactを作って対象configでWrangler dry-runを行います。Worker配信・D1 migration/writeはありません。実際のstaging配信は、Cloudflare担当の個別承認後、対象Worker/D1、provider設定、0134 ledgerを再read-backし、cleanなcommit済みworktreeから行います。`ATLASEZ_STAGING_DEPLOY_SHA`はレビュー・承認された40文字のcommit SHAをリテラルで指定し、実行時のHEADと一致しなければscriptが停止します。
+dry-runはAdmin向けartifactを作ってWrangler dry-runを行います。staging Worker/D1への書込みはありません。実際のstaging配信を担当者が承認して行う場合は、cleanなcommit済みworktreeで以下を使います。3つの確認値は、配信担当がstaging設定・provider secret名・0141 ledgerのread-backを終えた後にだけ設定します。
 
 ```bash
-ATLASEZ_STAGING_DEPLOY_SHA=<reviewed-40-character-commit-sha> \
 ATLASEZ_STAGING_DEPLOY_CONFIRMED=1 \
 ATLASEZ_STAGING_PROVIDER_SETTINGS_VERIFIED=1 \
-ATLASEZ_STAGING_0134_VERIFIED=1 \
-ATLASEZ_STAGING_NO_CRON_CONFIRMED=1 \
-npm run deploy:admin:staging -- --deploy --no-cron
+ATLASEZ_STAGING_0141_VERIFIED=1 \
+npm run deploy:admin:staging -- --deploy
 ```
-
-`--no-cron`は `wrangler.admin.staging.compat.jsonc` だけを読み、Cronなしを明示確認し、Cronを配信対象へ追加しません。deploy commandはWranglerの `--keep-vars` を指定し、Dashboardでread-backしたOAuth・provider・routing用の実行変数をconfigで上書きしないようにします。secret値はdeployで削除されませんが、値を読み取ったり新規登録したりしません。
 
 Resendのtest sinkを明示的に使う時だけ `ATLASEZ_STAGING_RESEND_SINK_CONFIRMED=1` も設定します。test-sink以外の宛先、または確認されていないAPI keyは配信しません。このdeploy scriptは固定のignored staging configしか読み込まず、本番の `wrangler.admin.jsonc` へfallbackせず、migrationは一切実行しません。Cloudflare D1 operatorが後続の専用手順で対象名を二名照合してmigrationを適用します。
 
@@ -94,7 +95,7 @@ CloudflareのAccount adminは専用資源を作る権限、D1 operatorは専用D
 
 設定担当はstaging host/Worker ID/D1 ID/Google client IDの一致、secret名とprovider projectの分離を二名で照合します。Discordを後から有効にする場合だけ、test application/guild IDと承認済みrole policyも二名照合します。証跡は値を伏せた設定画面、read-only resource metadata、検査時刻、照合者roleで残します。Cloudflare accountを共用する場合も対象resource IDを必ず記録し、production D1/Route/Workerをstaging用として転用しません。
 
-## 5. migration 0134の実staging試験
+## 5. migration 0141の実staging試験
 
 **現在のstaging D1は既存の運営者identity・試験データを含みます。この節の「空の新規D1」「全migration apply」「role seed reset」「restore」は、別途承認された使い捨てD1演習専用です。既存の `atlasez-admin-staging-reports` には実行しません。** 2026-11-04のread-only migration listでは現在のmigration一式（0134を含む）にpendingなしでした。既存stagingを空にする・作り直す・旧snapshotへ戻す操作は禁止です。
 
@@ -105,8 +106,8 @@ Cloudflare D1 Time Travelは現在のbookmarkをread-onlyで取得できます�
 1. Cloudflare dashboard/WranglerでWorker名・D1名・完全なD1 IDを二名照合し、production IDでないことを確認します。対象の旧Worker build/SHA、D1 migration ledger、CI runを記録します。
 2. `wrangler d1 info atlasez-admin-staging-reports --remote --config wrangler.admin.staging.jsonc` でD1 storage versionを確認します。Time Travelを使用できる状態であることを記録します。
 3. `wrangler d1 time-travel info atlasez-admin-staging-reports --config wrangler.admin.staging.jsonc` でmigration前bookmarkを取得し、安全な運用記録に保存します。出力をIssueへ丸ごと貼らず、bookmarkは権限を持つ担当者間だけで共有します。
-4. **使い捨てD1演習の場合のみ** migration一覧を確認します。新規D1では0134だけでなく全migrationがpendingであるのが想定です。部分適用なら作業を止めます。既存staging D1では前節のread-only照合結果を使い、migration applyをしません。
-5. **使い捨てD1演習に対する個別D1変更承認がある場合のみ**、事前backup/bookmarkと専用D1を再確認し、承認されたD1 operatorがmigration applyを実行します。本番D1名やproduction configを指定しません。適用後、read-only migration listで0134を含む全migrationのledgerを確認します。既存staging D1へはapplyしません。
+4. **使い捨てD1演習の場合のみ** migration一覧を確認します。新規D1では0141だけでなく全migrationがpendingであるのが想定です。部分適用なら作業を止めます。既存staging D1では前節のread-only照合結果を使い、migration applyをしません。
+5. **使い捨てD1演習に対する個別D1変更承認がある場合のみ**、事前backup/bookmarkと専用D1を再確認し、承認されたD1 operatorがmigration applyを実行します。本番D1名やproduction configを指定しません。適用後、read-only migration listで0141を含む全migrationのledgerを確認します。既存staging D1へはapplyしません。
 6. **初期role resetは、新規の使い捨てD1演習だけに適用します。既存staging D1へ次のDELETE/INSERT SQLを実行してはいけません。** 既存stagingには運営者identityと試験データが保存されています。migration `0004`/`0090`、`0079`、`0091` の固定seed除去が必要な新規D1演習では、演習用D1を二名照合してから、個別承認済み手順として次のSQLを使用します。
 
    ```sql
@@ -122,12 +123,12 @@ Cloudflare D1 Time Travelは現在のbookmarkをread-onlyで取得できます�
 
    Read-backで全体権限が専用staging operatorの1行だけ、他2表が0行であることを確認します。この初期化は新規staging D1限定で、後続の試験roleを作成した後に再実行しません。失敗/途中成功時はrole試験を開始せず、operatorが同じ初期化を再実行して上記状態を確認します。SQL結果やメールアドレスをIssueへ貼らず、匿名fixture key・row counts・実施者role・UTC時刻を記録します。
 
-7. 0134後の旧Worker互換性を実Cloudflareで調べる場合は、共有中のstaging Workerを旧SHAで置き換えるため、staging-onlyのdeploy承認・停止条件・復帰手順が別途必要です。承認前はworktree、build、dry-runまでに留め、既存Workerへ配信しません。旧コードはstaging Cron markerを解釈しないため、承認済み演習ではCron 0件をread-backしてから実施します。既存stagingのCronを無断で変更・削除しません。
+7. 0141後の旧Worker互換性を実Cloudflareで調べる場合は、共有中のstaging Workerを旧SHAで置き換えるため、staging-onlyのdeploy承認・停止条件・復帰手順が別途必要です。承認前はworktree、build、dry-runまでに留め、既存Workerへ配信しません。旧コードはstaging Cron markerを解釈しないため、承認済み演習ではCron 0件をread-backしてから実施します。既存stagingのCronを無断で変更・削除しません。
 
    ```bash
-   git worktree add --detach ../admin-staging-pre-0134 <PRE_0134_ADMIN_MAIN_SHA>
-   cp wrangler.admin.staging.compat.jsonc ../admin-staging-pre-0134/wrangler.admin.staging.compat.jsonc
-   cd ../admin-staging-pre-0134
+   git worktree add --detach ../admin-staging-pre-0141 <PRE_0141_ADMIN_MAIN_SHA>
+   cp wrangler.admin.staging.compat.jsonc ../admin-staging-pre-0141/wrangler.admin.staging.compat.jsonc
+   cd ../admin-staging-pre-0141
    npm ci
    ATLASEZ_BUILD_TARGET=admin SITE_URL=https://<staging-worker-host> BASE_PATH=/ npm run build
    npm run verify:build-info
@@ -136,9 +137,9 @@ Cloudflare D1 Time Travelは現在のbookmarkをread-onlyで取得できます�
 
    Cloudflare staging operatorがWorker名・D1 ID・Cron 0件を二名確認した後だけ、同じdirectory/configで `npx wrangler deploy --config wrangler.admin.staging.compat.jsonc --keep-vars` を実行します。旧互換性の間はDiscord/Resend secretを外し、OAuth以外のprovider操作をしない専用アカウントで応募/queueの旧列書込み・読取りとrow countsだけを確認します。Cronが0件のread-backを残してから新Workerを通常のstage config/wrapperで配信し、guarded intake-only Cronを有効化します。旧コード、D1、Worker version、実施者、Cronの0件/1件read-backを証跡に記録します。
 
-8. Time Travel restoreの実証は他のSTG dataが存在しない使い捨てD1で行います。migration前bookmarkへのrestore後に0134列/ledgerがなく、synthetic legacy rowsが保たれたことをread-only検証し、その後必要なら0134を再適用して最終ledgerを確認します。共有staging D1を無断でrestoreしません。
+8. Time Travel restoreの実証は他のSTG dataが存在しない使い捨てD1で行います。migration前bookmarkへのrestore後に0141列/ledgerがなく、synthetic legacy rowsが保たれたことをread-only検証し、その後必要なら0141を再適用して最終ledgerを確認します。共有staging D1を無断でrestoreしません。
 
-実行前にD1の `version` がTime Travelをサポートしない場合、backup手段とrestore権限が未確認の場合、migration listに0134以外の予期しない項目がある場合、backup/bookmarkが確認できない場合は停止します。適用失敗時はworker配信とCronを止め、migration SQL・D1 query error・ledgerを保存し、再applyやrestoreを推測で行わずD1 operatorへエスカレーションします。コードを戻す場合も0134の列/indexは残し、down migrationでschema/dataを削除しません。
+実行前にD1の `version` がTime Travelをサポートしない場合、backup手段とrestore権限が未確認の場合、migration listに0141以外の予期しない項目がある場合、backup/bookmarkが確認できない場合は停止します。適用失敗時はworker配信とCronを止め、migration SQL・D1 query error・ledgerを保存し、再applyやrestoreを推測で行わずD1 operatorへエスカレーションします。コードを戻す場合も0141の列/indexは残し、down migrationでschema/dataを削除しません。
 
 上記のremote D1書込み・restore・staging deployは、本PRのCIやローカルrunnerでは実施しません。担当者の変更承認を得たstaging専用作業です。
 
@@ -152,24 +153,24 @@ ResendとDiscordを無効のままでも、STG-01〜06のWeb/API側検証は実�
 
 1. **Staging owner / Cloudflare Account admin:** 既存Worker/D1、ID、origin、binding、route、Cron状態をread-onlyで確認し、匿名化して記録します。現在確認済みの資源を再作成しません。`wrangler.admin.staging.jsonc`を実際のread-back値と比較し、不一致ならstopします。
 2. **Google Cloud admin:** 既存専用OAuth clientのorigin/callback、test-user一覧をread-backします。既存clientが無い場合に限り、Google adminの個別承認後に新規作成します。運営者と異なるsynthetic applicant/memberとproject reviewerをそれぞれ用意し、メール/secretはGitHubに記録せずfixture keyだけを内部台帳へ対応付けます。
-3. **D1 operator:** 既存staging D1ではmigration一覧をread-only確認するだけです。現在は0134を含むcandidate migration一覧にpendingなしと確認済みです。既存identity/試験データがあるためbootstrap SQL、再seed、clear、apply、restoreをしません。global operatorの画面/API確認をsynthetic applicant/reviewerの結果と混同しません。
+3. **D1 operator:** 既存staging D1ではmigration一覧をread-only確認するだけです。2026-11-04時点では当時の0134を含むcandidate migration一覧にpendingなしでしたが、0138はまだ再照合していません。既存identity/試験データがあるためbootstrap SQL、再seed、clear、apply、restoreをしません。global operatorの画面/API確認をsynthetic applicant/reviewerの結果と混同しません。
 4. **Cloudflare staging operator + release owner:** 実stagingで旧Worker互換性を検証する前に、既存Workerを置き換えるstaging-only実行承認、対象SHA、backup/復旧・停止手順を確認します。approvalがない間はcompat configのverify/build/dry-runまでにし、Worker、Cron、D1に変更を加えません。実施が承認された場合もCron状態変更は別途個別承認が必要です。
 5. **Staging owner + QA/role owner:** applicant/accepted/member/manager/coordinator/suspended/withdrawn用の合成Google accountsを管理台帳で各fixture keyへ割当てます。`@atlasez.test` fixtureはローカル専用なので実Google loginに流用しません。応募者と受入memberはUI/APIから作り、権限fixtureはglobal operatorでstaging API経由に作成します。直接SQL seedする場合は対象role・必要最小行・cleanupを別途レビューし、全API権限は付与しません。
 6. **Release owner:** 現Workerのprovenanceと、候補SHAをstagingへ配信する個別承認が揃ってからSTG-01 OAuth smokeを開始します。現時点のWorker build-infoは#549 HEADより古く`ref=unknown`で、distinct synthetic identitiesもないため、まだ開始しません。Resend/Discordはsink/guild・承認が揃うまで無効のままとし、STG-02〜09は各表の前提条件を満たしてから開始します。
 
 したがって、現時点ではSTG-01から開始できません。Worker/D1作成は不要で、再作成や初期化をしてはいけません。次に必要なのはGoogle Cloud adminによる既存OAuth設定のread-backと、別identityの合成applicant/member・project reviewerの準備、およびrelease ownerによる対象staging build配信の個別承認です。これらが完了するまで実OAuth・staging write・deployは行いません。
 
-| STG                 | 開始前に必要なもの                                                    | 合格証拠                                                                                                     |
-| ------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| 01 Google OAuth     | 専用OAuth client、staging callback URI、管理下synthetic accounts      | state/nonce replay拒否、callback/logout/session失効の結果、Cookie属性。secret/codeなし。                     |
-| 02 応募             | staging D1 0134、synthetic applicant accounts、Resend disabled        | 応募/task/queue row counts、保存後応答喪失/409本人status、multi-project結果、provider呼出し0。宛先は匿名化。 |
-| 03 審査             | applicant/manager/global synthetic roles                              | 対象project GET/decisionのHTTP matrix、監査履歴・revision。別projectの403/404。                              |
-| 04 複数所属         | 2 projectのsynthetic memberships                                      | project A保持、project Bだけ追加、各scopeのdirect API拒否証跡。                                              |
-| 05 初期設定/task    | accepted-incomplete/member fixtures、synthetic calendar/task rows     | profile/portal/calendar/task状態、他人task拒否、375px/keyboard/axe証跡。                                     |
-| 06 休止・退会・復帰 | suspended/withdrawn/returned fixtures、Discord disabled               | 失効前後同一sessionのAPI結果、他project membership不変、許可scopeの復帰。Discord外部操作なし。               |
-| 07 Resend           | test-sink API key、verified staging sender、synthetic inbox allowlist | queue→provider accepted→sink receivedを別記録。allowlist外recipient fetch 0、retry/idempotency。             |
-| 08 Discord          | test guild、test bot/user、明示承認済みrole policy                    | guild/user/role pseudonym、grant/revokeのprovider read-back、サイト権限との同期。                            |
-| 09 障害/運用        | intake-only Cron、D1 operator、alert/primary+backup on-call           | failure injection、marker recovery、pending queue/alerts、stop/ack/drill記録。                               |
+| STG                 | 開始前に必要なもの                                                                   | 合格証拠                                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| 01 Google OAuth     | 専用OAuth client、staging callback URI、管理下synthetic accounts                     | state/nonce replay拒否、callback/logout/session失効の結果、Cookie属性。secret/codeなし。                     |
+| 02 応募             | staging D1 0141のread-only ledger確認、synthetic applicant accounts、Resend disabled | 応募/task/queue row counts、保存後応答喪失/409本人status、multi-project結果、provider呼出し0。宛先は匿名化。 |
+| 03 審査             | applicant/manager/global synthetic roles                                             | 対象project GET/decisionのHTTP matrix、監査履歴・revision。別projectの403/404。                              |
+| 04 複数所属         | 2 projectのsynthetic memberships                                                     | project A保持、project Bだけ追加、各scopeのdirect API拒否証跡。                                              |
+| 05 初期設定/task    | accepted-incomplete/member fixtures、synthetic calendar/task rows                    | profile/portal/calendar/task状態、他人task拒否、375px/keyboard/axe証跡。                                     |
+| 06 休止・退会・復帰 | suspended/withdrawn/returned fixtures、Discord disabled                              | 失効前後同一sessionのAPI結果、他project membership不変、許可scopeの復帰。Discord外部操作なし。               |
+| 07 Resend           | test-sink API key、verified staging sender、synthetic inbox allowlist                | queue→provider accepted→sink receivedを別記録。allowlist外recipient fetch 0、retry/idempotency。             |
+| 08 Discord          | test guild、test bot/user、明示承認済みrole policy                                   | guild/user/role pseudonym、grant/revokeのprovider read-back、サイト権限との同期。                            |
+| 09 障害/運用        | intake-only Cron、D1 operator、alert/primary+backup on-call                          | failure injection、marker recovery、pending queue/alerts、stop/ack/drill記録。                               |
 
 Resendの実送信を有効化する場合は、staging configの `ATLASEZ_STAGING_EMAIL_DELIVERY` を `test-sink` に変え、静的確認を `ATLASEZ_STAGING_RESEND_SINK_CONFIRMED=1 node scripts/verify-admin-staging-config.mjs --config wrangler.admin.staging.jsonc --allow-resend-test-sink` で通してから、Cloudflare Secret `ATLASEZ_STAGING_EMAIL_ALLOWLIST` にtest inboxだけを設定します。allowlistを登録できない、synthetic Google accountの送信先がsinkでない、Resend account/key scopeが確かめられない場合は試験を止めます。
 
@@ -188,6 +189,6 @@ npm run verify:admin-staging-config -- --allow-discord-test-guild
 
 - Cloudflare Workers Buildsの現行Production branch/commands/build token/Routes permission/autodeployは、この開発用OAuthの読み取り権限では取得できません。main mergeを契機にproduction deployされる可能性があるため、確認完了まで対象PRをmainへmergeしません。
 - local `npm run test:admin-staging:isolated` は専用stagingやGoogle/Resend/Discord実到達を証明しません。
-- production D1 ledgerでは、統合検証用Wrangler configと0134を含むcheckoutからread-only照会したところ0134がpendingです。production migrationは適用していません。
+- 2026-11-18のproduction D1 read-only ledgerでは、0137 seminar migrationの適用済み、応募migration `0138_application_intake_reconciliation.sql` のpendingを確認しました。production migrationは適用していません。
 - Cloudflare resource、Google Cloud OAuth client/account、Resend test-sink API key/verified sender、Discord test guild/Botが未提供です。OPSD-01〜09の運営承認もpendingです。
 - Lighthouseのperformance assertionは既存CIで非blocking失敗を報告しています。別品質課題として扱い、staging readiness PASSには数えません。

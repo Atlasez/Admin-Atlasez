@@ -1,15 +1,13 @@
 # 公開サイトの記事公開チェックリスト
 
 公開サイトの正本は `Atlasez/Atlasez01` の `main`、本番Workerは `atlasez01`、公開URLは
-`https://atlasez.org` と `https://www.atlasez.org` です。記事の公開は、内容確認と通常の
-PR/CI手順を通してから行います。本番配信はCloudflare Workers Buildsに集約し、Cloudflare
-Pages、GitHub Pagesミラー、PR preview、ローカルからの直接deployを本番配信と扱いません。
+`https://atlasez.org` と `https://www.atlasez.org` です。本番配信はCloudflare Workers Buildsに一本化し、
+GitHub Actions、Pages、ローカルからの直接deployを本番配信と扱いません。
 
-Worker、Account、Route、Build command、build-info、停止条件の詳細は、公開repositoryの既存
-[PR #140](https://github.com/Atlasez/Atlasez01/pull/140) が更新中の運用文書を確認します。
-監査時点では公開mainに旧Pages/手動配信記述が残っており、既存PR #140がPUBLISH/DEPLOYMENTを
-main-onlyのWorkers Builds手順へ更新中です。#140が反映されるまではこのチェックリストの停止条件を適用し、
-公開側の旧手順もこのADMIN repositoryの `npm run deploy:public` も実行しません。
+記事公開は公開専用GitHub AppがPRを作成し、CI成功後にmainへ取り込みます。Workers Builds内の
+`npm run deploy:production` は候補Versionのアップロード、候補内容のD1記録、候補Versionの100%配信、
+公開履歴のD1記録の順に処理します。候補内容の記録が失敗したときは配信を切り替えません。
+切替後の履歴記録が失敗したときはADMIN Workerが有効VersionとD1候補記録を照合して補修します。
 
 ## 1. 記事を査読に出す
 
@@ -24,14 +22,16 @@ main-onlyのWorkers Builds手順へ更新中です。#140が反映されるま�
 
 ## 2. 本番反映を確認する
 
-Workers Buildsが正しく接続・設定されている場合、`main`への反映をきっかけに固定Worker
-`atlasez01`へ本番build/deployします。Build失敗、SHA不一致、WorkerやVersionの不一致がある場合は
-配信完了とせず、原因を記録して担当者へ引き継ぎます。通常経路の切替や直接deployで埋め合わせません。
+Workers Buildsの対象main SHA、候補登録、Cloudflare Versionを照合します。Build失敗、候補D1保存失敗、
+SHA不一致、WorkerやVersionの不一致がある場合は配信完了とせず、原因を記録して担当者へ引き継ぎます。
+別経路のdeployで埋め合わせません。
 
 公開完了とする前に、次を確認してPRまたは運用記録へ残します。
 
 - GitHub CIが成功し、Workers Buildsが対象のmain SHAを処理してDeployまで成功した。
-- CloudflareのDeployment/VersionでWorker `atlasez01`、Version ID、配信率100%を確認した。
+- D1候補記録にmain SHA・Cloudflare Version ID・記事ID・記事版IDが保存された。
+- CloudflareのDeployment/VersionでWorker `atlasez01`、同じVersion ID、配信率100%を確認した。
+- D1公開履歴にCloudflare Version IDとDeployment IDが保存され、記事ごとの公開版IDが一致した。
 - `https://atlasez.org/build-info.json` のcommit SHAが対象main SHAと一致した。
 - 公開トップ、記事、検索、学習地図、数式を認証済みChromeで確認した。
 - 公開記事URL、確認時刻、確認者、対象SHAを記録した。

@@ -24,7 +24,7 @@ test.describe("ゼミプラットフォーム運営ホーム", () => {
     });
   });
 
-  test("運営メニューと現行サイトへの導線を表示する", async ({ page }) => {
+  test("運営メニューと公開サイトへの導線を表示する", async ({ page }) => {
     await page.goto("admin/semi-platform/");
 
     await expect(
@@ -40,7 +40,6 @@ test.describe("ゼミプラットフォーム運営ホーム", () => {
     const expectedLinks = [
       ["ゼミ・タスク管理", "/admin/operations/?project=seminar-platform"],
       ["ゼミ・カレンダー", "/admin/calendar/?project=seminar-platform"],
-      ["日程・交流", "/admin/co-working/?project=seminar-platform"],
       ["運営内自己紹介", "/admin/introductions/?project=seminar-platform"],
       ["マイページ", "/admin/workspace/?project=seminar-platform"],
     ] as const;
@@ -52,8 +51,14 @@ test.describe("ゼミプラットフォーム運営ホーム", () => {
     }
 
     await expect(
-      page.getByRole("link", { name: /現行サイト/ }),
-    ).toHaveAttribute("href", "https://sites.google.com/view/atlasez-semi");
+      page.locator(
+        '.menu-group:first-of-type .project-links a[href="/admin/calendar/?project=seminar-platform"]',
+      ),
+    ).toHaveCount(1);
+
+    await expect(
+      page.locator('.menu-group-links a[href="https://atlasez.org/seminars/"]'),
+    ).toContainText("ゼミ一覧");
   });
 
   test("メニューカードはデスクトップ2列、モバイル1列で揃う", async ({

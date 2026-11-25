@@ -26,7 +26,13 @@ import { memberTaskFilters } from "./lib/member-task-filters";
 import {
   globalAdminPrototypePaths,
   isAdminPagePath,
+  isSeminarReviewPath,
+  SEMINAR_REVIEW_PATH,
 } from "./lib/admin-routes";
+import {
+  adminOperationTaskPath,
+  getAdminApiAccessPolicy,
+} from "./lib/admin-api-access-policy";
 import { applicationAcceptanceEmail } from "./lib/application-acceptance-email";
 import {
   canAccess,
@@ -42,6 +48,7 @@ import {
 } from "./lib/date-time";
 import { dispatchDueTaskReminders } from "./lib/task-reminder-delivery";
 import { dispatchApplicationEmails } from "./lib/application-email-delivery";
+import { handleSeminarApi } from "./lib/seminar-api";
 import {
   deliverDiscordNotifications,
   deliverProgressDiscordNotification,
@@ -57,6 +64,10 @@ import { tikzPackageHelp } from "./lib/tikz-policy.mjs";
 import { parse as parseYaml } from "yaml";
 import { githubToken } from "./editorial-publication-github";
 import { EDITORIAL_STATIC_CATEGORIES } from "./lib/editorial-static-taxonomy";
+import {
+  isProfileImageDataUrl,
+  profileImageMaxStoredUrlLength,
+} from "./lib/profile-image";
 // ローカルWrangler開発時だけ同一Workerのexportをフォールバックとして使う。
 // Preview/本番は外部の専用Worker bindingを必ず経由する。
 export { EditorialCollaborationRoom } from "./editorial-collaboration-worker";
@@ -114,6 +125,10 @@ interface Env {
   GITHUB_REPOSITORY?: string;
   /** 学習サイトの配信確認先。 */
   PUBLIC_SITE_ORIGIN?: string;
+  /** 公開候補ビルド通知のHMAC署名鍵。 */
+  EDITORIAL_RELEASE_WEBHOOK_SECRET?: string;
+  /** 公開WorkerのDeployment照合用読み取り専用Token。 */
+  CLOUDFLARE_WORKERS_READ_TOKEN?: string;
   /** 分野別・全体進捗の通知用。値はCloudflare Secretにのみ保存する。 */
   DISCORD_ATLAS_WEBHOOK_URL?: string;
   DISCORD_PROGRESS_WEBHOOK_URL?: string;
@@ -187,9 +202,8 @@ type LatexEngine =
 type EditorialDocument = {
   id: string;
   creator_kind: "person" | "organization";
-  document_kind: "canonical" | "update-proposal";
-  base_document_id: string | null;
-  base_document_updated_at: string | null;
+  current_version_id: string | null;
+  published_version_id: string | null;
   source_article_id: string | null;
   subject: string;
   category: string;
@@ -1442,8 +1456,24 @@ async function getUserStageForEmail(
   };
 }
 
-/** 共通プロフィールだけは、受入済みメンバー本人にも確認させる。 */
+/** 共通プロフィールだけは、受け入れ済みメンバー本人にも確認させる。 */
 async function getMemberOperationScope(
+  request: Request,
+  env: Env,
+): Promise<AdminScope | Response> {
+  const cached = memberOperationScopeCache.get(request);
+  if (cached) return cached;
+  const pending = resolveMemberOperationScope(request, env);
+  memberOperationScopeCache.set(request, pending);
+  return pending;
+}
+
+const memberOperationScopeCache = new WeakMap<
+  Request,
+  Promise<AdminScope | Response>
+>();
+
+async function resolveMemberOperationScope(
   request: Request,
   env: Env,
 ): Promise<AdminScope | Response> {
@@ -1464,6 +1494,22 @@ async function getMemberOperationScope(
 }
 
 async function getMemberProfileScope(
+  request: Request,
+  env: Env,
+): Promise<AdminScope | Response> {
+  const cached = memberProfileScopeCache.get(request);
+  if (cached) return cached;
+  const pending = resolveMemberProfileScope(request, env);
+  memberProfileScopeCache.set(request, pending);
+  return pending;
+}
+
+const memberProfileScopeCache = new WeakMap<
+  Request,
+  Promise<AdminScope | Response>
+>();
+
+async function resolveMemberProfileScope(
   request: Request,
   env: Env,
 ): Promise<AdminScope | Response> {
@@ -1755,11 +1801,50 @@ async function getPrototypeDeveloperScope(
   request: Request,
   env: Env,
 ): Promise<AdminScope | Response> {
+  const cached = prototypeDeveloperScopeCache.get(request);
+  if (cached) return cached;
+  const pending = resolvePrototypeDeveloperScope(request, env);
+  prototypeDeveloperScopeCache.set(request, pending);
+  return pending;
+}
+
+const prototypeDeveloperScopeCache = new WeakMap<
+  Request,
+  Promise<AdminScope | Response>
+>();
+
+async function resolvePrototypeDeveloperScope(
+  request: Request,
+  env: Env,
+): Promise<AdminScope | Response> {
   const identity = await getAuthenticatedEmail(request, env);
   if (isResponse(identity)) return identity;
   if (identity.toLowerCase() !== primaryAdminEmail(env))
     return json({ error: "この試作ページは開発者のみ利用できます。" }, 403);
   return getGlobalAdminScope(request, env);
+}
+
+async function enforceAdminApiAccessPolicy(
+  request: Request,
+  env: Env,
+  policy: ReturnType<typeof getAdminApiAccessPolicy>,
+): Promise<Response | null> {
+  let scope: AdminScope | Response | null = null;
+  switch (policy) {
+    case "admin":
+      scope = await getAdminScope(request, env);
+      break;
+    case "member":
+      scope = await getMemberOperationScope(request, env);
+      break;
+    case "profile":
+      scope = await getMemberProfileScope(request, env);
+      break;
+    case "none":
+    case "dedicated":
+      return null;
+  }
+  return scope && isResponse(scope) ? scope : null;
 }
 
 const isSameOrigin = (request: Request) => {
@@ -1888,6 +1973,9 @@ async function listArticleReports(
   if (requested !== "all" && !status)
     return json({ error: "状態を確認してください。" }, 400);
   const searchParams = new URL(request.url).searchParams;
+  const articleId = searchParams.get("articleId")?.trim() ?? "";
+  if (articleId.length > 200)
+    return json({ error: "記事IDを確認してください。" }, 400);
   const requestedLimit = Number(searchParams.get("limit") ?? "100");
   const pageLimit = Number.isFinite(requestedLimit)
     ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 200)
@@ -1918,6 +2006,10 @@ async function listArticleReports(
   if (status) {
     filters.push("status = ?");
     values.push(status);
+  }
+  if (articleId) {
+    filters.push("article_id = ?");
+    values.push(articleId);
   }
   if (cursorRank !== null && cursorCreatedAt && cursorId) {
     filters.push(
@@ -2327,6 +2419,7 @@ type AdminAuditAction =
   | "article_approved"
   | "article_published"
   | "article_unpublished"
+  | "feedback_request_withdrawn"
   | "permission_granted"
   | "permission_replaced"
   | "permission_revoked"
@@ -2369,6 +2462,7 @@ const adminAuditActionLabel = (action: AdminAuditAction | string) => ({
   article_approved: "記事を承認",
   article_published: "記事を公開",
   article_unpublished: "記事の公開を取り消し",
+  feedback_request_withdrawn: "フィードバック依頼を取り下げ",
   permission_granted: "権限を付与",
   permission_replaced: "権限を変更",
   permission_revoked: "権限を削除",
@@ -2380,7 +2474,7 @@ const adminAuditActionLabel = (action: AdminAuditAction | string) => ({
   task_restored: "タスクを復元",
   task_marked_test_data: "タスクを試験データに設定",
   task_unmarked_test_data: "タスクの試験データ指定を解除",
-  member_intake_updated: "受入・初回フォローを更新",
+  member_intake_updated: "応募者・メンバー対応記録を更新",
   member_procedure: "休止・退会・再開の手続きを更新",
   task_workspace_updated: "タスク詳細・引き継ぎを更新",
   taxonomy_created: "分野・カテゴリを追加",
@@ -2396,6 +2490,36 @@ const adminAuditActionLabel = (action: AdminAuditAction | string) => ({
   workflow_transition: "状態を変更",
 }[action] ?? action);
 
+const adminAuditStatement = (
+  env: Env,
+  actorEmail: string,
+  action: AdminAuditAction,
+  targetType: AdminAuditTarget,
+  targetId: string,
+  targetLabel: string,
+  summary: string,
+  details: Record<string, unknown> = {},
+  onlyAfterSuccessfulStatement = false,
+) => {
+  const insert = `INSERT INTO admin_audit_log
+     (id,actor_email,action,target_type,target_id,target_label,summary,details_json,created_at)`;
+  return env.REPORTS.prepare(
+    onlyAfterSuccessfulStatement
+      ? `${insert} SELECT ?,?,?,?,?,?,?,?,? WHERE changes()=1`
+      : `${insert} VALUES (?,?,?,?,?,?,?,?,?)`,
+  ).bind(
+    crypto.randomUUID(),
+    actorEmail,
+    action,
+    targetType,
+    targetId,
+    targetLabel,
+    summary,
+    JSON.stringify(details),
+    new Date().toISOString(),
+  );
+};
+
 const recordAdminAudit = async (
   env: Env,
   actorEmail: string,
@@ -2407,24 +2531,16 @@ const recordAdminAudit = async (
   details: Record<string, unknown> = {},
 ) => {
   // 監査記録の失敗で本来の操作を失敗させない。旧D1にも安全にデプロイできる。
-  await env.REPORTS.prepare(
-    `INSERT INTO admin_audit_log
-     (id,actor_email,action,target_type,target_id,target_label,summary,details_json,created_at)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
-  )
-    .bind(
-      crypto.randomUUID(),
-      actorEmail,
-      action,
-      targetType,
-      targetId,
-      targetLabel,
-      summary,
-      JSON.stringify(details),
-      new Date().toISOString(),
-    )
-    .run()
-    .catch(() => undefined);
+  await adminAuditStatement(
+    env,
+    actorEmail,
+    action,
+    targetType,
+    targetId,
+    targetLabel,
+    summary,
+    details,
+  ).run().catch(() => undefined);
 };
 
 const workflowEventStatement = (
@@ -2477,6 +2593,19 @@ type WorkflowTransition = {
   label: string;
   requiredRole: "assignee" | "manager" | "reviewer";
 };
+
+const FEEDBACK_REQUEST_WITHDRAWAL_ACTION = "feedback_request_withdrawn";
+
+const isFeedbackRequestWithdrawn = async (env: Env, taskId: string) =>
+  Boolean(
+    await env.REPORTS.prepare(
+      `SELECT 1 AS withdrawn FROM workflow_transition_events
+        WHERE entity_type='task' AND entity_id=?
+          AND json_extract(metadata_json, '$.action')=? LIMIT 1`,
+    )
+      .bind(taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION)
+      .first<{ withdrawn: number }>(),
+  );
 
 /**
  * 状態遷移の正本。画面ごとに許可状態を再定義せず、APIと管理画面が
@@ -2649,6 +2778,8 @@ async function transitionTaskState(
   if (isResponse(project)) return project;
   if (!scope.isManager && !canManageProject && !taskAssignedTo(task.assignee_email, scope.email, task.task_kind) && task.created_by.toLowerCase() !== scope.email.toLowerCase())
     return json({ error: workflowTransitionPolicyError("assignee"), code: "FORBIDDEN_TRANSITION" }, 403);
+  if (task.task_kind === "feedback" && await isFeedbackRequestWithdrawn(env, taskId))
+    return json({ error: "取り下げ済みのフィードバック依頼は再開できません。", code: "FEEDBACK_REQUEST_WITHDRAWN" }, 409);
   if (replay)
     return json({ ok: true, replayed: true, transition: { entityType: "task", entityId: replay.entity_id, fromState: replay.from_state, toState: replay.to_state, createdAt: replay.created_at } });
   if (task.status !== fromState)
@@ -3026,9 +3157,16 @@ async function developerDiagnostics(
     checks.push({ id: "database", label: "運用データベース", status: "error", detail: "接続に失敗しました", durationMs: Number((error as { durationMs?: number }).durationMs ?? 0) });
   }
 
-  const requiredTables = ["editorial_tasks", "editorial_documents", "admin_audit_log"];
+  const requiredTables = [
+    "editorial_tasks",
+    "editorial_documents",
+    "admin_audit_log",
+    "editorial_release_candidates",
+    "editorial_release_candidate_articles",
+    "editorial_publication_history",
+  ];
   try {
-    const schema = await timed(() => env.REPORTS.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?)").bind(...requiredTables).all<{ name: string }>());
+    const schema = await timed(() => env.REPORTS.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name IN (${requiredTables.map(() => "?").join(",")})`).bind(...requiredTables).all<{ name: string }>());
     const found = new Set((schema.value.results ?? []).map((row) => row.name));
     const missing = requiredTables.filter((name) => !found.has(name));
     checks.push({ id: "schema", label: "管理データのスキーマ", status: missing.length ? "warning" : "ok", detail: missing.length ? `未適用のテーブルがあります：${missing.join(", ")}` : "主要テーブルを確認しました", durationMs: schema.durationMs });
@@ -3076,6 +3214,8 @@ async function developerDiagnostics(
         env.GITHUB_APP_PRIVATE_KEY?.trim()) ||
         env.GITHUB_PUBLISH_TOKEN?.trim(),
     ),
+    releaseWebhook: Boolean(env.EDITORIAL_RELEASE_WEBHOOK_SECRET?.trim()),
+    cloudflareDeploymentRead: Boolean(env.CLOUDFLARE_WORKERS_READ_TOKEN?.trim()),
     discord: Boolean(env.DISCORD_BOT_TOKEN?.trim() && env.DISCORD_GUILD_ID?.trim()),
     email: Boolean(env.RESEND_API_KEY?.trim() && env.EMAIL_FROM?.trim()),
     publicOrigin: Boolean(env.PUBLIC_SITE_ORIGIN?.trim()),
@@ -3084,7 +3224,8 @@ async function developerDiagnostics(
     id: "bindings",
     label: "外部連携設定値",
     status:
-      configured.collaboration && configured.github && configured.publicOrigin
+      configured.collaboration && configured.github && configured.publicOrigin &&
+      configured.releaseWebhook && configured.cloudflareDeploymentRead
         ? "ok"
         : "warning",
     detail: `${Object.entries(configured)
@@ -3814,6 +3955,368 @@ async function createReportAdminPermission(
   return json({ ok: true, provisioning }, 201);
 }
 
+type LegacyMemberMigrationInput = {
+  email: string;
+  subjects: string[];
+  projectManager: boolean;
+  sourceNote: string;
+  expected?: LegacyMemberMigrationSnapshot;
+};
+
+type LegacyMemberMigrationSnapshot = {
+  subjects: string[];
+  membershipRole: string | null;
+  managerSource: string | null;
+  managerRevision: number | null;
+  managerReviewRequired: boolean;
+  hasPublicIntro: boolean;
+  hasProjectIntro: boolean;
+};
+
+/**
+ * Import a roster of people already admitted through another Atlasez workflow.
+ * This path deliberately does not inspect or contact Discord and leaves self-intros
+ * for each member to complete later.
+ */
+async function migrateLegacyMembers(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  const scope = await getGlobalAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  if (!isSameOrigin(request))
+    return json({ error: "この送信元からは受け付けられません。" }, 403);
+  if (request.headers.get("content-type")?.includes("application/json") !== true)
+    return json({ error: "JSON形式で送信してください。" }, 415);
+
+  const payload = (await request.json().catch(() => null)) as {
+    mode?: unknown;
+    batchId?: unknown;
+    confirmedExistingMembers?: unknown;
+    members?: unknown;
+  } | null;
+  const mode = payload?.mode;
+  const batchId = text(payload?.batchId, 64).trim();
+  if (mode !== "preview" && mode !== "apply")
+    return json({ error: "プレビューまたは移行実行を指定してください。" }, 400);
+  if (!/^[0-9a-f-]{36}$/i.test(batchId))
+    return json({ error: "移行バッチIDを確認してください。" }, 400);
+  if (payload?.confirmedExistingMembers !== true)
+    return json(
+      { error: "対象者が既存の運営メンバーであることを確認してください。" },
+      400,
+    );
+  if (!Array.isArray(payload?.members) || payload.members.length === 0)
+    return json({ error: "移行するメンバーを入力してください。" }, 400);
+  if (payload.members.length > 50)
+    return json({ error: "一度に移行できるのは50人までです。" }, 400);
+
+  const inputs: LegacyMemberMigrationInput[] = [];
+  const seen = new Set<string>();
+  for (const raw of payload.members) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      return json({ error: "移行データの形式を確認してください。" }, 400);
+    const row = raw as Record<string, unknown>;
+    const email = text(row.email, 320).trim().toLowerCase();
+    const sourceNote =
+      typeof row.sourceNote === "string" ? row.sourceNote.trim() : "";
+    const subjects = Array.isArray(row.subjects)
+      ? Array.from(
+          new Set(
+            row.subjects
+              .map((subject) => text(subject, 80).trim().toLowerCase())
+              .filter(Boolean),
+          ),
+        )
+      : [];
+    const projectManager = row.projectManager;
+    if (
+      !EMAIL_PATTERN.test(email) ||
+      !sourceNote ||
+      sourceNote.length > 500 ||
+      typeof projectManager !== "boolean" ||
+      (!subjects.length && !projectManager) ||
+      subjects.some(
+        (subject) => subject !== "*" && !SUBJECT_SLUG.test(subject),
+      ) ||
+      (subjects.includes("*") && subjects.length > 1)
+    )
+      return json(
+        { error: "メールアドレス・担当範囲・既存参加の確認根拠を確認してください。" },
+        400,
+      );
+    if (seen.has(email))
+      return json({ error: `移行データにメールアドレスが重複しています: ${email}` }, 400);
+    seen.add(email);
+    if (mode === "apply") {
+      const expected = row.expected as Partial<LegacyMemberMigrationSnapshot> | undefined;
+      if (
+        !expected ||
+        !Array.isArray(expected.subjects) ||
+        !expected.subjects.every((subject) => typeof subject === "string") ||
+        !(expected.membershipRole === null || typeof expected.membershipRole === "string") ||
+        !(expected.managerSource === null || typeof expected.managerSource === "string") ||
+        !(expected.managerRevision === null || Number.isSafeInteger(expected.managerRevision)) ||
+        typeof expected.managerReviewRequired !== "boolean" ||
+        typeof expected.hasPublicIntro !== "boolean" ||
+        typeof expected.hasProjectIntro !== "boolean"
+      )
+        return json({ error: "プレビュー結果がありません。先に最新状態をプレビューしてください。" }, 400);
+    }
+    inputs.push({
+      email,
+      subjects,
+      projectManager,
+      sourceNote,
+      ...(mode === "apply" ? { expected: row.expected as LegacyMemberMigrationSnapshot } : {}),
+    });
+  }
+
+  const project = await env.REPORTS.prepare(
+    "SELECT id FROM atlasez_projects WHERE id='atlas'",
+  ).first<{ id: string }>();
+  if (!project)
+    return json({ error: "移行先のアトラスプロジェクトを確認できません。" }, 409);
+
+  const readSnapshot = async (email: string): Promise<LegacyMemberMigrationSnapshot> => {
+    const [permissionRows, membership, managerGrant, profile, projectProfile] =
+      await Promise.all([
+        env.REPORTS.prepare(
+          "SELECT subject FROM report_admin_permissions WHERE lower(email)=lower(?) ORDER BY subject",
+        ).bind(email).all<{ subject: string }>(),
+        env.REPORTS.prepare(
+          "SELECT role FROM atlasez_project_memberships WHERE project_id='atlas' AND lower(email)=lower(?)",
+        ).bind(email).first<{ role: string }>(),
+        env.REPORTS.prepare(
+          `SELECT source,revision,review_required FROM atlasez_project_manager_grants
+           WHERE project_id='atlas' AND lower(email)=lower(?)`,
+        ).bind(email).first<{ source: string; revision: number; review_required: number }>(),
+        env.REPORTS.prepare(
+          `SELECT length(trim(COALESCE(bio,''))) AS complete FROM editorial_member_profiles
+           WHERE lower(email)=lower(?)`,
+        ).bind(email).first<{ complete: number }>(),
+        env.REPORTS.prepare(
+          `SELECT 1 AS complete FROM editorial_project_member_profiles
+           WHERE project_id='atlas' AND lower(email)=lower(?)
+             AND length(trim(COALESCE(internal_bio,'')))>0 LIMIT 1`,
+        ).bind(email).first<{ complete: number }>(),
+      ]);
+    return {
+      subjects: (permissionRows.results ?? []).map((entry) => entry.subject).sort(),
+      membershipRole: membership?.role ?? null,
+      managerSource: managerGrant?.source ?? null,
+      managerRevision: managerGrant ? Number(managerGrant.revision) : null,
+      managerReviewRequired: Boolean(managerGrant?.review_required),
+      hasPublicIntro: Number(profile?.complete ?? 0) > 0,
+      hasProjectIntro: Boolean(projectProfile?.complete),
+    };
+  };
+  const snapshots: LegacyMemberMigrationSnapshot[] = [];
+  for (const input of inputs) {
+    if (!(await isAtlasMemberActive(env, input.email)))
+      return json(
+        { error: `${input.email} は活動停止中またはアーカイブ済みです。先に状態を確認してください。`, code: "MEMBER_INACTIVE" },
+        409,
+      );
+    snapshots.push(await readSnapshot(input.email));
+  }
+
+  if (mode === "preview")
+    return json({
+      ok: true,
+      batchId,
+      members: inputs.map((input, index) => {
+        const current = snapshots[index];
+        const subjectsAfter = Array.from(
+          new Set([...current.subjects, ...input.subjects]),
+        ).sort();
+        const effectiveManager = Boolean(
+          input.projectManager ||
+          subjectsAfter.includes("*") ||
+          current.membershipRole === "manager" ||
+          current.managerSource === "explicit" ||
+          current.managerSource === "legacy",
+        );
+        return {
+          ...input,
+          expected: current,
+          addedSubjects: input.subjects.filter(
+            (subject) => !current.subjects.includes(subject),
+          ),
+          existingSubjects: current.subjects,
+          resultingSubjects: subjectsAfter,
+          existingProjectRole: current.membershipRole,
+          resultingProjectRole: effectiveManager ? "manager" : "member",
+          hasPublicIntro: current.hasPublicIntro,
+          hasProjectIntro: current.hasProjectIntro,
+          discordSync: "skipped",
+        };
+      }),
+    });
+
+  const stale = inputs
+    .map((input, index) => ({ input, current: snapshots[index] }))
+    .filter(({ input, current }) => {
+      const expected = input.expected;
+      return !expected ||
+        JSON.stringify(expected.subjects ?? []) !== JSON.stringify(current.subjects) ||
+        (expected.membershipRole ?? null) !== current.membershipRole ||
+        (expected.managerSource ?? null) !== current.managerSource ||
+        (expected.managerRevision ?? null) !== current.managerRevision ||
+        Boolean(expected.managerReviewRequired) !== current.managerReviewRequired ||
+        Boolean(expected.hasPublicIntro) !== current.hasPublicIntro ||
+        Boolean(expected.hasProjectIntro) !== current.hasProjectIntro;
+    });
+  if (stale.length)
+    return json(
+      {
+        error: "プレビュー後に対象の状態が変わりました。最新状態を再読み込みして確認してください。",
+        code: "STALE_PREVIEW",
+        emails: stale.map(({ input }) => input.email),
+      },
+      409,
+    );
+
+  const results: Array<Record<string, unknown>> = [];
+  for (let index = 0; index < inputs.length; index += 1) {
+    const input = inputs[index];
+    const current = snapshots[index];
+    const subjectsAfter = Array.from(
+      new Set([...current.subjects, ...input.subjects]),
+    ).sort();
+    const addedSubjects = input.subjects.filter(
+      (subject) => !current.subjects.includes(subject),
+    );
+    const effectiveManager = Boolean(
+      input.projectManager ||
+      subjectsAfter.includes("*") ||
+      current.membershipRole === "manager" ||
+      current.managerSource === "explicit" ||
+      current.managerSource === "legacy",
+    );
+    const shouldAppointManager = input.projectManager && (
+      current.membershipRole !== "manager" ||
+      current.managerSource !== "explicit" ||
+      current.managerReviewRequired
+    );
+    const shouldDeriveManager = subjectsAfter.includes("*") && !current.managerSource;
+    const needsChange = Boolean(
+      addedSubjects.length ||
+      !current.membershipRole ||
+      (effectiveManager && current.membershipRole !== "manager") ||
+      shouldAppointManager ||
+      shouldDeriveManager
+    );
+    if (!needsChange) {
+      results.push({
+        email: input.email,
+        status: "unchanged",
+        addedSubjects: [],
+        projectManager: effectiveManager,
+        discordSync: "skipped",
+      });
+      continue;
+    }
+
+    const now = new Date().toISOString();
+    const statements: D1PreparedStatement[] = [
+      ...addedSubjects.map((subject) =>
+        env.REPORTS.prepare(
+          "INSERT OR IGNORE INTO report_admin_permissions(email,subject) VALUES (?,?)",
+        ).bind(input.email, subject),
+      ),
+      env.REPORTS.prepare(
+        `INSERT INTO atlasez_project_memberships(project_id,email,role,joined_at)
+         VALUES ('atlas',?,?,?)
+         ON CONFLICT(project_id,email) DO UPDATE SET role='manager'
+         WHERE excluded.role='manager' AND atlasez_project_memberships.role!='manager'`,
+      ).bind(input.email, effectiveManager ? "manager" : "member", now),
+    ];
+    if (shouldAppointManager)
+      statements.push(
+        env.REPORTS.prepare(
+          `INSERT INTO atlasez_project_manager_grants
+           (project_id,email,source,granted_by,granted_at,revision,review_required)
+           VALUES ('atlas',?,'explicit',?,?,1,0)
+           ON CONFLICT(project_id,email) DO UPDATE SET source='explicit',granted_by=excluded.granted_by,
+             granted_at=excluded.granted_at,revision=atlasez_project_manager_grants.revision+1,
+             review_required=0
+           WHERE atlasez_project_manager_grants.source!='explicit'
+             OR atlasez_project_manager_grants.review_required!=0`,
+        ).bind(input.email, scope.email, now),
+      );
+    if (shouldDeriveManager)
+      statements.push(
+        ...permissionDerivedAtlasManagerStatements(
+          env.REPORTS,
+          input.email,
+          true,
+          scope.email,
+        ),
+      );
+    statements.push(
+      env.REPORTS.prepare(
+        `INSERT INTO admin_audit_log
+         (id,actor_email,action,target_type,target_id,target_label,summary,details_json,created_at)
+         VALUES (?,?,'member_updated','member',?,?,? ,?,?)`,
+      ).bind(
+        crypto.randomUUID(),
+        scope.email,
+        input.email,
+        input.email,
+        "既存運営メンバーを移行",
+        JSON.stringify({
+          migrationType: "legacy_member_import",
+          batchId,
+          sourceNote: input.sourceNote,
+          beforeSubjects: current.subjects,
+          afterSubjects: subjectsAfter,
+          beforeProjectRole: current.membershipRole,
+          afterProjectRole: effectiveManager ? "manager" : "member",
+          managerAppointment: input.projectManager ? "explicit" : "preserved-or-not-requested",
+          profileIntroPending: !current.hasPublicIntro || !current.hasProjectIntro,
+          discordSync: "skipped",
+        }),
+        now,
+      ),
+    );
+
+    try {
+      await env.REPORTS.batch(statements);
+    } catch {
+      results.push({
+        email: input.email,
+        status: "failed",
+        error: "移行を保存できませんでした。状態を確認して再プレビューしてください。",
+      });
+      continue;
+    }
+    if (addedSubjects.length)
+      await recordPermissionAudit(
+        env,
+        scope.email,
+        input.email,
+        "grant",
+        current.subjects,
+        subjectsAfter,
+      );
+    results.push({
+      email: input.email,
+      status: "migrated",
+      addedSubjects,
+      projectManager: effectiveManager,
+      profileIntroPending: !current.hasPublicIntro || !current.hasProjectIntro,
+      discordSync: "skipped",
+    });
+  }
+  return json({
+    ok: results.every((result) => result.status !== "failed"),
+    batchId,
+    results,
+    discordSync: "skipped",
+  });
+}
+
 async function updateReportAdminPermissions(
   request: Request,
   env: Env,
@@ -4358,6 +4861,9 @@ async function listArchivedAtlasMembers(
         "SELECT COUNT(*) AS count FROM atlasez_member_applications WHERE lower(email)=lower(?)",
       ).bind(email).first<{ count: number }>(),
     ]);
+    const pendingProfileChange = await env.REPORTS.prepare(
+      "SELECT 1 AS found FROM editorial_member_profile_change_requests WHERE lower(email)=lower(?) AND status='pending' LIMIT 1",
+    ).bind(email).first<{ found: number }>();
     if (!profile && !memberships.results?.length && !permissions.results?.length && !workflowRoles.results?.length && !genreRoles.results?.length && !lifecycle)
       return json({ error: "運営メンバーが見つかりません。" }, 404);
     const history = [
@@ -4391,6 +4897,7 @@ async function listArchivedAtlasMembers(
           affiliationType: profile.affiliation_type, country: profile.country,
           timezone: profile.timezone, updatedAt: profile.updated_at,
         } : null,
+        profileChangePending: Boolean(pendingProfileChange),
         memberships: memberships.results ?? [],
         permissions: permissions.results ?? [],
         workflowRoles: workflowRoles.results ?? [],
@@ -4422,6 +4929,167 @@ async function listArchivedAtlasMembers(
     avatar_url: string;
   }>();
   return json({ members: result.results ?? [] });
+}
+
+async function updateAtlasMemberProfile(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  const scope = await getGlobalAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  if (!isSameOrigin(request))
+    return json({ error: "この送信元からは受け付けられません。" }, 403);
+  if (request.headers.get("content-type")?.includes("application/json") !== true)
+    return json({ error: "JSON形式で送信してください。" }, 415);
+
+  const payload = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+  const email = text(payload?.email, 320).toLowerCase();
+  if (!payload || !EMAIL_PATTERN.test(email))
+    return json({ error: "メンバーを確認してください。" }, 400);
+  if (!Object.prototype.hasOwnProperty.call(payload, "expectedUpdatedAt") ||
+    (payload.expectedUpdatedAt !== null && (
+      typeof payload.expectedUpdatedAt !== "string" || payload.expectedUpdatedAt.length > 80
+    )))
+    return json({ error: "表示中の情報が古くなっています。再読み込みしてください。" }, 400);
+
+  const fields = [
+    ["displayName", 120],
+    ["university", 200],
+    ["year", 80],
+    ["interests", 800],
+    ["affiliationType", 80],
+    ["country", 120],
+    ["timezone", 80],
+    ["bio", 4_000],
+  ] as const;
+  if (fields.some(([key, maximum]) =>
+    typeof payload[key] !== "string" || (payload[key] as string).length > maximum))
+    return json({ error: "プロフィールの入力内容を確認してください。" }, 400);
+  if (typeof payload.avatarUrl !== "string")
+    return json({ error: "プロフィール画像を確認してください。" }, 400);
+  const submittedAvatarUrl = payload.avatarUrl.trim();
+  if (submittedAvatarUrl.length > profileImageMaxStoredUrlLength)
+    return json(
+      {
+        error:
+          "画像の保存容量を超えています。切り抜きや縮小を調整してから保存してください。",
+      },
+      413,
+    );
+
+  const profile = {
+    displayName: normalizedText(payload.displayName, 120),
+    university: normalizedText(payload.university, 200),
+    year: normalizedText(payload.year, 80),
+    interests: normalizedText(payload.interests, 800),
+    affiliationType: normalizedText(payload.affiliationType, 80),
+    country: normalizedText(payload.country, 120),
+    timezone: normalizedText(payload.timezone, 80) || "Asia/Tokyo",
+    bio: text(payload.bio, 4_000),
+    avatarUrl: submittedAvatarUrl,
+  };
+  if (!profile.displayName)
+    return json({ error: "表示名を入力してください。" }, 400);
+  if (!validTimeZone(profile.timezone))
+    return json({ error: "タイムゾーンを確認してください。" }, 400);
+  if (profile.avatarUrl &&
+    ((!/^https:\/\//i.test(profile.avatarUrl) &&
+      !isProfileImageDataUrl(profile.avatarUrl)) ||
+      /["'<>]/.test(profile.avatarUrl)))
+    return json({ error: "プロフィール画像はPNG・JPEG・WebP・GIF、またはhttps://画像URLを指定してください。" }, 400);
+
+  const archivedError = await archivedMemberError(env, email);
+  if (archivedError) return archivedError;
+  if (!await isAtlasMemberActive(env, email))
+    return json({ error: "このメンバーは運営を休止中です。再開後に編集してください。" }, 409);
+  const activeMember = await env.REPORTS.prepare(
+    `SELECT 1 AS found FROM report_admin_permissions WHERE lower(email)=lower(?)
+     UNION ALL SELECT 1 AS found FROM atlasez_project_memberships WHERE project_id='atlas' AND lower(email)=lower(?)
+     UNION ALL SELECT 1 AS found FROM editorial_workflow_roles WHERE lower(email)=lower(?)
+     UNION ALL SELECT 1 AS found FROM admin_genre_role_assignments WHERE lower(email)=lower(?)
+     UNION ALL SELECT 1 AS found FROM atlasez_project_manager_grants WHERE project_id='atlas' AND lower(email)=lower(?)
+     UNION ALL SELECT 1 AS found FROM admin_member_lifecycle WHERE lower(email)=lower(?) AND status='active'
+     LIMIT 1`,
+  ).bind(email, email, email, email, email, email).first<{ found: number }>();
+  if (!activeMember)
+    return json({ error: "運営メンバーが見つかりません。" }, 404);
+
+  const pendingProfileChange = await env.REPORTS.prepare(
+    "SELECT 1 AS found FROM editorial_member_profile_change_requests WHERE lower(email)=lower(?) AND status='pending' LIMIT 1",
+  ).bind(email).first<{ found: number }>();
+  if (pendingProfileChange)
+    return json({ error: "本人からのプロフィール変更申請が審査中です。先に申請を確認してください。", code: "PROFILE_CHANGE_PENDING" }, 409);
+
+  const current = await env.REPORTS.prepare(
+    `SELECT display_name,avatar_url,bio,university,year,interests,affiliation_type,country,timezone,updated_at
+     FROM editorial_member_profiles WHERE lower(email)=lower(?) LIMIT 1`,
+  ).bind(email).first<{
+    display_name: string; avatar_url: string; bio: string; university: string;
+    year: string; interests: string; affiliation_type: string; country: string;
+    timezone: string; updated_at: string;
+  }>();
+  const currentUpdatedAt = current?.updated_at ?? null;
+  if (payload.expectedUpdatedAt !== currentUpdatedAt)
+    return json({ error: "プロフィールが先に更新されています。再読み込みしてから編集してください。", code: "STALE_MEMBER_PROFILE" }, 409);
+
+  const updatedFields = [
+    ...(current?.display_name !== profile.displayName ? ["displayName"] : []),
+    ...(current?.avatar_url !== profile.avatarUrl ? ["avatarUrl"] : []),
+    ...(current?.university !== profile.university ? ["university"] : []),
+    ...(current?.year !== profile.year ? ["year"] : []),
+    ...(current?.interests !== profile.interests ? ["interests"] : []),
+    ...(current?.affiliation_type !== profile.affiliationType ? ["affiliationType"] : []),
+    ...(current?.country !== profile.country ? ["country"] : []),
+    ...(current?.timezone !== profile.timezone ? ["timezone"] : []),
+    ...(current?.bio !== profile.bio ? ["bio"] : []),
+  ];
+  if (updatedFields.length === 0)
+    return json({ ok: true, updatedAt: currentUpdatedAt, updatedFields });
+
+  const now = new Date(Math.max(
+    Date.now(),
+    (Date.parse(currentUpdatedAt ?? "") || 0) + 1,
+  )).toISOString();
+  const result = current
+    ? await env.REPORTS.prepare(
+      `UPDATE editorial_member_profiles SET display_name=?,avatar_url=?,bio=?,university=?,year=?,interests=?,
+         affiliation_type=?,country=?,timezone=?,updated_at=?
+       WHERE lower(email)=lower(?) AND updated_at=?
+         AND NOT EXISTS (
+           SELECT 1 FROM editorial_member_profile_change_requests
+           WHERE lower(email)=lower(?) AND status='pending'
+         )`,
+    ).bind(profile.displayName, profile.avatarUrl, profile.bio, profile.university, profile.year,
+      profile.interests, profile.affiliationType, profile.country, profile.timezone, now, email, currentUpdatedAt, email).run()
+    : await env.REPORTS.prepare(
+      `INSERT OR IGNORE INTO editorial_member_profiles
+       (email,display_name,avatar_url,bio,university,year,interests,affiliation_type,country,timezone,updated_at)
+       SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (
+         SELECT 1 FROM editorial_member_profile_change_requests
+         WHERE lower(email)=lower(?) AND status='pending'
+       )`,
+    ).bind(email, profile.displayName, profile.avatarUrl, profile.bio, profile.university, profile.year,
+      profile.interests, profile.affiliationType, profile.country, profile.timezone, now, email).run();
+  if (Number(result.meta?.changes ?? 0) !== 1) {
+    const pendingAfterRace = await env.REPORTS.prepare(
+      "SELECT 1 AS found FROM editorial_member_profile_change_requests WHERE lower(email)=lower(?) AND status='pending' LIMIT 1",
+    ).bind(email).first<{ found: number }>();
+    if (pendingAfterRace)
+      return json({ error: "本人からのプロフィール変更申請が審査中です。先に申請を確認してください。", code: "PROFILE_CHANGE_PENDING" }, 409);
+    return json({ error: "プロフィールが先に更新されています。再読み込みしてから編集してください。", code: "STALE_MEMBER_PROFILE" }, 409);
+  }
+
+  await recordAdminAudit(
+    env,
+    scope.email,
+    "member_updated",
+    "member",
+    email,
+    email,
+    "運営メンバーのプロフィールを更新",
+    { updatedFields },
+  );
+  return json({ ok: true, updatedAt: now, updatedFields });
 }
 
 type GenreRoleCatalogRow = {
@@ -4864,7 +5532,7 @@ async function editorialTaxonomyCatalog(
       if (Number(busyDocuments?.count ?? 0) > 0 || Number(publicCatalog?.count ?? 0) > 0)
         return json(
           {
-            error: "公開済みまたは公開処理中の記事があるためIDを変更できません。先に公開を取り消すか、更新案を完了してください。",
+            error: "公開済みまたは公開処理中の記事があるためIDを変更できません。先に公開を取り消してください。",
             code: "TAXONOMY_ID_IN_USE",
           },
           409,
@@ -5298,7 +5966,7 @@ async function editorialOutlineEntries(request: Request, env: Env): Promise<Resp
       return json(
         {
           error:
-            "公開済みまたは公開処理中の記事は、目次から分野・カテゴリ・URL名を変更できません。先に公開を取り消すか、更新案を作成してください。",
+            "公開済みまたは公開処理中の記事は、目次から分野・カテゴリ・URL名を変更できません。先に公開を取り消してください。",
           code: "LINKED_ARTICLE_PUBLISHED",
         },
         409,
@@ -5641,7 +6309,7 @@ async function updateMemberDiscordRoles(
   return json({ ok: true, provisioning });
 }
 
-const editorialDocumentSelect = `SELECT id, creator_kind, document_kind, base_document_id, base_document_updated_at, source_article_id, subject, category, locale, slug,
+const editorialDocumentSelect = `SELECT id, creator_kind, current_version_id, published_version_id, source_article_id, subject, category, locale, slug,
   title, summary, concept_id, concept_name, concept_name_en, concept_is_new, body, writing_memo, latex_engine, status, created_by, updated_by, created_at, updated_at, reviewed_at, published_at, archived_at, archived_by, archive_expires_at, scheduled_publish_at, scheduled_publish_claimed_at, publication_review_stage, publication_review_round, publication_pr_number, publication_pr_url, publication_branch, publication_action, publication_requested_at, locked_ranges, article_references,
   CASE WHEN creator_kind='organization' THEN 'Atlasez運営' ELSE COALESCE(NULLIF(TRIM((SELECT p.display_name FROM editorial_member_profiles p WHERE lower(p.email)=lower(editorial_documents.created_by) LIMIT 1)), ''), created_by) END AS created_by_display_name,
   COALESCE(NULLIF(TRIM((SELECT p.display_name FROM editorial_member_profiles p WHERE lower(p.email)=lower(editorial_documents.updated_by) LIMIT 1)), ''), updated_by) AS updated_by_display_name,
@@ -6224,12 +6892,40 @@ const editorialValues = (payload: EditorialDocumentPayload) => {
   };
 };
 
+const editorialVersionSnapshot = (
+  values: Exclude<ReturnType<typeof editorialValues>, null>,
+  status: EditorialDocumentStatus,
+  updatedAt: string,
+  lockedRanges: EditorialLockedRange[],
+  references: ReturnType<typeof normalizeArticleReferences>,
+) => JSON.stringify({
+  source_article_id: values.sourceArticleId,
+  subject: values.subject,
+  category: values.category,
+  locale: values.locale,
+  slug: values.slug,
+  title: values.title,
+  summary: values.summary,
+  concept_id: values.conceptId,
+  concept_name: values.conceptName,
+  concept_name_en: values.conceptNameEn,
+  concept_is_new: values.registerConcept ? 1 : 0,
+  body: values.body,
+  writing_memo: values.writingMemo,
+  latex_engine: values.latexEngine,
+  status,
+  locked_ranges: JSON.stringify(lockedRanges),
+  article_references: JSON.stringify(references),
+  updated_at: updatedAt,
+});
+
 async function listEditorialDocuments(
   request: Request,
   env: Env,
 ): Promise<Response> {
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
+  const searchParams = new URL(request.url).searchParams;
   const filters: string[] = [];
   const values: unknown[] = [];
   if (!scope.allSubjects) {
@@ -6253,9 +6949,13 @@ async function listEditorialDocuments(
     filters.push(`(${subjectFilter} OR (publication_review_stage='project-leader' AND ? = 1))`);
     values.push(...subjectValues, scope.isProjectLeader ? 1 : 0);
   }
-  const includeArchived = new URL(request.url).searchParams.get("includeArchived") === "1";
+  const requestedSubject = searchParams.get("subject")?.trim();
+  if (requestedSubject) {
+    filters.push("d.subject = ?");
+    values.push(requestedSubject);
+  }
+  const includeArchived = searchParams.get("includeArchived") === "1";
   if (!includeArchived) filters.push("d.archived_at IS NULL");
-  const searchParams = new URL(request.url).searchParams;
   // Keep the first page small enough for Cloudflare's Worker CPU budget. The
   // article index can load additional pages explicitly, so a smaller default
   // does not reduce coverage while avoiding 503s when the D1 result contains
@@ -6276,7 +6976,7 @@ async function listEditorialDocuments(
   }
   const where = filters.length ? ` WHERE ${filters.join(" AND ")}` : "";
   const result = await env.REPORTS.prepare(
-    `SELECT d.id, d.creator_kind, d.document_kind, d.base_document_id, d.base_document_updated_at, d.source_article_id, d.subject, d.category, d.locale, d.slug, d.title, d.summary, d.concept_id, d.latex_engine,
+    `SELECT d.id, d.creator_kind, d.current_version_id, d.published_version_id, d.source_article_id, d.subject, d.category, d.locale, d.slug, d.title, d.summary, d.concept_id, d.latex_engine,
       d.status, d.created_by, d.updated_by, d.created_at, d.updated_at, d.reviewed_at, d.published_at, d.archived_at, d.archived_by, d.archive_expires_at, d.scheduled_publish_at, d.publication_review_stage,
       CASE WHEN d.creator_kind='organization' THEN 'Atlasez運営' ELSE COALESCE(NULLIF(TRIM(cp.display_name), ''), d.created_by) END AS created_by_display_name,
       COALESCE(NULLIF(TRIM(up.display_name), ''), d.updated_by) AS updated_by_display_name,
@@ -6313,12 +7013,33 @@ async function listEditorialDocuments(
       : Promise.resolve(new Map<string, EditorialActiveEditor[]>()),
     documentRows.length
       ? env.REPORTS.prepare(
-          `SELECT r.document_id,
-                  COALESCE(NULLIF((SELECT GROUP_CONCAT(rr.reviewer_email) FROM editorial_review_assignment_recipients rr WHERE rr.document_id = r.document_id), ''), r.reviewer_email) AS reviewer_email
-           FROM editorial_review_assignments r
-           WHERE r.document_id IN (${documentRows.map(() => "?").join(",")})`,
+          `SELECT d.id AS document_id,
+                  COALESCE(
+                    (SELECT t.assignee_email
+                       FROM editorial_feedback_task_links link
+                       JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+                      WHERE link.document_id=d.id
+                        AND NOT EXISTS (
+                          SELECT 1 FROM workflow_transition_events e
+                           WHERE e.entity_type='task' AND e.entity_id=t.id
+                             AND json_extract(e.metadata_json, '$.action')=?
+                        )
+                      ORDER BY link.created_at DESC,t.created_at DESC LIMIT 1),
+                    (SELECT COALESCE(NULLIF((SELECT GROUP_CONCAT(rr.reviewer_email)
+                                               FROM editorial_review_assignment_recipients rr
+                                              WHERE rr.document_id=r.document_id), ''), r.reviewer_email)
+                       FROM editorial_review_assignments r
+                      WHERE r.document_id=d.id
+                        AND (r.task_id IS NULL OR NOT EXISTS (
+                          SELECT 1 FROM workflow_transition_events e
+                           WHERE e.entity_type='task' AND e.entity_id=r.task_id
+                             AND json_extract(e.metadata_json, '$.action')=?
+                        )) LIMIT 1)
+                  ) AS reviewer_email
+             FROM editorial_documents d
+            WHERE d.id IN (${documentRows.map(() => "?").join(",")})`,
         )
-          .bind(...documentRows.map((document) => document.id))
+          .bind(FEEDBACK_REQUEST_WITHDRAWAL_ACTION, FEEDBACK_REQUEST_WITHDRAWAL_ACTION, ...documentRows.map((document) => document.id))
           .all<{ document_id: string; reviewer_email: string }>()
           .catch(() => ({
             results: [] as { document_id: string; reviewer_email: string }[],
@@ -6380,13 +7101,22 @@ async function updateEditorialDocumentArchive(
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
   const document = await env.REPORTS.prepare(
-    "SELECT id, subject, status, created_by, published_at, archived_at, archived_by, archive_expires_at FROM editorial_documents WHERE id = ?",
+    "SELECT id, subject, status, created_by, published_at, published_version_id, publication_review_stage, scheduled_publish_at, archived_at, archived_by, archive_expires_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
-    .first<Pick<EditorialDocument, "id" | "subject" | "status" | "created_by" | "published_at" | "archived_at" | "archived_by" | "archive_expires_at">>();
+    .first<Pick<EditorialDocument, "id" | "subject" | "status" | "created_by" | "published_at" | "published_version_id" | "publication_review_stage" | "scheduled_publish_at" | "archived_at" | "archived_by" | "archive_expires_at">>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (document.status !== "draft" || document.published_at)
-    return json({ error: "アーカイブできるのは未公開の下書きだけです。" }, 400);
+  if (
+    (document.status !== "draft" && document.status !== "in-review") ||
+    document.publication_review_stage ||
+    document.published_version_id ||
+    document.published_at ||
+    document.scheduled_publish_at
+  )
+    return json(
+      { error: "アーカイブできるのは公開前の下書き・フィードバック中の記事です。公開審査中・公開済みの記事はアーカイブできません。" },
+      400,
+    );
   if (!scope.isManager && document.created_by.toLowerCase() !== scope.email.toLowerCase() && !canEditSubject(scope, document.subject))
     return json({ error: "この原稿をアーカイブする権限がありません。" }, 403);
 
@@ -6395,11 +7125,13 @@ async function updateEditorialDocumentArchive(
     if (document.archive_expires_at && Date.parse(document.archive_expires_at) <= Date.now())
       return json({ error: `アーカイブ期限（${EDITORIAL_ARCHIVE_DAYS}日）を過ぎたため復元できません。` }, 410);
     const now = new Date().toISOString();
-    await env.REPORTS.prepare(
-      "UPDATE editorial_documents SET archived_at = NULL, archived_by = NULL, archive_expires_at = NULL, updated_at = ?, updated_by = ? WHERE id = ? AND status = 'draft' AND published_at IS NULL",
+    const result = await env.REPORTS.prepare(
+      "UPDATE editorial_documents SET archived_at = NULL, archived_by = NULL, archive_expires_at = NULL, updated_at = ?, updated_by = ? WHERE id = ? AND archived_at = ? AND status IN ('draft', 'in-review') AND published_version_id IS NULL AND published_at IS NULL AND scheduled_publish_at IS NULL AND publication_review_stage IS NULL",
     )
-      .bind(now, scope.email, documentId)
+      .bind(now, scope.email, documentId, document.archived_at)
       .run();
+    if (Number(result.meta?.changes ?? 0) !== 1)
+      return json({ error: "原稿の状態が変わりました。再読み込みしてから復元してください。" }, 409);
     return json({ ok: true, archived: false, archived_at: null, archive_expires_at: null });
   }
 
@@ -6410,11 +7142,13 @@ async function updateEditorialDocumentArchive(
   const now = new Date();
   const archivedAt = now.toISOString();
   const archiveExpiresAt = editorialArchiveExpiry(now);
-  await env.REPORTS.prepare(
-    "UPDATE editorial_documents SET archived_at = ?, archived_by = ?, archive_expires_at = ?, updated_at = ?, updated_by = ? WHERE id = ? AND status = 'draft' AND published_at IS NULL",
+  const result = await env.REPORTS.prepare(
+    "UPDATE editorial_documents SET archived_at = ?, archived_by = ?, archive_expires_at = ?, updated_at = ?, updated_by = ? WHERE id = ? AND archived_at IS NULL AND status IN ('draft', 'in-review') AND published_version_id IS NULL AND published_at IS NULL AND scheduled_publish_at IS NULL AND publication_review_stage IS NULL",
   )
     .bind(archivedAt, scope.email, archiveExpiresAt, archivedAt, scope.email, documentId)
     .run();
+  if (Number(result.meta?.changes ?? 0) !== 1)
+    return json({ error: "原稿の状態が変わりました。再読み込みしてからアーカイブしてください。" }, 409);
   return json({ ok: true, archived: true, archived_at: archivedAt, archive_expires_at: archiveExpiresAt });
 }
 
@@ -6590,8 +7324,7 @@ const catalogDocumentRows = async (env: Env) =>
     await env.REPORTS.prepare(
       `SELECT id, source_article_id, subject, category, locale, slug, title,
               status, published_at, updated_at, created_at
-       FROM editorial_documents
-       WHERE document_kind IS NULL OR document_kind='canonical'`,
+       FROM editorial_documents`,
     ).all<{
       id: string;
       source_article_id: string | null;
@@ -6753,6 +7486,12 @@ async function getEditorialArticleCatalog(
           identity_status: "unverified",
         },
       }));
+    await syncEditorialArticleCatalogFromPublicSite(
+      env,
+      publicArticles,
+      documents,
+      storedCatalog,
+    );
     return json({
       catalog: [...catalog, ...editorialOnly],
       cache: {
@@ -6780,227 +7519,6 @@ async function getEditorialArticleCatalog(
   }
 }
 
-async function getEditorialArticleCatalogDiagnostics(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const scope = await getAdminScope(request, env);
-  if (isResponse(scope)) return scope;
-  try {
-    const publicArticles = await loadPublishedArticleCatalog(env);
-    const [documents, storedCatalog] = await Promise.all([
-      catalogDocumentRows(env),
-      listEditorialArticleCatalogRows(env),
-    ]);
-    const visibleArticles = publicArticles.filter(
-      (article) =>
-        canEditSubject(scope, article.subject) ||
-        canCoordinateSubject(scope, article.subject) ||
-        scope.isProjectLeader,
-    );
-    const documentByKey = new Map<string, typeof documents>();
-    for (const document of documents) {
-      const key = editorialArticleIdentity(document);
-      documentByKey.set(key, [...(documentByKey.get(key) ?? []), document]);
-    }
-    const documentBySourceId = new Map<string, typeof documents>();
-    for (const document of documents) {
-      if (!document.source_article_id) continue;
-      documentBySourceId.set(document.source_article_id, [
-        ...(documentBySourceId.get(document.source_article_id) ?? []),
-        document,
-      ]);
-    }
-    const storedByPath = new Map(storedCatalog.map((row) => [row.path, row]));
-    const publicKeys = new Set(
-      visibleArticles.map((article) => article.identityKey),
-    );
-    const issues: Record<string, unknown>[] = [];
-    const addIssue = (
-      code: string,
-      severity: "error" | "warning",
-      article: PublicArticleCatalogEntry,
-      details: Record<string, unknown> = {},
-    ) => {
-      issues.push({
-        code,
-        severity,
-        identity_key: article.identityKey,
-        path: article.path,
-        source_article_id: article.sourceArticleId,
-        title: article.title,
-        ...details,
-      });
-    };
-
-    for (const article of visibleArticles) {
-      const matches = documentByKey.get(article.identityKey) ?? [];
-      const sourceMatches = (documentBySourceId.get(article.sourceArticleId) ?? []).filter(
-        (document) => editorialArticleIdentity(document) !== article.identityKey,
-      );
-      const stored = storedByPath.get(article.path);
-      if (!matches.length && !sourceMatches.length)
-        addIssue("unregistered", "warning", article, {
-          message: "公開記事に対応する運営原稿がありません。",
-        });
-      if (!matches.length && sourceMatches.length)
-        addIssue("identity-mismatch", "error", article, {
-          message: "公開記事IDは別の公開パスの運営原稿に紐付いています。内容を確認してから分類を修正してください。",
-          document_id: sourceMatches[0].id,
-          document_identity_key: editorialArticleIdentity(sourceMatches[0]),
-        });
-      if (matches.length > 1)
-        addIssue("duplicate", "error", article, {
-          message: "同じ公開パスの運営原稿が複数あります。",
-          document_ids: matches.map((document) => document.id),
-        });
-      if (matches.length === 1) {
-        const document = matches[0];
-        if (!document.source_article_id)
-          addIssue("source-link-missing", "warning", article, {
-            message: "運営原稿はありますが、公開記事IDが未登録です。",
-            document_id: document.id,
-          });
-        else if (document.source_article_id !== article.sourceArticleId)
-          addIssue("identity-mismatch", "error", article, {
-            message: "公開記事IDと運営原稿の紐付けが一致しません。",
-            document_id: document.id,
-            document_source_article_id: document.source_article_id,
-          });
-      }
-      if (!stored?.source_checksum)
-        addIssue("source-checksum-missing", "warning", article, {
-          message:
-            "公開元本文のSHA-256が未記録です。本文を正本とみなさず、移行前に出所を確認してください。",
-          source_kind: stored?.source_kind ?? article.sourceKind,
-          source_ref: stored?.source_ref ?? article.sourceRef,
-        });
-      if (
-        stored?.source_article_id &&
-        stored.source_article_id !== article.sourceArticleId
-      )
-        addIssue("identity-mismatch", "error", article, {
-          message: "カタログの公開記事IDと現在の公開記事が一致しません。",
-          catalog_source_article_id: stored.source_article_id,
-        });
-      if (
-        stored?.git_sha &&
-        article.gitSha &&
-        stored.git_sha !== article.gitSha
-      )
-        addIssue("source-version-changed", "warning", article, {
-          message: "カタログ登録後に公開元のGit SHAが変わっています。",
-          catalog_git_sha: stored.git_sha,
-          current_git_sha: article.gitSha,
-        });
-    }
-
-    for (const row of storedCatalog) {
-      if (
-        row.public_status === "published" &&
-        !publicKeys.has(row.identity_key)
-      )
-        issues.push({
-          code: "catalog-public-source-missing",
-          severity: "warning",
-          identity_key: row.identity_key,
-          path: row.path,
-          title: row.title,
-          message:
-            "保存済みカタログにはありますが、現在の公開一覧にありません。",
-        });
-    }
-    const summary = issues.reduce<Record<string, number>>((counts, issue) => {
-      const code = String(issue.code);
-      counts[code] = (counts[code] ?? 0) + 1;
-      return counts;
-    }, {});
-    return json({
-      generated_at: new Date().toISOString(),
-      checked_articles: visibleArticles.length,
-      issue_count: issues.length,
-      healthy: issues.length === 0,
-      summary,
-      issues,
-    });
-  } catch (error) {
-    return json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "公開記事カタログの診断に失敗しました。",
-      },
-      502,
-    );
-  }
-}
-
-const stableEditorialDocumentId = async (identityKey: string) => {
-  const digest = new Uint8Array(
-    await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(identityKey),
-    ),
-  );
-  digest[6] = (digest[6] & 0x0f) | 0x50;
-  digest[8] = (digest[8] & 0x3f) | 0x80;
-  const hex = [...digest.slice(0, 16)]
-    .map((value) => value.toString(16).padStart(2, "0"))
-    .join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-};
-
-async function getPublicArticleForIdentity(
-  env: Env,
-  identity: { locale: string; subject: string; category: string; slug: string },
-): Promise<PublicArticleCatalogEntry | null> {
-  const client = publicArticleCatalogClient(env);
-  if (!client)
-    throw new Error(
-      "GitHub公開連携がまだ設定されていません。公開記事を取得できません。",
-    );
-  const path = editorialArticlePath(identity);
-  const content = await githubArticleContent(
-    client.repository,
-    client.headers,
-    path,
-  );
-  if (!content) return null;
-  const article = parsePublicArticle(path, content.markdown, content.gitSha);
-  if (!article) return null;
-  article.repository = client.repository;
-  article.sourceKind = "github-published-markdown";
-  article.sourceRef = githubArticleSourceRef(
-    client.repository,
-    path,
-    content.gitSha,
-  );
-  article.sourceChecksum = await sha256Hex(content.markdown);
-  article.sourceBodyChecksum = await sha256Hex(article.body);
-  article.sourceFetchedAt = new Date().toISOString();
-  article.sourceAuthority = "reference-only";
-  article.registrationMethod = "catalog-observation";
-  article.identityStatus = "verified";
-  await upsertEditorialArticleCatalog(env, article);
-  return article;
-}
-
-const catalogRegistrationInput = (payload: Record<string, unknown> | null) => {
-  const locale = text(payload?.locale, 8);
-  const subject = text(payload?.subject, 80);
-  const category = text(payload?.category, 80);
-  const slug = text(payload?.slug, 100);
-  if (
-    !/^(ja|en)$/.test(locale) ||
-    !SUBJECT_SLUG.test(subject) ||
-    !SUBJECT_SLUG.test(category) ||
-    !SUBJECT_SLUG.test(slug)
-  )
-    return null;
-  return { locale, subject, category, slug };
-};
-
 type EditorialIdentityInput = {
   sourceArticleId: string | null;
   locale: string;
@@ -7017,7 +7535,6 @@ async function editorialIdentityConflict(
   const documents = await env.REPORTS.prepare(
     `SELECT id, source_article_id FROM editorial_documents
      WHERE locale=? AND subject=? AND category=? AND slug=?
-       AND (document_kind IS NULL OR document_kind='canonical')
      AND (? IS NULL OR id != ?)
      ORDER BY updated_at DESC`,
   )
@@ -7045,7 +7562,7 @@ async function editorialIdentityConflict(
   if (identity.sourceArticleId) {
     const sourceDocument = await env.REPORTS.prepare(
       `SELECT id, locale, subject, category, slug FROM editorial_documents
-       WHERE source_article_id=? AND (document_kind IS NULL OR document_kind='canonical')
+       WHERE source_article_id=?
          AND (? IS NULL OR id != ?) LIMIT 1`,
     )
       .bind(identity.sourceArticleId, excludedDocumentId, excludedDocumentId)
@@ -7091,314 +7608,11 @@ async function editorialIdentityConflict(
     return json(
       {
         error:
-          "既存の公開記事があります。新規作成ではなく、公開記事を運営管理下へ登録してください。",
+          "公開済み記事と同じ識別情報です。既存の運営原稿を開いてください。",
       },
       409,
     );
   return null;
-}
-
-async function registerPublicArticleInEditorialCatalog(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const scope = await getAdminScope(request, env);
-  if (isResponse(scope)) return scope;
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-  if (!request.headers.get("content-type")?.includes("application/json"))
-    return json({ error: "JSON形式で送信してください。" }, 415);
-  const payload = (await request.json().catch(() => null)) as Record<
-    string,
-    unknown
-  > | null;
-  const identity = catalogRegistrationInput(payload);
-  if (!identity)
-    return json({ error: "公開記事の識別情報を確認してください。" }, 400);
-  if (!canEditSubject(scope, identity.subject))
-    return json(
-      { error: "この分野の記事を運営管理下へ登録する権限がありません。" },
-      403,
-    );
-  try {
-    const article = await getPublicArticleForIdentity(env, identity);
-    if (!article)
-      return json(
-        {
-          error:
-            "指定された公開記事がGitHub mainに見つかりません。公開済み記事だけ登録できます。",
-        },
-        404,
-      );
-    if (article.body.length > MAX_EDITORIAL_BODY_LENGTH)
-      return json(
-        { error: "公開記事本文が編集ワークスペースの上限を超えています。" },
-        413,
-      );
-    const key = article.identityKey;
-    const existingDocuments = await env.REPORTS.prepare(
-      `SELECT id, source_article_id, body, status, published_at FROM editorial_documents
-       WHERE locale=? AND subject=? AND category=? AND slug=?
-         AND (document_kind IS NULL OR document_kind='canonical')
-       ORDER BY CASE WHEN published_at IS NOT NULL THEN 0 ELSE 1 END, updated_at DESC, id`,
-    )
-      .bind(identity.locale, identity.subject, identity.category, identity.slug)
-      .all<{
-        id: string;
-        source_article_id: string | null;
-        body: string;
-        status: EditorialDocumentStatus;
-        published_at: string | null;
-      }>();
-    const documents = existingDocuments.results ?? [];
-    if (documents.length > 1)
-      return json(
-        {
-          error:
-            "同じ公開パスに複数の運営原稿があります。削除せず、重複原稿を整理してから登録してください。",
-          identityKey: key,
-          duplicateDocumentIds: documents.map((document) => document.id),
-        },
-        409,
-      );
-    const sourceDocument = documents[0];
-    const conflictingSource = await env.REPORTS.prepare(
-      "SELECT id, locale, subject, category, slug FROM editorial_documents WHERE source_article_id=? AND (document_kind IS NULL OR document_kind='canonical') AND (? IS NULL OR id != ?)",
-    )
-      .bind(
-        article.sourceArticleId,
-        sourceDocument?.id ?? null,
-        sourceDocument?.id ?? null,
-      )
-      .first<{
-        id: string;
-        locale: string;
-        subject: string;
-        category: string;
-        slug: string;
-      }>();
-    if (conflictingSource)
-      return json(
-        {
-          error: "この公開記事は別の運営原稿に紐付いています。",
-          code: "SOURCE_ARTICLE_LINK_CONFLICT",
-          documentId: conflictingSource.id,
-          documentIdentityKey: editorialArticleIdentity(conflictingSource),
-        },
-        409,
-      );
-    if (sourceDocument) {
-      if (
-        sourceDocument.source_article_id &&
-        sourceDocument.source_article_id !== article.sourceArticleId
-      )
-        return json(
-          { error: "同じ公開パスに別の公開記事IDが登録されています。" },
-          409,
-        );
-      await env.REPORTS.prepare(
-        "UPDATE editorial_documents SET source_article_id=?, updated_by=?, updated_at=? WHERE id=? AND source_article_id IS NULL",
-      )
-        .bind(
-          article.sourceArticleId,
-          scope.email,
-          new Date().toISOString(),
-          sourceDocument.id,
-        )
-        .run();
-      await upsertEditorialArticleCatalog(
-        env,
-        {
-          ...article,
-          registrationMethod: "public-article-link",
-        },
-        sourceDocument.id,
-        new Date().toISOString(),
-        scope.email,
-      );
-      return json({
-        ok: true,
-        registered:
-          sourceDocument.source_article_id !== article.sourceArticleId,
-        documentId: sourceDocument.id,
-        identityKey: key,
-        sourceChecksum: article.sourceChecksum,
-        sourceChecksumAlgorithm: article.sourceChecksumAlgorithm,
-        sourceAuthority: "reference-only",
-        bodySeed: "existing-editorial-document-preserved",
-        publicationStarted: false,
-      });
-    }
-    const documentId = await stableEditorialDocumentId(key);
-    const now = new Date().toISOString();
-    await env.REPORTS.prepare(
-      `INSERT OR IGNORE INTO editorial_documents
-       (id, creator_kind, source_article_id, subject, category, locale, slug, title, summary, concept_id, body, writing_memo, latex_engine,
-        status, created_by, updated_by, created_at, updated_at, reviewed_at, scheduled_publish_at, scheduled_publish_claimed_at, publication_review_stage, publication_review_round, locked_ranges, article_references)
-       VALUES (?, 'organization', ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'katex', 'draft', ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, '[]', ?)`,
-    )
-      .bind(
-        documentId,
-        article.sourceArticleId,
-        article.subject,
-        article.category,
-        article.locale,
-        article.slug,
-        article.title,
-        article.summary,
-        article.conceptId,
-        article.body,
-        scope.email,
-        scope.email,
-        now,
-        now,
-        JSON.stringify(
-          normalizeArticleReferences(
-            article.references,
-            MAX_PERSONAL_REFERENCES,
-          ),
-        ),
-      )
-      .run();
-    const registered = await env.REPORTS.prepare(
-      "SELECT id, source_article_id FROM editorial_documents WHERE id=?",
-    )
-      .bind(documentId)
-      .first<{ id: string; source_article_id: string | null }>();
-    if (!registered || registered.source_article_id !== article.sourceArticleId)
-      return json(
-        {
-          error:
-            "記事登録が別の操作と競合しました。重複を作らず、もう一度確認してください。",
-        },
-        409,
-      );
-    await upsertEditorialArticleCatalog(
-      env,
-      {
-        ...article,
-        registrationMethod: "public-article-adoption",
-      },
-      documentId,
-      now,
-      scope.email,
-    );
-    return json(
-      {
-        ok: true,
-        registered: true,
-        documentId,
-        identityKey: key,
-        sourceChecksum: article.sourceChecksum,
-        sourceChecksumAlgorithm: article.sourceChecksumAlgorithm,
-        sourceAuthority: "reference-only",
-        bodySeed: "github-reference-only",
-        publicationStarted: false,
-      },
-      201,
-    );
-  } catch (error) {
-    return json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "公開記事を運営管理下へ登録できませんでした。",
-      },
-      502,
-    );
-  }
-}
-
-async function registerPublicArticlesInEditorialCatalog(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const scope = await getAdminScope(request, env);
-  if (isResponse(scope)) return scope;
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-  if (!request.headers.get("content-type")?.includes("application/json"))
-    return json({ error: "JSON形式で送信してください。" }, 415);
-  const payload = (await request.json().catch(() => null)) as {
-    articles?: unknown;
-  } | null;
-  if (
-    !Array.isArray(payload?.articles) ||
-    payload.articles.length < 1 ||
-    payload.articles.length > 20
-  )
-    return json(
-      { error: "一括登録は1回につき1〜20件で指定してください。" },
-      400,
-    );
-
-  const uniqueArticles = new Map<
-    string,
-    { locale: string; subject: string; category: string; slug: string }
-  >();
-  for (const item of payload.articles) {
-    if (!item || typeof item !== "object")
-      return json({ error: "記事の識別情報を確認してください。" }, 400);
-    const identity = catalogRegistrationInput(item as Record<string, unknown>);
-    if (!identity)
-      return json({ error: "記事の識別情報を確認してください。" }, 400);
-    uniqueArticles.set(editorialArticleIdentity(identity), identity);
-  }
-
-  const results: Array<{
-    identityKey: string;
-    status: "registered" | "already-managed" | "conflict" | "failed";
-    documentId?: string;
-    error?: string;
-  }> = [];
-  const forwardedHeaders = new Headers({ "content-type": "application/json" });
-  for (const name of ["cookie", "origin", "authorization"] as const) {
-    const value = request.headers.get(name);
-    if (value) forwardedHeaders.set(name, value);
-  }
-  for (const [identityKey, identity] of uniqueArticles) {
-    const itemRequest = new Request(request.url, {
-      method: "POST",
-      headers: forwardedHeaders,
-      body: JSON.stringify(identity),
-    });
-    try {
-      const response = await registerPublicArticleInEditorialCatalog(
-        itemRequest,
-        env,
-      );
-      const body = (await response.json().catch(() => ({}))) as {
-        ok?: boolean;
-        registered?: boolean;
-        documentId?: string;
-        error?: string;
-      };
-      results.push({
-        identityKey,
-        status:
-          response.ok && body.ok
-            ? body.registered === false
-              ? "already-managed"
-              : "registered"
-            : response.status === 409
-              ? "conflict"
-              : "failed",
-        ...(body.documentId ? { documentId: body.documentId } : {}),
-        ...(body.error ? { error: body.error } : {}),
-      });
-    } catch (error) {
-      results.push({
-        identityKey,
-        status: "failed",
-        error:
-          error instanceof Error
-            ? error.message
-            : "公開記事を運営管理下へ登録できませんでした。",
-      });
-    }
-  }
-  return json({ ok: true, attempted: uniqueArticles.size, results });
 }
 
 const normalizePersonalMathPresets = (raw: unknown): PersonalMathPreset[] => {
@@ -10157,7 +10371,7 @@ async function provisionAcceptedApplication(
       provisioning_attempt_count: number;
     }>();
   if (!application || application.status !== "accepted")
-    return { status: "skipped", applied: 0, removed: 0, warnings: ["受入済みの応募ではありません。"], attempt: 0, nextAttemptAt: null };
+    return { status: "skipped", applied: 0, removed: 0, warnings: ["受け入れ済みの応募ではありません。"], attempt: 0, nextAttemptAt: null };
   if (application.project_slug === "atlas" && !(await isAtlasMemberActive(env, application.email))) {
     const warning = "休止・退会済みのアトラスメンバーのDiscord同期は停止しています。";
     await env.REPORTS.prepare(
@@ -11598,6 +11812,21 @@ async function saveMyProfile(request: Request, env: Env): Promise<Response> {
   } catch {
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
+  if (payload.avatarUrl !== undefined && typeof payload.avatarUrl !== "string")
+    return json({ error: "プロフィール画像を確認してください。" }, 400);
+  const suppliedAvatarUrl =
+    typeof payload.avatarUrl === "string" ? payload.avatarUrl.trim() : undefined;
+  if (
+    suppliedAvatarUrl !== undefined &&
+    suppliedAvatarUrl.length > profileImageMaxStoredUrlLength
+  )
+    return json(
+      {
+        error:
+          "画像の保存容量を超えています。切り抜きや縮小を調整してから保存してください。",
+      },
+      413,
+    );
   const currentProfile = await env.REPORTS.prepare(
     `SELECT display_name,bio,avatar_url,university,year,affiliation_type,country,timezone
      FROM editorial_member_profiles WHERE lower(email)=lower(?)`,
@@ -11616,7 +11845,7 @@ async function saveMyProfile(request: Request, env: Env): Promise<Response> {
   const avatarUrl =
     payload.avatarUrl === undefined
       ? (currentProfile?.avatar_url ?? "")
-      : text(payload.avatarUrl, 3_000_000);
+      : (suppliedAvatarUrl ?? "");
   const displayName =
     payload.displayName === undefined ? null : text(payload.displayName, 120);
   const university =
@@ -11642,15 +11871,13 @@ async function saveMyProfile(request: Request, env: Env): Promise<Response> {
   if (
     avatarUrl &&
     ((!/^https:\/\//i.test(avatarUrl) &&
-      !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(
-        avatarUrl,
-      )) ||
+      !isProfileImageDataUrl(avatarUrl)) ||
       /["'<>]/.test(avatarUrl))
   )
     return json(
       {
         error:
-          "プロフィール画像はPNG・JPEG・WebPの画像ファイル、またはhttps://画像URLを指定してください。",
+          "プロフィール画像はPNG・JPEG・WebP・GIFの画像ファイル、またはhttps://画像URLを指定してください。",
       },
       400,
     );
@@ -12500,6 +12727,11 @@ async function listApplications(request: Request, env: Env): Promise<Response> {
     : 50;
   const filters = ["a.project_slug = ?"];
   const bindings: unknown[] = [projectSlug];
+  const requestedApplicationId = searchParams.get("applicationId")?.trim() ?? "";
+  if (requestedApplicationId) {
+    filters.push("a.id = ?");
+    bindings.push(requestedApplicationId);
+  }
   const rawCursor = searchParams.get("cursor") ?? "";
   const separator = rawCursor.lastIndexOf("|");
   const cursorCreatedAt = separator > 0 ? rawCursor.slice(0, separator) : "";
@@ -12524,12 +12756,14 @@ async function listApplications(request: Request, env: Env): Promise<Response> {
       i.mode AS interview_mode,i.zoom_url AS interview_zoom_url,i.location AS interview_location,
       i.status AS interview_status,i.notified_at AS interview_notified_at,
       i.notification_count AS interview_notification_count,i.completed_at AS interview_completed_at,
+      r.decision AS interview_decision,r.finalized_at AS interview_finalized_at,
       COALESCE(d.discord_user_id, '') AS verified_discord_user_id,
       COALESCE(d.oauth_connected_at, '') AS discord_oauth_connected_at,
       COALESCE(d.oauth_scope, '') AS discord_oauth_scope
      FROM atlasez_member_applications a
      LEFT JOIN atlasez_member_discord_accounts d ON d.email = a.email
      LEFT JOIN atlasez_application_interviews i ON i.application_id = a.id
+     LEFT JOIN atlasez_application_interview_reviews r ON r.application_id = a.id
      WHERE ${where}
      ORDER BY a.created_at DESC,a.id DESC LIMIT ?`,
     )
@@ -12686,6 +12920,15 @@ async function memberIntakeTracking(
 
   if (request.method === "GET") {
     const projectSlug = canonicalApplicationProjectSlug(access.project.slug);
+    const requestedApplicationId = url.searchParams.get("applicationId")?.trim() ?? "";
+    let filterEmail = "";
+    if (requestedApplicationId) {
+      const application = await env.REPORTS.prepare(
+        "SELECT email FROM atlasez_member_applications WHERE id=? AND project_slug=?",
+      ).bind(requestedApplicationId, projectSlug).first<{ email: string }>();
+      if (!application) return json({ error: "応募が見つかりません。" }, 404);
+      filterEmail = application.email.toLowerCase();
+    }
     const [rows, responsibleRows] = await Promise.all([
       env.REPORTS.prepare(
         `WITH latest_applications AS (
@@ -12694,11 +12937,11 @@ async function memberIntakeTracking(
             ROW_NUMBER() OVER(PARTITION BY lower(a.email) ORDER BY a.created_at DESC,a.id DESC) AS row_number
           FROM atlasez_member_applications a
           LEFT JOIN editorial_member_profiles p ON lower(p.email)=lower(a.email)
-          WHERE a.project_slug=?
+          WHERE a.project_slug=? AND (?='' OR lower(a.email)=?)
         ), candidates AS (
           SELECT lower(m.email) AS email,MAX(m.email) AS original_email,MAX(m.role) AS role
           FROM atlasez_project_memberships m
-          WHERE m.project_id=? AND (m.project_id!='atlas' OR NOT EXISTS (
+          WHERE m.project_id=? AND (?='' OR lower(m.email)=?) AND (m.project_id!='atlas' OR NOT EXISTS (
             SELECT 1 FROM admin_member_lifecycle l
             WHERE lower(l.email)=lower(m.email) AND l.status='archived'
           )) AND NOT EXISTS (
@@ -12709,7 +12952,7 @@ async function memberIntakeTracking(
           SELECT email,email,'applicant' FROM latest_applications WHERE row_number=1
           UNION
           SELECT lower(email),MAX(email),'tracked' FROM editorial_member_intake_tracking
-          WHERE project_id=? GROUP BY lower(email)
+          WHERE project_id=? AND (?='' OR lower(email)=?) GROUP BY lower(email)
         )
         SELECT c.email,COALESCE(NULLIF(TRIM(p.display_name),''),MAX(a.display_name),MAX(c.original_email)) AS display_name,
           MAX(COALESCE(c.role,'')) AS role,MAX(CASE WHEN c.role IN ('member','manager') THEN 1 ELSE 0 END) AS is_member,
@@ -12729,7 +12972,12 @@ async function memberIntakeTracking(
         GROUP BY c.email
         ORDER BY CASE WHEN MAX(t.follow_up_completed_at) IS NULL AND MAX(t.follow_up_at) IS NOT NULL THEN 0 ELSE 1 END,
           MAX(t.follow_up_at),display_name,c.email LIMIT 500`,
-      ).bind(projectSlug, access.project.id, access.project.id, access.project.id).all<Record<string, unknown>>(),
+      ).bind(
+        projectSlug, filterEmail, filterEmail,
+        access.project.id, filterEmail, filterEmail,
+        access.project.id, filterEmail, filterEmail,
+        access.project.id,
+      ).all<Record<string, unknown>>(),
       env.REPORTS.prepare(
         `SELECT lower(membership.email) AS email,COALESCE(NULLIF(TRIM(profile.display_name),''),membership.email) AS display_name
          FROM atlasez_project_memberships membership
@@ -12795,9 +13043,9 @@ async function memberIntakeTracking(
   if (consultationEmail && !EMAIL_PATTERN.test(consultationEmail))
     return json({ error: "相談先を確認してください。" }, 400);
   if (followUpAt && (!Number.isFinite(Date.parse(followUpAt)) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(followUpAt)))
-    return json({ error: "フォロー予定は日時を指定してください。" }, 400);
+    return json({ error: "次回確認予定日時を指定してください。" }, 400);
   if (typeof payload.followUpCompleted !== "boolean")
-    return json({ error: "フォロー完了状態を指定してください。" }, 400);
+    return json({ error: "確認の完了状態を指定してください。" }, 400);
   if (!Number.isInteger(payload.expectedRevision) || Number(payload.expectedRevision) < 0)
     return json({ error: "記録の更新番号を確認してください。再読み込みしてから保存してください。" }, 400);
   const expectedRevision = Number(payload.expectedRevision);
@@ -12834,11 +13082,11 @@ async function memberIntakeTracking(
       return json({ error: "担当者はこのプロジェクトの運営内運営から選択してください。" }, 403);
   }
   if (payload.followUpCompleted && !followUpAt && !existing?.follow_up_at)
-    return json({ error: "完了にする前にフォロー予定を入力してください。" }, 400);
+    return json({ error: "確認済みにする前に次回確認予定日時を入力してください。" }, 400);
   if (firstTaskTitle && existing?.first_task_id)
     return json({ error: "初回タスクは作成済みです。状態はタスク管理から更新してください。" }, 409);
   if (firstTaskTitle && !membership && !responsibleEmail)
-    return json({ error: "受入準備タスクを作る場合は担当運営者を選択してください。" }, 400);
+    return json({ error: "参加前の準備タスクを作る場合は担当運営者を選択してください。" }, 400);
 
   const now = new Date().toISOString();
   const contactAt = contactStatus === "not_contacted"
@@ -12860,7 +13108,7 @@ async function memberIntakeTracking(
          OR (? > 0 AND EXISTS (SELECT 1 FROM editorial_member_intake_tracking WHERE project_id=? AND email=? AND revision=? AND first_task_id IS NULL))
        )`,
     ).bind(taskId ?? crypto.randomUUID(), access.project.id, null, taskAssigneeEmail, firstTaskTitle,
-      membership ? `初回参加タスク：${email}\n参加後の小さな最初のタスクです。` : `受入準備タスク：${email}\n参加前の案内・準備に関する運営タスクです。`,
+      membership ? `初回参加タスク：${email}\n参加後の小さな最初のタスクです。` : `参加前の準備タスク：${email}\n参加前の案内・準備に関する運営タスクです。`,
       access.scope.email, now, now, firstTaskTitle, expectedRevision, access.project.id, email,
       expectedRevision, access.project.id, email, expectedRevision),
   ];
@@ -12893,7 +13141,7 @@ async function memberIntakeTracking(
     `INSERT INTO admin_audit_log (id,actor_email,action,target_type,target_id,target_label,summary,details_json,created_at)
      SELECT ?,?,'member_intake_updated','member',?,?,?, ?,? WHERE changes()=1`,
   ).bind(auditId, access.scope.email, `${access.project.id}:${email}`, email,
-    `メンバー受入フォローを更新：${email}`,
+    `応募者・メンバー対応記録を更新：${email}`,
     JSON.stringify({ projectId: access.project.id, projectSlug, applicationId: currentApp?.id ?? null, contactStatus, responsibleEmail, consultationEmail,
       firstTaskCreated: Boolean(taskId), firstTaskType: taskId ? firstTaskType : null, followUpAt, followUpCompleted: Boolean(followUpCompletedAt) }), now));
   try {
@@ -12902,7 +13150,7 @@ async function memberIntakeTracking(
     if (changes !== 1)
       return json({ error: "記録が別の運営者によって更新されています。再読み込みしてから保存してください。", code: "STALE_INTAKE" }, 409);
   } catch {
-    return json({ error: "受入フォロー記録を保存できませんでした。" }, 500);
+    return json({ error: "応募者・メンバー対応記録を保存できませんでした。" }, 500);
   }
   const updated = await env.REPORTS.prepare(
     `SELECT first_task_id,first_task_title,first_task_type,updated_at FROM editorial_member_intake_tracking WHERE project_id=? AND email=?`,
@@ -13038,7 +13286,7 @@ async function updateApplication(
     return json(
       {
         error:
-          "登録済み運営者との不整合を防ぐため、受入済み応募の状態は戻せません。権限変更は権限管理から行ってください。",
+          "登録済み運営者との不整合を防ぐため、受け入れ済み応募の状態は戻せません。権限変更は権限管理から行ってください。",
       },
       409,
     );
@@ -13092,7 +13340,7 @@ async function updateApplication(
     return json({ ok: true, status });
   }
 
-  // 旧形式の応募は追加列が空でも受入可能にし、自由記述から権限を推測しない。
+  // 旧形式の応募は追加列が空でも受け入れ可能にし、自由記述から権限を推測しない。
   const requestedSubjects =
     payload.desiredSubjects === undefined
       ? null
@@ -13270,7 +13518,7 @@ async function retryApplicationDiscordProvisioning(
   if (!application || application.project_slug !== canonicalApplicationProjectSlug(access.project.slug))
     return json({ error: "応募が見つかりません。" }, 404);
   if (application.status !== "accepted")
-    return json({ error: "受入済みの応募だけDiscord情報の確認を再試行できます。" }, 409);
+    return json({ error: "受け入れ済みの応募だけDiscord情報の確認を再試行できます。" }, 409);
   if (application.project_slug === "atlas" && !(await isAtlasMemberActive(env, application.email)))
     return json({ error: "休止・退会済みのアトラスメンバーのDiscord同期は再試行できません。", code: "MEMBER_INACTIVE" }, 409);
   const now = new Date().toISOString();
@@ -15109,6 +15357,8 @@ async function updateTask(
     task.created_by.toLowerCase() !== scope.email.toLowerCase()
   )
     return json({ error: "このタスクを更新する権限がありません。" }, 403);
+  if (task.task_kind === "feedback" && await isFeedbackRequestWithdrawn(env, taskId))
+    return json({ error: "取り下げ済みのフィードバック依頼は変更できません。", code: "FEEDBACK_REQUEST_WITHDRAWN" }, 409);
   // 状態変更だけは共通Workflow APIへ委譲する。既存のリマインダー・
   // アーカイブ更新は下の互換処理を維持し、段階的に移行できるようにする。
   if (requestedStatus !== null && requestedArchived === null && !reminderAction && requestedTestData === null)
@@ -15405,30 +15655,37 @@ async function createAvailabilityRule(
   } catch {
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
-  const weekday = Number(payload.weekday);
+  const weekdayValues = Array.isArray(payload.weekdays)
+    ? payload.weekdays
+    : [payload.weekday];
+  const weekdays = weekdayValues.map(Number);
   const timezone = text(payload.timezone, 80) || "Asia/Tokyo";
   const kind = text(payload.kind, 20) || "unavailable";
   if (
-    !Number.isInteger(weekday) ||
-    weekday < 0 ||
-    weekday > 6 ||
+    weekdays.length < 1 ||
+    weekdays.length > 7 ||
+    new Set(weekdays).size !== weekdays.length ||
+    weekdays.some((weekday) => !Number.isInteger(weekday) || weekday < 0 || weekday > 6) ||
     !validTimeZone(timezone) ||
     !["available", "unavailable"].includes(kind)
   )
     return json({ error: "曜日、タイムゾーンまたは可否を確認してください。" }, 400);
-  await env.REPORTS.prepare(
-    "INSERT INTO editorial_member_availability_rules (id,email,weekday,timezone,label,kind,created_at) VALUES (?,?,?,?,?,?,?)",
-  )
-    .bind(
+  const createdAt = new Date().toISOString();
+  const statements = weekdays.map((weekday) =>
+    env.REPORTS.prepare(
+      "INSERT INTO editorial_member_availability_rules (id,email,weekday,timezone,label,kind,created_at) VALUES (?,?,?,?,?,?,?)",
+    ).bind(
       crypto.randomUUID(),
       scope.email,
       weekday,
       timezone,
       text(payload.label, 160),
       kind,
-      new Date().toISOString(),
-    )
-    .run();
+      createdAt,
+    ),
+  );
+  if (statements.length === 1) await statements[0].run();
+  else await env.REPORTS.batch(statements);
   return json({ ok: true });
 }
 
@@ -15817,6 +16074,21 @@ async function submitMemberApplication(
     return json(
       {
         error: "応募の受付準備を確認できませんでした。時間をおいて応募状況をご確認ください。",
+        code: "APPLICATION_RESULT_UNCONFIRMED",
+        applicationSaved: false,
+        applicationState: "not_saved",
+        correlationId,
+        statusUrl: "/applicant/?submission=check",
+      },
+      503,
+    );
+  }
+  if (operatorEmails.length === 0) {
+    logSubmissionFailure("notification_recipients_missing");
+    return json(
+      {
+        error:
+          "応募を受け付ける運営担当者を確認できません。運営が設定後、もう一度お試しください。",
         code: "APPLICATION_RESULT_UNCONFIRMED",
         applicationSaved: false,
         applicationState: "not_saved",
@@ -16477,7 +16749,7 @@ async function getOnboarding(request: Request, env: Env): Promise<Response> {
   if (isResponse(current)) return current;
   if (!canAccess(current.stage, "onboarding"))
     return json(
-      { error: "オンボーディングを開始できる段階ではありません。" },
+      { error: "参加後の案内を開始できる段階ではありません。" },
       403,
     );
   const [profile, internalProfile] = await Promise.all([
@@ -16517,7 +16789,7 @@ async function completeOnboarding(
   if (isResponse(current)) return current;
   if (!canAccess(current.stage, "onboarding"))
     return json(
-      { error: "オンボーディングを完了できる段階ではありません。" },
+      { error: "参加後の案内を完了できる段階ではありません。" },
       403,
     );
   if (!isSameOrigin(request))
@@ -16536,7 +16808,7 @@ async function completeOnboarding(
   const bio = text(payload.bio, 4_000);
   const internalBio = text(payload.internalBio, 4_000).trim();
   if (!displayName || !bio)
-    return json({ error: "表示名と運営外自己紹介を入力してください。" }, 400);
+    return json({ error: "表示名と運営内自己紹介を入力してください。" }, 400);
   if (!current.projectId)
     return json({ error: "参加先プロジェクトを確認できません。" }, 409);
   const now = new Date().toISOString();
@@ -16884,26 +17156,6 @@ async function getEditorialDocument(
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
   if (!canReviewDocument(scope, document))
     return json({ error: "この分野の原稿を閲覧する権限がありません。" }, 403);
-  // 現行版と更新案の関係は一覧APIのページングに依存させない。個別記事を
-  // 開いた時点で関連する両方のIDを返し、一覧に出ていない版も確実に開ける
-  // ようにする。
-  const isUpdateProposal = document.document_kind === "update-proposal";
-  const canonicalId = isUpdateProposal
-    ? document.base_document_id
-    : document.id;
-  const proposalId = isUpdateProposal
-    ? document.id
-    : (
-        await env.REPORTS.prepare(
-          `SELECT id FROM editorial_documents
-             WHERE base_document_id = ?
-               AND document_kind = 'update-proposal'
-               AND archived_at IS NULL
-             ORDER BY updated_at DESC LIMIT 1`,
-        )
-          .bind(document.id)
-          .first<{ id: string }>()
-      )?.id ?? null;
   const comments = await env.REPORTS.prepare(
     `SELECT id, document_id, parent_comment_id, body, created_by, created_at, selection_start, selection_end, selection_text,
       acknowledged_at, acknowledged_by, resolved_at, resolved_by
@@ -17216,7 +17468,6 @@ async function getEditorialDocument(
     document: { ...document, publication_run: publicationRun },
     publicationRun,
     comments: commentsWithSelections,
-    versions: { canonicalId: canonicalId ?? null, proposalId },
     comment_action_summary: {
       counts: documentActionCounts,
       actors: {
@@ -17386,13 +17637,22 @@ async function createEditorialDocument(
   });
   if (identityConflict) return identityConflict;
   const id = crypto.randomUUID();
+  const versionId = crypto.randomUUID();
   const now = new Date().toISOString();
-  await env.REPORTS.prepare(
+  const versionSnapshot = editorialVersionSnapshot(
+    values,
+    values.status,
+    now,
+    values.lockedRanges ?? [],
+    values.references ?? [],
+  );
+  const createResults = await env.REPORTS.batch([
+    env.REPORTS.prepare(
     `INSERT INTO editorial_documents
       (id, source_article_id, subject, category, locale, slug, title, summary, concept_id, concept_name, concept_name_en, concept_is_new, body, writing_memo, latex_engine,
-       status, created_by, updated_by, created_at, updated_at, reviewed_at, scheduled_publish_at, scheduled_publish_claimed_at, publication_review_stage, publication_review_round, locked_ranges, article_references)
-     VALUES (${Array.from({ length: 27 }, () => "?").join(", ")})`,
-  )
+       status, created_by, updated_by, created_at, updated_at, reviewed_at, scheduled_publish_at, scheduled_publish_claimed_at, publication_review_stage, publication_review_round, locked_ranges, article_references, current_version_id)
+     VALUES (${Array.from({ length: 28 }, () => "?").join(", ")})`,
+    )
     .bind(
       id,
       values.sourceArticleId,
@@ -17421,8 +17681,30 @@ async function createEditorialDocument(
       0,
       JSON.stringify(values.lockedRanges ?? []),
       JSON.stringify(values.references ?? []),
-    )
-    .run();
+      versionId,
+    ),
+    env.REPORTS.prepare(
+      `INSERT INTO editorial_document_revisions
+        (id, document_id, title, summary, body, status, saved_by, saved_at, document_updated_at, snapshot_json)
+       SELECT ?, id, ?, ?, ?, ?, ?, ?, ?, ?
+         FROM editorial_documents WHERE id=? AND current_version_id=?`,
+    ).bind(
+      versionId,
+      values.title,
+      values.summary,
+      values.body,
+      values.status,
+      scope.email,
+      now,
+      now,
+      versionSnapshot,
+      id,
+      versionId,
+    ),
+  ]);
+  const versionChanges = batchChangeCount(createResults, 1);
+  if (versionChanges !== null && versionChanges !== 1)
+    return json({ error: "記事の初回版を保存できませんでした。もう一度お試しください。" }, 500);
   await syncEditorialOutlineDocument(env, id, { subject: values.subject, category: values.category, slug: values.slug }, text(payload.outlineId, 64));
   await recordAdminAudit(
     env,
@@ -17434,68 +17716,7 @@ async function createEditorialDocument(
     `記事を作成：${values.title}`,
     { subject: values.subject, category: values.category, locale: values.locale, status: values.status },
   );
-  return json({ ok: true, id }, 201);
-}
-
-/**
- * Create an isolated draft for a published article.  The canonical document
- * remains published and immutable while this proposal goes through feedback
- * and approval.  Repeating the request is idempotent and returns the active
- * proposal instead of creating competing drafts.
- */
-async function createEditorialUpdateProposal(
-  request: Request,
-  env: Env,
-  documentId: string,
-): Promise<Response> {
-  const scope = await getAdminScope(request, env);
-  if (isResponse(scope)) return scope;
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-  const canonical = await env.REPORTS.prepare(
-    `${editorialDocumentSelect} WHERE id = ?`,
-  )
-    .bind(documentId)
-    .first<EditorialDocument>();
-  if (!canonical) return json({ error: "原稿が見つかりません。" }, 404);
-  if (!canEditSubject(scope, canonical.subject))
-    return json({ error: "この分野の更新案を作成する権限がありません。" }, 403);
-  if (canonical.document_kind === "update-proposal")
-    return json({ ok: true, id: canonical.id, existing: true, document: canonical });
-  if (!canonical.published_at)
-    return json({ error: "公開済みの記事だけ更新案を作成できます。" }, 400);
-  const activeProposal = await env.REPORTS.prepare(
-    `SELECT id FROM editorial_documents
-       WHERE base_document_id=? AND document_kind='update-proposal' AND archived_at IS NULL
-       ORDER BY updated_at DESC LIMIT 1`,
-  )
-    .bind(canonical.id)
-    .first<{ id: string }>();
-  if (activeProposal)
-    return json({ ok: true, id: activeProposal.id, existing: true });
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  await env.REPORTS.prepare(
-    `INSERT INTO editorial_documents
-      (id, document_kind, base_document_id, base_document_updated_at, source_article_id, subject, category, locale, slug, title, summary, concept_id, concept_name, concept_name_en, concept_is_new, body, writing_memo, latex_engine,
-       status, created_by, updated_by, created_at, updated_at, reviewed_at, published_at, archived_at, archived_by, archive_expires_at, scheduled_publish_at, scheduled_publish_claimed_at, publication_review_stage, publication_review_round, locked_ranges, article_references)
-     SELECT ?, 'update-proposal', id, updated_at, source_article_id, subject, category, locale, slug, title, summary, concept_id, concept_name, concept_name_en, concept_is_new, body, writing_memo, latex_engine,
-       'draft', ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, locked_ranges, article_references
-       FROM editorial_documents WHERE id=?`,
-  )
-    .bind(id, scope.email, scope.email, now, now, canonical.id)
-    .run();
-  await recordAdminAudit(
-    env,
-    scope.email,
-    "article_update_proposal_created",
-    "article",
-    id,
-    canonical.title,
-    `公開記事の更新案を作成：${canonical.title}`,
-    { baseDocumentId: canonical.id, sourceArticleId: canonical.source_article_id },
-  );
-  return json({ ok: true, id, existing: false, baseDocumentId: canonical.id }, 201);
+  return json({ ok: true, id, versionId }, 201);
 }
 
 async function updateEditorialDocument(
@@ -17518,15 +17739,15 @@ async function updateEditorialDocument(
       400,
     );
   const existing = await env.REPORTS.prepare(
-    "SELECT document_kind, base_document_id, source_article_id, subject, status, title, summary, concept_id, concept_name, concept_name_en, concept_is_new, body, writing_memo, category, locale, slug, latex_engine, published_at, scheduled_publish_at, scheduled_publish_claimed_at, publication_review_stage, publication_review_round, locked_ranges, article_references, updated_at, updated_by FROM editorial_documents WHERE id = ?",
+    "SELECT current_version_id, published_version_id, source_article_id, subject, status, title, summary, concept_id, concept_name, concept_name_en, concept_is_new, body, writing_memo, category, locale, slug, latex_engine, published_at, scheduled_publish_at, scheduled_publish_claimed_at, publication_review_stage, publication_review_round, locked_ranges, article_references, updated_at, updated_by FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
     .first<
       Pick<
         EditorialDocument,
+        | "current_version_id"
+        | "published_version_id"
         | "subject"
-        | "document_kind"
-        | "base_document_id"
         | "source_article_id"
         | "status"
         | "title"
@@ -17553,6 +17774,27 @@ async function updateEditorialDocument(
       >
   >();
   if (!existing) return json({ error: "原稿が見つかりません。" }, 404);
+  const nextLockedRanges = values.lockedRanges ??
+    storedEditorialLockedRanges(existing.locked_ranges, existing.body);
+  const nextReferences = values.references ??
+    storedArticleReferences(existing.article_references);
+  const contentChanged =
+    values.sourceArticleId !== existing.source_article_id ||
+    values.subject !== existing.subject ||
+    values.category !== existing.category ||
+    values.locale !== existing.locale ||
+    values.slug !== existing.slug ||
+    values.title !== existing.title ||
+    values.summary !== existing.summary ||
+    values.conceptId !== existing.concept_id ||
+    values.conceptName !== existing.concept_name ||
+    values.conceptNameEn !== existing.concept_name_en ||
+    (values.registerConcept ? 1 : 0) !== existing.concept_is_new ||
+    values.body !== existing.body ||
+    values.writingMemo !== existing.writing_memo ||
+    values.latexEngine !== existing.latex_engine ||
+    JSON.stringify(nextReferences) !== JSON.stringify(storedArticleReferences(existing.article_references)) ||
+    JSON.stringify(nextLockedRanges) !== JSON.stringify(storedEditorialLockedRanges(existing.locked_ranges, existing.body));
   // The editor sends the last version it read.  Reject stale writes before
   // any revision is recorded so another author's changes cannot be silently
   // overwritten after a reconnect, a second tab, or a slow request.
@@ -17567,6 +17809,44 @@ async function updateEditorialDocument(
       },
       409,
     );
+  const publishedIdentityChanged = Boolean(
+    existing.published_at &&
+      (values.subject !== existing.subject ||
+        values.category !== existing.category ||
+        values.locale !== existing.locale ||
+        values.slug !== existing.slug ||
+        values.conceptId !== existing.concept_id ||
+        values.conceptName !== existing.concept_name ||
+        values.conceptNameEn !== existing.concept_name_en ||
+        (values.registerConcept ? 1 : 0) !== existing.concept_is_new),
+  );
+  if (publishedIdentityChanged)
+    return json(
+      {
+        error: "公開済み記事の分野・カテゴリ・URL名・概念IDは変更できません。",
+        code: "PUBLISHED_ARTICLE_IDENTITY_LOCKED",
+      },
+      409,
+    );
+  const existingReferences = storedArticleReferences(
+    existing.article_references,
+  );
+  const existingLockedRanges = storedEditorialLockedRanges(
+    existing.locked_ranges,
+    existing.body,
+  );
+  const publishedContentChanged = Boolean(
+    existing.published_at &&
+      (values.title !== existing.title ||
+        values.summary !== existing.summary ||
+        values.body !== existing.body ||
+        values.writingMemo !== existing.writing_memo ||
+        values.latexEngine !== existing.latex_engine ||
+        JSON.stringify(values.references ?? existingReferences) !==
+          JSON.stringify(existingReferences) ||
+        JSON.stringify(values.lockedRanges ?? existingLockedRanges) !==
+          JSON.stringify(existingLockedRanges)),
+  );
   if (values.status === "approved" && existing.status !== "approved")
     return json(
       {
@@ -17655,33 +17935,37 @@ async function updateEditorialDocument(
       },
       403,
     );
-  if (values.status === "approved" && !scope.isManager)
+  // 承認済み・公開済み記事の内容を変更した保存版は、新しい審査が必要な
+  // 下書きとして扱う。公開中の版はpublished_version_idでそのまま保持する。
+  const nextStatus = existing.status === "approved" && contentChanged
+    ? "draft"
+    : values.status;
+  if (nextStatus === "approved" && !scope.isManager)
     return json({ error: "承認済みに変更できるのは運営管理者だけです。" }, 403);
-  if (existing.published_at && values.status !== "approved")
-    return json(
-      {
-        error:
-          "公開済み原稿を下書きへ戻すには「公開を取り消して下書きへ戻す」を使ってください。",
-      },
-      400,
-    );
-  if (existing.status !== values.status && !workflowTransitionsFor("document", existing.status).some((item) => item.to === values.status))
+  const automaticallyReopenedForEditing = existing.status === "approved" &&
+    nextStatus === "draft" && contentChanged;
+  if (existing.status !== nextStatus && !automaticallyReopenedForEditing && !workflowTransitionsFor("document", existing.status).some((item) => item.to === nextStatus))
     return json({ error: "許可されていない記事状態の変更です。公開審査の操作から進めてください。", code: "INVALID_TRANSITION" }, 409);
   const now = new Date().toISOString();
-  const previous = await env.REPORTS.prepare(
-    `${editorialDocumentSelect} WHERE id = ?`,
-  )
-    .bind(documentId)
-    .first<EditorialDocument>();
-  const updateResult = (await env.REPORTS.prepare(
+  const versionId = crypto.randomUUID();
+  const versionSnapshot = editorialVersionSnapshot(
+    values,
+    nextStatus,
+    now,
+    nextLockedRanges,
+    nextReferences,
+  );
+  const saveResults = await env.REPORTS.batch([
+    env.REPORTS.prepare(
     `UPDATE editorial_documents SET source_article_id = ?, subject = ?, category = ?, locale = ?,
       slug = ?, title = ?, summary = ?, concept_id = ?, concept_name = ?, concept_name_en = ?, concept_is_new = ?, body = ?, writing_memo = ?, latex_engine = ?, status = ?, updated_by = ?, locked_ranges = ?, article_references = ?,
+      current_version_id = ?,
       updated_at = ?, reviewed_at = CASE WHEN ? = 'approved' THEN COALESCE(reviewed_at, ?) ELSE NULL END,
       scheduled_publish_at = CASE WHEN ? = 'approved' THEN scheduled_publish_at ELSE NULL END,
       scheduled_publish_claimed_at = CASE WHEN ? = 'approved' THEN scheduled_publish_claimed_at ELSE NULL END,
       publication_review_stage = CASE WHEN ? = 'approved' THEN publication_review_stage ELSE NULL END
      WHERE id = ? AND (? IS NULL OR updated_at = ?)`,
-  )
+    )
     .bind(
       values.sourceArticleId,
       values.subject,
@@ -17697,30 +17981,45 @@ async function updateEditorialDocument(
       values.body,
       values.writingMemo,
       values.latexEngine,
-      values.status,
+      nextStatus,
       scope.email,
-      JSON.stringify(
-        values.lockedRanges ??
-          storedEditorialLockedRanges(existing.locked_ranges, existing.body),
-      ),
-      JSON.stringify(
-        values.references ??
-          storedArticleReferences(existing.article_references),
-      ),
+      JSON.stringify(nextLockedRanges),
+      JSON.stringify(nextReferences),
+      versionId,
       now,
-      values.status,
+      nextStatus,
       now,
-      values.status,
-      values.status,
-      values.status,
+      nextStatus,
+      nextStatus,
+      nextStatus,
       documentId,
       values.baseUpdatedAt,
       values.baseUpdatedAt,
-    )
-    .run()) as { meta?: { changes?: number } };
+    ),
+    env.REPORTS.prepare(
+      `INSERT INTO editorial_document_revisions
+        (id, document_id, title, summary, body, status, saved_by, saved_at, document_updated_at, snapshot_json)
+       SELECT ?, id, ?, ?, ?, ?, ?, ?, ?, ?
+         FROM editorial_documents WHERE id=? AND current_version_id=? AND updated_at=?`,
+    ).bind(
+      versionId,
+      values.title,
+      values.summary,
+      values.body,
+      nextStatus,
+      scope.email,
+      now,
+      now,
+      versionSnapshot,
+      documentId,
+      versionId,
+      now,
+    ),
+  ]);
   // Some D1-compatible test adapters omit `meta`; a real D1 UPDATE always
   // provides the change count, so only an explicit non-one count is a race.
-  if (typeof updateResult.meta?.changes === "number" && updateResult.meta.changes !== 1)
+  const updateChanges = batchChangeCount(saveResults, 0);
+  if (updateChanges !== null && updateChanges !== 1)
     return json(
       {
         error:
@@ -17731,35 +18030,9 @@ async function updateEditorialDocument(
       },
       409,
     );
-  // 競合や検証失敗で更新されなかったリクエストは版履歴へ記録しない。
-  // 先に履歴を挿入すると、保存失敗なのに「過去版」だけが増えてしまう。
-  let revisionWarning = false;
-  if (previous) {
-    try {
-      await env.REPORTS.prepare(
-        "INSERT INTO editorial_document_revisions (id, document_id, title, summary, body, status, saved_by, saved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      )
-        .bind(
-          crypto.randomUUID(),
-          documentId,
-          previous.title,
-          previous.summary,
-          previous.body,
-          previous.status,
-          scope.email,
-          now,
-        )
-        .run();
-    } catch (error) {
-      // 本文の更新は成功しているため、版履歴テーブルが未適用の環境や
-      // 一時的なD1障害で保存全体を失敗扱いにしない。次回保存時に再試行する。
-      revisionWarning = true;
-      console.error("editorial revision recording failed after document save", {
-        documentId,
-        error,
-      });
-    }
-  }
+  const versionChanges = batchChangeCount(saveResults, 1);
+  if (versionChanges !== null && versionChanges !== 1)
+    return json({ error: "記事は保存されましたが、新しい版を記録できませんでした。最新内容を読み込み、もう一度保存してください。" }, 500);
   const changedFields = [
     ["title", existing.title, values.title],
     ["summary", existing.summary, values.summary],
@@ -17769,7 +18042,7 @@ async function updateEditorialDocument(
     ["category", existing.category, values.category],
     ["locale", existing.locale, values.locale],
     ["slug", existing.slug, values.slug],
-    ["status", existing.status, values.status],
+    ["status", existing.status, nextStatus],
     ["latexEngine", existing.latex_engine, values.latexEngine],
   ].filter(([, before, after]) => before !== after).map(([field]) => field);
   await recordAdminAudit(
@@ -17780,33 +18053,31 @@ async function updateEditorialDocument(
     documentId,
     values.title,
     `記事を更新：${values.title}`,
-    { changedFields, statusBefore: existing.status, statusAfter: values.status },
+    { changedFields, statusBefore: existing.status, statusAfter: nextStatus, versionId },
   );
-  if (existing.status !== values.status)
+  if (existing.status !== nextStatus)
     await recordWorkflowEvent(env, {
       entityType: "document",
       entityId: documentId,
       fromState: existing.status,
-      toState: values.status,
+      toState: nextStatus,
       actorEmail: scope.email,
       expectedUpdatedAt: values.baseUpdatedAt || null,
-      metadata: { via: "editor-save" },
+      metadata: { via: "editor-save", publishedEditReset: publishedContentChanged },
       createdAt: now,
     });
   await syncEditorialCollaborationDocument(env, documentId);
-  if (existing.document_kind !== "update-proposal") {
-    try {
-      await syncEditorialOutlineDocument(env, documentId, { subject: values.subject, category: values.category, slug: values.slug }, text(payload.outlineId, 64));
-    } catch (error) {
-      // 目次の補助リンクが一時的に更新できなくても、本文の保存結果は保持する。
-      console.error("editorial outline synchronization failed after document save", {
-        documentId,
-        error,
-      });
-    }
+  try {
+    await syncEditorialOutlineDocument(env, documentId, { subject: values.subject, category: values.category, slug: values.slug }, text(payload.outlineId, 64));
+  } catch (error) {
+    // 目次の補助リンクが一時的に更新できなくても、本文の保存結果は保持する。
+    console.error("editorial outline synchronization failed after document save", {
+      documentId,
+      error,
+    });
   }
   await notifyEditorialDocumentChange(env, documentId);
-  return json({ ok: true, updatedAt: now, revisionWarning });
+  return json({ ok: true, updatedAt: now, status: nextStatus, versionId, currentVersionId: versionId, statusResetForPublishedEdit: publishedContentChanged, revisionWarning: false });
 }
 
 async function listEditorialRevisions(
@@ -17817,25 +18088,34 @@ async function listEditorialRevisions(
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
   const document = await env.REPORTS.prepare(
-    "SELECT subject, status, publication_review_stage, document_kind, base_document_id FROM editorial_documents WHERE id = ?",
+    "SELECT subject, status, publication_review_stage, current_version_id, published_version_id, archived_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
     .first<{
       subject: string;
       status: EditorialDocumentStatus;
       publication_review_stage: EditorialPublicationReviewStage | null;
-      document_kind: EditorialDocument["document_kind"];
-      base_document_id: string | null;
+      current_version_id: string | null;
+      published_version_id: string | null;
+      archived_at: string | null;
     }>();
   if (!document || !canReviewDocument(scope, document))
     return json({ error: "この原稿を閲覧する権限がありません。" }, 403);
   const result = await env.REPORTS.prepare(
-    `SELECT r.id, r.title, r.summary, r.body, r.status, r.saved_by, r.saved_at,
+    `SELECT r.id, r.title, r.summary, r.body, r.status, r.saved_by, r.saved_at, r.snapshot_json,
+            r.id = d.current_version_id AS is_current_version,
+            r.id = d.published_version_id AS is_published_version,
             COALESCE(NULLIF(TRIM(p.display_name), ''), r.saved_by) AS saved_by_display_name,
             COALESCE(p.avatar_url, '') AS saved_by_avatar_url
        FROM editorial_document_revisions r
+       JOIN editorial_documents d ON d.id = r.document_id
        LEFT JOIN editorial_member_profiles p ON lower(p.email)=lower(r.saved_by)
-      WHERE r.document_id = ? ORDER BY r.saved_at DESC LIMIT 50`,
+      WHERE r.document_id = ?
+        AND (r.id IN (d.current_version_id, d.published_version_id)
+             OR r.id IN (SELECT recent.id FROM editorial_document_revisions recent
+                          WHERE recent.document_id = r.document_id
+                          ORDER BY recent.saved_at DESC, recent.id DESC LIMIT 50))
+      ORDER BY r.saved_at DESC, r.id DESC`,
   )
     .bind(documentId)
     .all<{
@@ -17846,48 +18126,24 @@ async function listEditorialRevisions(
       status: string;
       saved_by: string;
       saved_at: string;
+      snapshot_json: string | null;
+      is_current_version: number;
+      is_published_version: number;
       saved_by_display_name: string;
       saved_by_avatar_url: string;
     }>();
-  // 更新案の作成直後はまだ保存操作がないため、版履歴が空になる。
-  // その場合でも、比較元となった公開中の現行版を履歴の先頭に表示して、
-  // 更新案と現行版の両方をいつでも確認できるようにする。
-  let revisionRows = result.results ?? [];
-  if (document.document_kind === "update-proposal" && document.base_document_id) {
-    const base = await env.REPORTS.prepare(
-      `SELECT d.id, d.title, d.summary, d.body, d.status, d.updated_by AS saved_by, d.updated_at AS saved_at,
-              COALESCE(NULLIF(TRIM(p.display_name), ''), d.updated_by) AS saved_by_display_name,
-              COALESCE(p.avatar_url, '') AS saved_by_avatar_url
-         FROM editorial_documents d
-         LEFT JOIN editorial_member_profiles p ON lower(p.email)=lower(d.updated_by)
-        WHERE d.id = ? AND COALESCE(d.document_kind, 'canonical') = 'canonical'`,
-    )
-      .bind(document.base_document_id)
-      .first<{
-        id: string;
-        title: string;
-        summary: string;
-        body: string;
-        status: string;
-        saved_by: string;
-        saved_at: string;
-        saved_by_display_name: string;
-        saved_by_avatar_url: string;
-      }>();
-    if (base) {
-      revisionRows = [
-        {
-          ...base,
-          id: `base-${base.id}`,
-          status: "published",
-        },
-        ...revisionRows,
-      ];
-    }
-  }
+  const revisionRows = result.results ?? [];
   const feedbackRequests = await env.REPORTS.prepare(
     `SELECT t.id AS task_id, t.title, t.details, t.status, t.assignee_email,
             t.created_by, t.created_at, t.updated_at,
+            (SELECT e.created_at FROM workflow_transition_events e
+              WHERE e.entity_type='task' AND e.entity_id=t.id
+                AND json_extract(e.metadata_json, '$.action')=?
+              ORDER BY e.created_at DESC LIMIT 1) AS withdrawn_at,
+            (SELECT e.actor_email FROM workflow_transition_events e
+              WHERE e.entity_type='task' AND e.entity_id=t.id
+                AND json_extract(e.metadata_json, '$.action')=?
+              ORDER BY e.created_at DESC LIMIT 1) AS withdrawn_by,
             COALESCE(NULLIF(TRIM(profile.display_name), ''), t.created_by) AS requester_display_name
        FROM editorial_feedback_task_links link
        JOIN editorial_tasks t ON t.id = link.task_id AND t.task_kind = 'feedback'
@@ -17896,7 +18152,7 @@ async function listEditorialRevisions(
       ORDER BY link.created_at DESC, t.created_at DESC
       LIMIT 100`,
   )
-    .bind(documentId)
+    .bind(FEEDBACK_REQUEST_WITHDRAWAL_ACTION, FEEDBACK_REQUEST_WITHDRAWAL_ACTION, documentId)
     .all<{
       task_id: string;
       title: string;
@@ -17906,6 +18162,8 @@ async function listEditorialRevisions(
       created_by: string;
       created_at: string;
       updated_at: string;
+      withdrawn_at: string | null;
+      withdrawn_by: string | null;
       requester_display_name: string;
     }>();
   return json({
@@ -17916,6 +18174,13 @@ async function listEditorialRevisions(
         scope.isManager ||
         task.created_by.toLowerCase() === scope.email.toLowerCase() ||
         taskAssignedTo(task.assignee_email, scope.email, "feedback"),
+      canWithdraw:
+        !document.archived_at &&
+        document.status === "in-review" &&
+        !document.publication_review_stage &&
+        !task.withdrawn_at &&
+        task.status !== "done" &&
+        (scope.isManager || task.created_by.toLowerCase() === scope.email.toLowerCase()),
     })),
   });
 }
@@ -17962,20 +18227,42 @@ async function listEditorialReviewRequests(
   const [result, reviewerResult] = await Promise.all([
     env.REPORTS.prepare(
       `SELECT d.id, d.subject, d.category, d.title, d.updated_by, d.updated_at,
-         COALESCE(NULLIF((SELECT GROUP_CONCAT(rr.reviewer_email) FROM editorial_review_assignment_recipients rr WHERE rr.document_id = d.id), ''), r.reviewer_email) AS reviewer_email,
+         COALESCE(
+           (SELECT t.assignee_email
+              FROM editorial_feedback_task_links link
+              JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+             WHERE link.document_id=d.id
+               AND NOT EXISTS (
+                 SELECT 1 FROM workflow_transition_events e
+                  WHERE e.entity_type='task' AND e.entity_id=t.id
+                    AND json_extract(e.metadata_json, '$.action')=?
+               )
+             ORDER BY link.created_at DESC,t.created_at DESC LIMIT 1),
+           COALESCE(NULLIF((SELECT GROUP_CONCAT(rr.reviewer_email) FROM editorial_review_assignment_recipients rr WHERE rr.document_id = d.id), ''), r.reviewer_email)
+         ) AS reviewer_email,
          r.request_note,
          COALESCE(NULLIF(TRIM(requester.display_name), ''), '表示名未設定') AS requester_display_name,
-         COALESCE(NULLIF((SELECT GROUP_CONCAT(COALESCE(NULLIF(TRIM(rm.display_name), ''), rr.reviewer_email)) FROM editorial_review_assignment_recipients rr LEFT JOIN editorial_member_profiles rm ON lower(rm.email) = lower(rr.reviewer_email) WHERE rr.document_id = d.id), ''), COALESCE(NULLIF(TRIM(reviewer.display_name), ''), '')) AS reviewer_display_name
+         COALESCE(NULLIF((SELECT GROUP_CONCAT(COALESCE(NULLIF(TRIM(rm.display_name), ''), rr.reviewer_email)) FROM editorial_review_assignment_recipients rr LEFT JOIN editorial_member_profiles rm ON lower(rm.email) = lower(rr.reviewer_email) WHERE rr.document_id = d.id), ''), COALESCE(NULLIF(TRIM(reviewer.display_name), ''), '')) AS reviewer_display_name,
+         (SELECT GROUP_CONCAT(DISTINCT t.assignee_email)
+            FROM editorial_feedback_task_links active_link
+            JOIN editorial_tasks t ON t.id=active_link.task_id AND t.task_kind='feedback'
+           WHERE active_link.document_id=d.id
+             AND t.status IN ('open','doing')
+             AND NOT EXISTS (
+               SELECT 1 FROM workflow_transition_events e
+                WHERE e.entity_type='task' AND e.entity_id=t.id
+                  AND json_extract(e.metadata_json, '$.action')=?
+             )) AS active_reviewer_assignments
        FROM editorial_documents d
        LEFT JOIN editorial_review_assignments r ON r.document_id = d.id
        LEFT JOIN editorial_member_profiles requester ON requester.email = d.updated_by
        LEFT JOIN editorial_member_profiles reviewer ON reviewer.email = r.reviewer_email
-       WHERE d.status = 'in-review'${subjectFilter}${documentFilter}
-       ORDER BY CASE WHEN lower(r.reviewer_email) = lower(?) THEN 0 WHEN r.reviewer_email IS NULL THEN 2 ELSE 1 END,
+       WHERE d.status = 'in-review' AND d.archived_at IS NULL${subjectFilter}${documentFilter}
+       ORDER BY CASE WHEN lower(reviewer_email) = lower(?) THEN 0 WHEN reviewer_email IS NULL THEN 2 ELSE 1 END,
                 d.updated_at ASC LIMIT 100`,
     )
       // SQL内のプレースホルダー順（分野、対象原稿、担当者）に合わせる。
-      .bind(...subjectValues, ...documentValues, scope.email)
+      .bind(FEEDBACK_REQUEST_WITHDRAWAL_ACTION, FEEDBACK_REQUEST_WITHDRAWAL_ACTION, ...subjectValues, ...documentValues, scope.email)
       .all<{
         id: string;
         subject: string;
@@ -17987,6 +18274,7 @@ async function listEditorialReviewRequests(
         requester_display_name: string;
         reviewer_display_name: string;
         request_note: string;
+        active_reviewer_assignments: string | null;
       }>(),
     env.REPORTS.prepare(
       `SELECT p.email,
@@ -18003,6 +18291,17 @@ async function listEditorialReviewRequests(
   return json({
     requests: (result.results ?? []).map((item) => ({
       ...item,
+      activeReviewerEmails: [
+        ...new Set(
+          (item.active_reviewer_assignments ?? "")
+            .split(",")
+            .map((email) => email.trim().toLowerCase())
+            .filter((email) => email && email !== "*"),
+        ),
+      ],
+      hasActiveAllReviewerRequest: (item.active_reviewer_assignments ?? "")
+        .split(",")
+        .some((email) => email.trim() === "*"),
       reviewerDisplayName:
         item.reviewer_email === "*"
           ? "分野担当者全員"
@@ -18042,7 +18341,7 @@ async function updateEditorialReviewAssignment(
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
   const document = await env.REPORTS.prepare(
-    "SELECT subject, status, publication_review_stage, title, created_by FROM editorial_documents WHERE id = ?",
+    "SELECT subject, status, publication_review_stage, title, created_by, archived_at FROM editorial_documents WHERE id = ?",
   )
     .bind(documentId)
     .first<{
@@ -18051,9 +18350,12 @@ async function updateEditorialReviewAssignment(
       publication_review_stage: EditorialPublicationReviewStage | null;
       title: string;
       created_by: string;
+      archived_at: string | null;
     }>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (document.status !== "in-review")
+  if (document.archived_at)
+    return json({ error: "アーカイブ中の記事のフィードバック担当者は変更できません。先に一覧から復元してください。" }, 409);
+  if (document.status !== "in-review" || document.publication_review_stage)
     return json(
       { error: "フィードバック中の原稿だけ担当者を設定できます。" },
       400,
@@ -18069,30 +18371,8 @@ async function updateEditorialReviewAssignment(
     .filter(Boolean)
     .filter((email, index, all) => all.indexOf(email) === index);
   const requestNote = text(payload.note, 2_000);
-  const existingAssignment = await env.REPORTS.prepare(
-    "SELECT task_id FROM editorial_review_assignments WHERE document_id = ?",
-  )
-    .bind(documentId)
-    .first<{ task_id: string | null }>();
-  if (!reviewerEmails.length) {
-    const statements = [
-      ...(existingAssignment?.task_id
-        ? [
-            env.REPORTS.prepare(
-              "UPDATE editorial_tasks SET status='done',updated_at=? WHERE id=? AND task_kind='feedback'",
-            ).bind(new Date().toISOString(), existingAssignment.task_id),
-          ]
-        : []),
-      env.REPORTS.prepare(
-        "DELETE FROM editorial_review_assignment_recipients WHERE document_id = ?",
-      ).bind(documentId),
-      env.REPORTS.prepare(
-        "DELETE FROM editorial_review_assignments WHERE document_id = ?",
-      ).bind(documentId),
-    ];
-    await env.REPORTS.batch(statements);
-    return json({ ok: true, reviewerEmail: null, reviewerEmails: [] });
-  }
+  if (!reviewerEmails.length)
+    return json({ error: "依頼先を1人以上選択してください。フィードバック依頼の取り下げは記事の依頼履歴から行えます。" }, 400);
   if (reviewerEmails.includes("*") && reviewerEmails.length > 1)
     return json(
       { error: "担当者全員と個別担当者は同時に選択できません。" },
@@ -18124,6 +18404,78 @@ async function updateEditorialReviewAssignment(
       },
       400,
     );
+  const activeFeedbackAssignments = await env.REPORTS.prepare(
+    `SELECT t.assignee_email
+       FROM editorial_feedback_task_links link
+       JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+      WHERE link.document_id=?
+        AND t.status IN ('open','doing')
+        AND NOT EXISTS (
+          SELECT 1 FROM workflow_transition_events e
+           WHERE e.entity_type='task' AND e.entity_id=t.id
+             AND json_extract(e.metadata_json, '$.action')=?
+        )`,
+  )
+    .bind(documentId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION)
+    .all<{ assignee_email: string | null }>();
+  const activeAssigneeSets = (activeFeedbackAssignments.results ?? []).map(
+    (assignment) =>
+      new Set(
+        (assignment.assignee_email ?? "")
+          .split(",")
+          .map((email) => email.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+  );
+  const duplicateAssignment = reviewerEmails.includes("*")
+    ? activeAssigneeSets.length > 0
+    : activeAssigneeSets.some(
+        (assignees) =>
+          assignees.has("*") ||
+          reviewerEmails.some((email) => assignees.has(email)),
+      );
+  if (duplicateAssignment)
+    return json(
+      {
+        error:
+          "選択した担当者には未完了のフィードバック依頼があります。依頼履歴で取り下げるか、未依頼の担当者を選んでください。",
+      },
+      409,
+    );
+  const duplicateAssigneePredicate = reviewerEmails.includes("*")
+    ? "1=1"
+    : `(
+        lower(trim(COALESCE(t.assignee_email, '')))='*'
+        OR ${reviewerEmails
+          .map(
+            () =>
+              "instr(',' || replace(lower(COALESCE(t.assignee_email, '')), ' ', '') || ',', ',' || ? || ',') > 0",
+          )
+          .join(" OR ")}
+      )`;
+  const feedbackStageBindings = [
+    documentId,
+    ...reviewerEmails.filter((email) => email !== "*"),
+    FEEDBACK_REQUEST_WITHDRAWAL_ACTION,
+  ];
+  const feedbackStageCondition = `status = 'in-review'
+    AND publication_review_stage IS NULL
+    AND archived_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM editorial_feedback_task_links link
+      JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+      WHERE link.document_id=?
+        AND t.status IN ('open','doing')
+        AND ${duplicateAssigneePredicate}
+        AND NOT EXISTS (
+          SELECT 1 FROM workflow_transition_events e
+          WHERE e.entity_type='task' AND e.entity_id=t.id
+            AND json_extract(e.metadata_json, '$.action')=?
+        )
+    )`;
+  const feedbackStageGuard = env.REPORTS.prepare(
+    `UPDATE editorial_documents SET updated_at = updated_at WHERE id = ? AND ${feedbackStageCondition}`,
+  ).bind(documentId, ...feedbackStageBindings);
   const now = new Date().toISOString();
   // 各フィードバック依頼は、記事に紐づく独立した共通タスクとして残す。
   // 最新の依頼だけは既存の assignment テーブルにも保持し、旧一覧との互換を維持する。
@@ -18134,10 +18486,12 @@ async function updateEditorialReviewAssignment(
   const taskDetails = requestNote
     ? `${requestNote}\n\n記事編集画面: /admin/editor/?document=${documentId}`
     : `記事のフィードバックをお願いします。\n\n記事編集画面: /admin/editor/?document=${documentId}`;
-  await env.REPORTS.batch([
+  const isFeedbackStage = `EXISTS (SELECT 1 FROM editorial_documents WHERE id=? AND ${feedbackStageCondition})`;
+  const results = await env.REPORTS.batch([
+    feedbackStageGuard,
     env.REPORTS.prepare(
       `INSERT INTO editorial_review_assignments (document_id, reviewer_email, requested_by, requested_at, updated_at, request_note, task_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+       SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${isFeedbackStage}
        ON CONFLICT(document_id) DO UPDATE SET reviewer_email = excluded.reviewer_email,
          requested_by = excluded.requested_by, updated_at = excluded.updated_at, request_note = excluded.request_note, task_id = excluded.task_id`,
     ).bind(
@@ -18148,10 +18502,25 @@ async function updateEditorialReviewAssignment(
       now,
       requestNote,
       taskId,
+      documentId,
+      ...feedbackStageBindings,
     ),
+    // Reviewer display/visibility rows must be written before the new linked task
+    // makes the duplicate-assignee guard reject subsequent statements in this batch.
+    env.REPORTS.prepare(
+      `DELETE FROM editorial_review_assignment_recipients WHERE document_id = ? AND ${isFeedbackStage}`,
+    ).bind(documentId, documentId, ...feedbackStageBindings),
+    ...reviewerEmails
+      .filter((email) => email !== "*")
+      .map((email) =>
+        env.REPORTS.prepare(
+          `INSERT INTO editorial_review_assignment_recipients (document_id, reviewer_email, requested_at, updated_at)
+           SELECT ?, ?, ?, ? WHERE ${isFeedbackStage}`,
+        ).bind(documentId, email, now, now, documentId, ...feedbackStageBindings),
+      ),
     env.REPORTS.prepare(
       `INSERT INTO editorial_tasks (id,project_id,subject,assignee_email,title,details,status,created_by,created_at,updated_at,task_kind)
-       VALUES (?, 'atlas', ?, ?, ?, ?, 'open', ?, ?, ?, 'feedback')
+       SELECT ?, 'atlas', ?, ?, ?, ?, 'open', ?, ?, ?, 'feedback' WHERE ${isFeedbackStage}
       `,
     ).bind(
       taskId,
@@ -18162,27 +18531,189 @@ async function updateEditorialReviewAssignment(
       scope.email,
       now,
       now,
+      documentId,
+      ...feedbackStageBindings,
     ),
     env.REPORTS.prepare(
-      "INSERT INTO editorial_feedback_task_links (task_id, document_id, created_at) VALUES (?, ?, ?)",
-    ).bind(taskId, documentId, now),
-    env.REPORTS.prepare(
-      "DELETE FROM editorial_review_assignment_recipients WHERE document_id = ?",
-    ).bind(documentId),
-    ...reviewerEmails
-      .filter((email) => email !== "*")
-      .map((email) =>
-        env.REPORTS.prepare(
-          "INSERT INTO editorial_review_assignment_recipients (document_id, reviewer_email, requested_at, updated_at) VALUES (?, ?, ?, ?)",
-        ).bind(documentId, email, now, now),
-      ),
+      `INSERT INTO editorial_feedback_task_links (task_id, document_id, created_at)
+       SELECT ?, ?, ? WHERE ${isFeedbackStage}`,
+    ).bind(taskId, documentId, now, documentId, ...feedbackStageBindings),
   ]);
+  if (Number(results[0]?.meta?.changes ?? 0) !== 1)
+    return json({ error: "原稿の状態が変わりました。再読み込みしてから担当者を変更してください。" }, 409);
   return json({
     ok: true,
     reviewerEmail: reviewerEmails[0],
     reviewerEmails,
     taskId,
     taskKind: "feedback",
+  });
+}
+
+async function withdrawEditorialFeedbackRequest(
+  request: Request,
+  env: Env,
+  documentId: string,
+  taskId: string,
+): Promise<Response> {
+  const scope = await getAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  if (!isSameOrigin(request))
+    return json({ error: "この送信元からは受け付けられません。" }, 403);
+  let payload: { expectedUpdatedAt?: unknown };
+  try {
+    payload = (await request.json()) as typeof payload;
+  } catch {
+    return json({ error: "入力内容を読み取れませんでした。" }, 400);
+  }
+  const expectedUpdatedAt = text(payload.expectedUpdatedAt, 80);
+  if (!expectedUpdatedAt)
+    return json({ error: "記事を再読み込みしてから、依頼を取り下げてください。" }, 400);
+
+  const document = await env.REPORTS.prepare(
+    `SELECT subject,status,publication_review_stage,title,updated_at,archived_at
+       FROM editorial_documents WHERE id=?`,
+  ).bind(documentId).first<{
+    subject: string;
+    status: EditorialDocumentStatus;
+    publication_review_stage: EditorialPublicationReviewStage | null;
+    title: string;
+    updated_at: string;
+    archived_at: string | null;
+  }>();
+  if (!document) return json({ error: "原稿が見つかりません。" }, 404);
+  if (!canReviewDocument(scope, document))
+    return json({ error: "この原稿を操作する権限がありません。" }, 403);
+
+  const task = await env.REPORTS.prepare(
+    `SELECT t.title,t.created_by,t.status,t.updated_at
+       FROM editorial_feedback_task_links link
+       JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+      WHERE link.document_id=? AND t.id=?`,
+  ).bind(documentId, taskId).first<{
+    title: string;
+    created_by: string;
+    status: string;
+    updated_at: string;
+  }>();
+  if (!task) return json({ error: "この原稿のフィードバック依頼が見つかりません。" }, 404);
+  if (!scope.isManager && task.created_by.toLowerCase() !== scope.email.toLowerCase())
+    return json({ error: "依頼を取り下げられるのは依頼者または運営管理者です。" }, 403);
+
+  const previousWithdrawal = await env.REPORTS.prepare(
+    `SELECT created_at FROM workflow_transition_events
+      WHERE entity_type='task' AND entity_id=?
+        AND json_extract(metadata_json, '$.action')=?
+      ORDER BY created_at DESC LIMIT 1`,
+  ).bind(taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION).first<{ created_at: string }>();
+  if (previousWithdrawal)
+    return json({ ok: true, withdrawn: true, alreadyWithdrawn: true, documentStatus: document.status, updatedAt: document.updated_at });
+
+  if (document.status !== "in-review" || document.publication_review_stage || document.archived_at)
+    return json({ error: "フィードバック中で審査開始前の記事だけ依頼を取り下げられます。" }, 409);
+  if (document.updated_at !== expectedUpdatedAt)
+    return json({ error: "記事が先に更新されています。最新内容を読み込んでから再試行してください。", code: "STALE_STATE", updatedAt: document.updated_at }, 409);
+  if (task.status !== "open" && task.status !== "doing")
+    return json({ error: "完了済みの依頼は取り下げられません。" }, 409);
+
+  const now = new Date().toISOString();
+  const results = await env.REPORTS.batch([
+    env.REPORTS.prepare(
+      `UPDATE editorial_tasks SET status='done',updated_at=?
+        WHERE id=? AND task_kind='feedback' AND status=? AND updated_at=?
+          AND EXISTS (SELECT 1 FROM editorial_feedback_task_links WHERE task_id=? AND document_id=?)
+          AND EXISTS (SELECT 1 FROM editorial_documents
+            WHERE id=? AND status='in-review' AND publication_review_stage IS NULL
+              AND archived_at IS NULL AND updated_at=?)`,
+    ).bind(now, taskId, task.status, task.updated_at, taskId, documentId, documentId, expectedUpdatedAt),
+    workflowEventStatement(env, {
+      entityType: "task",
+      entityId: taskId,
+      fromState: task.status,
+      toState: "done",
+      actorEmail: scope.email,
+      idempotencyKey: `feedback-withdrawal-task:${taskId}`,
+      expectedUpdatedAt: task.updated_at,
+      metadata: { action: FEEDBACK_REQUEST_WITHDRAWAL_ACTION, documentId },
+      createdAt: now,
+    }, true),
+    adminAuditStatement(
+      env,
+      scope.email,
+      "feedback_request_withdrawn",
+      "task",
+      taskId,
+      task.title,
+      `フィードバック依頼を取り下げ：${task.title}`,
+      { documentId, documentTitle: document.title, previousTaskStatus: task.status },
+      true,
+    ),
+    env.REPORTS.prepare(
+      `DELETE FROM editorial_review_assignment_recipients
+        WHERE document_id=? AND EXISTS (
+          SELECT 1 FROM editorial_review_assignments
+           WHERE document_id=? AND task_id=?
+        ) AND EXISTS (
+          SELECT 1 FROM workflow_transition_events
+           WHERE entity_type='task' AND entity_id=?
+             AND json_extract(metadata_json, '$.action')=?
+        )`,
+    ).bind(documentId, documentId, taskId, taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION),
+    env.REPORTS.prepare(
+      `DELETE FROM editorial_review_assignments
+        WHERE document_id=? AND task_id=? AND EXISTS (
+          SELECT 1 FROM workflow_transition_events
+           WHERE entity_type='task' AND entity_id=?
+             AND json_extract(metadata_json, '$.action')=?
+        )`,
+    ).bind(documentId, taskId, taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION),
+    env.REPORTS.prepare(
+      `UPDATE editorial_documents SET status='draft',updated_by=?,updated_at=?
+        WHERE id=? AND status='in-review' AND publication_review_stage IS NULL
+          AND archived_at IS NULL AND updated_at=?
+          AND NOT EXISTS (
+            SELECT 1 FROM editorial_feedback_task_links link
+            JOIN editorial_tasks t ON t.id=link.task_id AND t.task_kind='feedback'
+            WHERE link.document_id=?
+              AND NOT EXISTS (
+                SELECT 1 FROM workflow_transition_events e
+                 WHERE e.entity_type='task' AND e.entity_id=t.id
+                   AND json_extract(e.metadata_json, '$.action')=?
+              )
+          )`,
+    ).bind(scope.email, now, documentId, expectedUpdatedAt, documentId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION),
+    workflowEventStatement(env, {
+      entityType: "document",
+      entityId: documentId,
+      fromState: "in-review",
+      toState: "draft",
+      actorEmail: scope.email,
+      idempotencyKey: `feedback-withdrawal-document:${taskId}`,
+      expectedUpdatedAt,
+      metadata: { action: FEEDBACK_REQUEST_WITHDRAWAL_ACTION, taskId },
+      createdAt: now,
+    }, true),
+  ]);
+  if (Number(results[0]?.meta?.changes ?? 0) !== 1) {
+    const racedWithdrawal = await env.REPORTS.prepare(
+      `SELECT 1 AS withdrawn FROM workflow_transition_events
+        WHERE entity_type='task' AND entity_id=?
+          AND json_extract(metadata_json, '$.action')=? LIMIT 1`,
+    ).bind(taskId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION).first<{ withdrawn: number }>();
+    if (racedWithdrawal)
+      return json({ ok: true, withdrawn: true, alreadyWithdrawn: true, documentStatus: document.status, updatedAt: document.updated_at });
+    return json({ error: "依頼の状態が先に変わりました。履歴を再読み込みしてください。", code: "STALE_STATE" }, 409);
+  }
+  if (Number(results[1]?.meta?.changes ?? 0) !== 1)
+    throw new Error("Feedback withdrawal event was not recorded with its task update.");
+  const returnedToDraft = Number(results[5]?.meta?.changes ?? 0) === 1;
+  if (returnedToDraft && Number(results[6]?.meta?.changes ?? 0) !== 1)
+    throw new Error("Document withdrawal event was not recorded with its state update.");
+  return json({
+    ok: true,
+    withdrawn: true,
+    documentStatus: returnedToDraft ? "draft" : "in-review",
+    updatedAt: returnedToDraft ? now : document.updated_at,
   });
 }
 
@@ -19404,45 +19935,14 @@ const githubArticleMarkdown = async (
   return githubText(payload.content);
 };
 
-const githubArticleContent = async (
-  repository: string,
-  headers: Record<string, string>,
-  path: string,
-) => {
-  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-  const response = await fetch(
-    `https://api.github.com/repos/${repository}/contents/${encodedPath}?ref=main`,
-    { headers },
-  );
-  if (response.status === 404) return null;
-  if (!response.ok)
-    throw new Error(`GitHubの記事を取得できませんでした: ${path}`);
-  const payload = (await response.json()) as {
-    content?: string;
-    encoding?: string;
-    sha?: string;
-    type?: string;
-  };
-  if (
-    payload.type !== "file" ||
-    !payload.content ||
-    payload.encoding !== "base64"
-  )
-    throw new Error(`GitHubの記事本文を読み取れませんでした: ${path}`);
-  return {
-    markdown: githubText(payload.content),
-    gitSha: typeof payload.sha === "string" ? payload.sha : null,
-  };
-};
-
-const upsertEditorialArticleCatalog = async (
+const editorialArticleCatalogUpsertStatement = (
   env: Env,
   article: PublicArticleCatalogEntry,
   documentId: string | null = null,
   registeredAt: string | null = null,
   registeredBy: string | null = null,
-) => {
-  await env.REPORTS.prepare(
+) =>
+  env.REPORTS.prepare(
     `INSERT INTO editorial_article_catalog
       (path, identity_key, repository, locale, subject, category, slug, source_article_id, git_sha, title, summary, concept_id, public_status, document_id, last_seen_at, registered_at, registered_by, source_kind, source_ref, source_checksum, source_checksum_algorithm, source_body_checksum, source_fetched_at, source_authority, registration_method, identity_status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -19499,8 +19999,164 @@ const upsertEditorialArticleCatalog = async (
       article.sourceAuthority,
       article.registrationMethod,
       article.identityStatus,
-    )
-    .run();
+    );
+
+const upsertEditorialArticleCatalog = async (
+  env: Env,
+  article: PublicArticleCatalogEntry,
+  documentId: string | null = null,
+  registeredAt: string | null = null,
+  registeredBy: string | null = null,
+) => {
+  await env.REPORTS.batch([
+    editorialArticleCatalogUpsertStatement(
+      env,
+      article,
+      documentId,
+      registeredAt,
+      registeredBy,
+    ),
+  ]);
+};
+
+const syncEditorialArticleCatalogFromPublicSite = async (
+  env: Env,
+  articles: PublicArticleCatalogEntry[],
+  documents: Awaited<ReturnType<typeof catalogDocumentRows>>,
+  storedCatalog: EditorialArticleCatalogRow[],
+) => {
+  // An empty or malformed graph must not make every cached public article
+  // appear removed from the learning site.
+  if (!articles.length) return;
+
+  const identityForRepository = (repository: string, identity: string) =>
+    `${repository}/${identity}`;
+  const storedByIdentity = new Map(
+    storedCatalog.map((row) => [
+      identityForRepository(row.repository, row.identity_key),
+      row,
+    ]),
+  );
+  const documentsByIdentity = new Map<string, typeof documents>();
+  const documentsBySourceId = new Map<string, typeof documents>();
+  for (const document of documents) {
+    const identity = editorialArticleIdentity(document);
+    documentsByIdentity.set(identity, [
+      ...(documentsByIdentity.get(identity) ?? []),
+      document,
+    ]);
+    if (document.source_article_id) {
+      documentsBySourceId.set(document.source_article_id, [
+        ...(documentsBySourceId.get(document.source_article_id) ?? []),
+        document,
+      ]);
+    }
+  }
+
+  const now = new Date().toISOString();
+  const liveIdentities = new Set(
+    articles.map((article) =>
+      identityForRepository(article.repository, article.identityKey),
+    ),
+  );
+  const statements: D1PreparedStatement[] = [];
+  for (const article of articles) {
+    const matches = documentsByIdentity.get(article.identityKey) ?? [];
+    const sourceMatches = (documentsBySourceId.get(article.sourceArticleId) ?? [])
+      .filter((document) => editorialArticleIdentity(document) !== article.identityKey);
+    const documentState = catalogDocumentState(
+      matches,
+      article.sourceArticleId,
+      sourceMatches,
+    );
+    const documentId =
+      (documentState === "managed" || documentState === "needs-registration") &&
+      matches.length === 1
+        ? matches[0].id
+        : null;
+    const cached = storedByIdentity.get(
+      identityForRepository(article.repository, article.identityKey),
+    );
+    if (!cached) {
+      statements.push(
+        editorialArticleCatalogUpsertStatement(env, article, documentId),
+      );
+      continue;
+    }
+
+    const shouldRepair =
+      cached.public_status !== "published" ||
+      cached.source_article_id !== article.sourceArticleId ||
+      cached.title !== article.title ||
+      cached.concept_id !== article.conceptId ||
+      cached.identity_status !== "verified" ||
+      Boolean(documentId && cached.document_id !== documentId);
+    if (!shouldRepair) continue;
+
+    statements.push(
+      env.REPORTS.prepare(
+        `UPDATE editorial_article_catalog
+            SET source_article_id = ?,
+                title = ?,
+                concept_id = ?,
+                public_status = 'published',
+                document_id = COALESCE(?, document_id),
+                last_seen_at = ?,
+                source_kind = CASE
+                  WHEN source_kind IN ('unknown', 'editorial-document')
+                    THEN 'learning-site-catalog'
+                  ELSE source_kind
+                END,
+                source_ref = COALESCE(source_ref, ?),
+                source_fetched_at = COALESCE(source_fetched_at, ?),
+                source_authority = CASE
+                  WHEN source_authority IN ('unverified', 'editorial-draft')
+                    THEN 'reference-only'
+                  ELSE source_authority
+                END,
+                registration_method = CASE
+                  WHEN registration_method IN ('legacy-backfill', 'editorial-document')
+                    THEN 'catalog-observation'
+                  ELSE registration_method
+                END,
+                identity_status = 'verified'
+          WHERE identity_key = ? AND repository = ?`,
+      ).bind(
+        article.sourceArticleId,
+        article.title,
+        article.conceptId,
+        documentId,
+        now,
+        article.sourceRef,
+        article.sourceFetchedAt,
+        article.identityKey,
+        article.repository,
+      ),
+    );
+  }
+
+  const activeRepositories = new Set(articles.map((article) => article.repository));
+  for (const cached of storedCatalog) {
+    if (
+      cached.public_status === "published" &&
+      activeRepositories.has(cached.repository) &&
+      !liveIdentities.has(
+        identityForRepository(cached.repository, cached.identity_key),
+      )
+    ) {
+      statements.push(
+        env.REPORTS.prepare(
+          `UPDATE editorial_article_catalog
+              SET public_status = 'not-found'
+            WHERE path = ? AND repository = ? AND public_status = 'published'`,
+        ).bind(cached.path, cached.repository),
+      );
+    }
+  }
+
+  for (let offset = 0; offset < statements.length; offset += 40) {
+    await env.REPORTS.batch(statements.slice(offset, offset + 40));
+  }
 };
 
 const CONCEPT_ID = /^[a-z0-9-]+\.[a-z0-9-]+\.[a-z0-9-]+$/;
@@ -19641,112 +20297,21 @@ async function syncPublishedArticleBackups(env: Env) {
   return { synced, skipped: false, processed: page.length, hasMore };
 }
 
-/** GitHub main上の公開用Markdownを基準に、編集室の公開済み表示を正規化する。 */
+/** Cloudflareの現行Versionを照合し、D1の公開版IDから状態を返す。 */
 async function syncEditorialPublicationStatus(env: Env, documentId?: string) {
-  const token = (await githubToken(env))?.token;
-  if (!token)
-    throw new Error("GitHub公開連携が未設定のため、公開状態を同期できません。");
-  const repository = env.GITHUB_REPOSITORY ?? "Atlasez/Atlasez01";
-  const headers = {
-    accept: "application/vnd.github+json",
-    authorization: `Bearer ${token}`,
-    "user-agent": "atlasez-editorial-publication-sync",
-    "x-github-api-version": "2022-11-28",
-  };
+  await reconcileEditorialReleaseCandidates(env);
   const normalizedDocumentId = documentId?.trim() || null;
-  const cursor = normalizedDocumentId
-    ? null
-    : await readWorkerSyncCursor(env, "editorial-publication-status");
-  const documents = await env.REPORTS.prepare(
-    `SELECT id, locale, subject, category, slug, published_at, publication_action
+  const summary = await env.REPORTS.prepare(
+    `SELECT COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN published_version_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS published
        FROM editorial_documents
-      WHERE ${normalizedDocumentId
-        ? "id = ?"
-        : "(document_kind IS NULL OR document_kind='canonical') AND id > ?"}
-      ORDER BY id ASC
-      LIMIT ?`,
+      ${normalizedDocumentId ? "WHERE id = ?" : ""}`,
   )
-    .bind(
-      ...(normalizedDocumentId ? [normalizedDocumentId] : [cursor ?? ""]),
-      normalizedDocumentId ? 1 : WORKER_SYNC_PAGE_SIZE + 1,
-    )
-    .all<
-    Pick<
-      EditorialDocument,
-      | "id"
-      | "locale"
-      | "subject"
-      | "category"
-      | "slug"
-      | "published_at"
-      | "publication_action"
-    >
-  >();
-  const hasMore = !normalizedDocumentId && documents.results.length > WORKER_SYNC_PAGE_SIZE;
-  const page = normalizedDocumentId
-    ? documents.results
-    : documents.results.slice(0, WORKER_SYNC_PAGE_SIZE);
-  let published = 0;
-  let pending = 0;
-  const now = new Date().toISOString();
-  for (const document of page) {
-    const path = `src/content/articles/${editorialLocaleDirectory(document.locale)}/${document.subject}/${document.category}/${document.slug}.md`;
-    const response = await fetch(
-      `https://api.github.com/repos/${repository}/contents/${path}`,
-      { headers },
-    );
-    let isPublished = false;
-    if (response.ok) {
-      const content = (await response.json()) as { content?: string };
-      const markdown = content.content ? githubText(content.content) : "";
-      const frontMatter =
-        markdown.match(/^---\s*\n([\s\S]*?)\n---/m)?.[1] ?? "";
-      isPublished = /^status:\s*published\s*$/m.test(frontMatter);
-    } else if (response.status !== 404) {
-      throw new Error("GitHub上の公開状態を取得できませんでした。");
-    }
-    if (isPublished) {
-      published += 1;
-      await env.REPORTS.prepare(
-        `UPDATE editorial_documents
-         SET published_at = COALESCE(published_at, ?),
-             publication_pr_number = CASE WHEN publication_action = 'publish' THEN NULL ELSE publication_pr_number END,
-             publication_pr_url = CASE WHEN publication_action = 'publish' THEN NULL ELSE publication_pr_url END,
-             publication_branch = CASE WHEN publication_action = 'publish' THEN NULL ELSE publication_branch END,
-             publication_action = CASE WHEN publication_action = 'publish' THEN NULL ELSE publication_action END,
-             publication_requested_at = CASE WHEN publication_action = 'publish' THEN NULL ELSE publication_requested_at END
-         WHERE id = ?`,
-      )
-        .bind(now, document.id)
-        .run();
-    } else if (document.publication_action === "unpublish") {
-      pending += 1;
-      await env.REPORTS.prepare(
-        `UPDATE editorial_documents
-         SET status = 'draft', published_at = NULL,
-             publication_pr_number = NULL, publication_pr_url = NULL,
-             publication_branch = NULL, publication_action = NULL,
-             publication_requested_at = NULL
-         WHERE id = ?`,
-      )
-        .bind(document.id)
-        .run();
-    } else {
-      pending += 1;
-      await env.REPORTS.prepare(
-        "UPDATE editorial_documents SET published_at = NULL WHERE id = ?",
-      )
-        .bind(document.id)
-        .run();
-    }
-  }
-  if (!normalizedDocumentId)
-    await writeWorkerSyncCursor(
-      env,
-      "editorial-publication-status",
-      hasMore ? page.at(-1)?.id ?? null : null,
-    );
-  return { published, pending, total: page.length, hasMore };
+    .bind(...(normalizedDocumentId ? [normalizedDocumentId] : []))
+    .first<{ total: number; published: number }>();
+  const total = Number(summary?.total ?? 0);
+  const published = Number(summary?.published ?? 0);
+  return { published, pending: total - published, total, hasMore: false };
 }
 
 async function syncEditorialPublicationStatusForAdmin(
@@ -19903,7 +20468,13 @@ async function editorialPublicationIntegrationStatus(
     // そのため公開用GitHub AppにActions: write（Workflow dispatch権限）は不要。
     // PR作成に必要なContents/Pull requests権限だけを確認する。
     const preflightReady = true;
-    const ready = defaultBranch === "main" && canWrite && !archived;
+    const releaseCandidateReady = Boolean(env.EDITORIAL_RELEASE_WEBHOOK_SECRET?.trim());
+    const activeDeploymentReadReady = Boolean(env.CLOUDFLARE_WORKERS_READ_TOKEN?.trim());
+    const missingRequirements = [
+      ...(!releaseCandidateReady ? ["EDITORIAL_RELEASE_WEBHOOK_SECRET"] : []),
+      ...(!activeDeploymentReadReady ? ["CLOUDFLARE_WORKERS_READ_TOKEN"] : []),
+    ];
+    const ready = defaultBranch === "main" && canWrite && !archived && releaseCandidateReady && activeDeploymentReadReady;
     const automationReady = ready && automaticMerge && automaticReview;
     return json({
       ready,
@@ -19916,6 +20487,9 @@ async function editorialPublicationIntegrationStatus(
       automaticReview,
       preflightReady,
       preflightMode: "pull_request_ci",
+      releaseCandidateReady,
+      activeDeploymentReadReady,
+      missingRequirements,
       automationReady,
       archived,
       ...(ready
@@ -19932,7 +20506,11 @@ async function editorialPublicationIntegrationStatus(
               ? "公開先リポジトリがアーカイブされています。"
               : defaultBranch !== "main"
                 ? "公開先リポジトリの既定ブランチがmainではありません。"
-              : "公開用トークンにContents書込権限がありません。",
+              : !canWrite
+                ? "公開用トークンにContents書込権限がありません。"
+                : missingRequirements.length
+                  ? `公開処理の設定が不足しています: ${missingRequirements.join("、")}。`
+                  : "公開連携設定を確認してください。",
           }),
     });
   } catch {
@@ -19951,6 +20529,7 @@ async function editorialPublicationIntegrationStatus(
 export const editorialMarkdown = (
   document: EditorialDocument,
   publicationStatus: "published" | "draft" = "published",
+  editorialVersionId?: string | null,
 ) => {
   const createdDate = document.created_at.slice(0, 10);
   const updatedDate = new Date().toISOString().slice(0, 10);
@@ -19964,6 +20543,7 @@ export const editorialMarkdown = (
   return [
     "---",
     `articleId: ${yaml(articleId)}`,
+    ...(editorialVersionId ? [`editorialVersionId: ${yaml(editorialVersionId)}`] : []),
     `locale: ${yaml(document.locale)}`,
     `title: ${yaml(document.title)}`,
     `slug: ${yaml(document.slug)}`,
@@ -20065,6 +20645,8 @@ type EditorialPublicationRun = {
   preflight_requested_at: string | null;
   snapshot_updated_at: string | null;
   snapshot_hash: string | null;
+  snapshot_version_id: string | null;
+  candidate_version_id: string | null;
   failure_history: string;
   failure_detail?: string | null;
   failure_step?: string | null;
@@ -20082,7 +20664,7 @@ const publicationRunSelect = `SELECT id, document_id, action, state, attempt,
   last_check_at, next_attempt_at, error_code, error_message, idempotency_key,
   lease_until, failure_kind, check_name, check_url, diagnostic_url,
   preflight_run_id, preflight_requested_at,
-  snapshot_updated_at, snapshot_hash,
+  snapshot_updated_at, snapshot_hash, snapshot_version_id, candidate_version_id,
   failure_history,
   failure_detail, failure_step, failure_file, failure_line, failure_column, failure_suggestion,
   created_by,
@@ -20159,16 +20741,82 @@ const editorialPublicationSnapshot = async (
   return { updatedAt: document.updated_at, hash: hexDigest(digest) };
 };
 
+const loadEditorialPublicationVersion = async (
+  env: Env,
+  document: EditorialDocument,
+  versionId: string,
+): Promise<EditorialDocument | null> => {
+  const revision = await env.REPORTS.prepare(
+    `SELECT title, summary, body, status, saved_by, saved_at, document_updated_at, snapshot_json
+       FROM editorial_document_revisions WHERE id = ? AND document_id = ?`,
+  )
+    .bind(versionId, document.id)
+    .first<{
+      title: string;
+      summary: string;
+      body: string;
+      status: string;
+      saved_by: string;
+      saved_at: string;
+      document_updated_at: string | null;
+      snapshot_json: string | null;
+    }>();
+  if (!revision?.snapshot_json) return null;
+  let snapshot: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(revision.snapshot_json);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    snapshot = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const requiredText = ["subject", "category", "locale", "slug", "concept_id"];
+  if (requiredText.some((key) => typeof snapshot[key] !== "string")) return null;
+  const updatedAt = typeof snapshot.updated_at === "string"
+    ? snapshot.updated_at
+    : revision.document_updated_at ?? revision.saved_at;
+  return {
+    ...document,
+    source_article_id: typeof snapshot.source_article_id === "string" ? snapshot.source_article_id : null,
+    subject: snapshot.subject as string,
+    category: snapshot.category as string,
+    locale: snapshot.locale as string,
+    slug: snapshot.slug as string,
+    title: revision.title,
+    summary: revision.summary,
+    concept_id: snapshot.concept_id as string,
+    concept_name: typeof snapshot.concept_name === "string" ? snapshot.concept_name : null,
+    concept_name_en: typeof snapshot.concept_name_en === "string" ? snapshot.concept_name_en : null,
+    concept_is_new: Number(snapshot.concept_is_new ?? 0),
+    body: revision.body,
+    writing_memo: typeof snapshot.writing_memo === "string" ? snapshot.writing_memo : "",
+    latex_engine: typeof snapshot.latex_engine === "string" ? snapshot.latex_engine as LatexEngine : document.latex_engine,
+    status: revision.status as EditorialDocumentStatus,
+    updated_by: revision.saved_by,
+    updated_at: updatedAt,
+    locked_ranges: typeof snapshot.locked_ranges === "string"
+      ? snapshot.locked_ranges
+      : JSON.stringify(snapshot.locked_ranges ?? []),
+    article_references: typeof snapshot.article_references === "string"
+      ? snapshot.article_references
+      : JSON.stringify(snapshot.article_references ?? []),
+  };
+};
+
 const editorialPublicationSnapshotMatches = async (
+  env: Env,
   document: EditorialDocument,
   run: EditorialPublicationRun,
 ) => {
-  // 0105以前に作成されたrunはスナップショットを持たないため、従来の
-  // リコンシリエーションを継続する。新しいrunは必ず一致を検証する。
+  // 編集原稿の最新行ではなくrunが固定した保存版を確認する。公開処理中に
+  // 新しい版が保存されても、対象Versionをすり替えず処理を続けられる。
+  if (!run.snapshot_version_id) return !run.snapshot_hash;
+  const version = await loadEditorialPublicationVersion(env, document, run.snapshot_version_id);
+  if (!version) return false;
   if (!run.snapshot_hash || !run.snapshot_updated_at) return true;
-  if (run.snapshot_updated_at !== document.updated_at) return false;
-  const current = await editorialPublicationSnapshot(document);
-  return current.hash === run.snapshot_hash;
+  if (run.snapshot_updated_at !== version.updated_at) return false;
+  const saved = await editorialPublicationSnapshot(version);
+  return saved.hash === run.snapshot_hash;
 };
 
 const githubFailure = async (
@@ -20254,12 +20902,14 @@ const publicationRunActiveStates = [
 ] as const;
 
 const editorialDocumentHasUnpublishedChanges = (
-  document: Pick<EditorialDocument, "published_at" | "updated_at">,
+  document: Pick<EditorialDocument, "published_at" | "current_version_id" | "published_version_id">,
 ) => {
-  if (!document.published_at) return false;
-  const updatedAt = Date.parse(document.updated_at);
-  const publishedAt = Date.parse(document.published_at);
-  return Number.isFinite(updatedAt) && Number.isFinite(publishedAt) && updatedAt > publishedAt;
+  return Boolean(
+    document.published_at &&
+    document.current_version_id &&
+    document.published_version_id &&
+    document.current_version_id !== document.published_version_id,
+  );
 };
 
 const getLatestEditorialPublicationRun = async (
@@ -20310,7 +20960,7 @@ async function editorialPublicationRunsOverview(
     r.pull_request_number, r.pull_request_url, r.branch, r.head_sha, r.merge_sha,
     r.last_check_at, r.next_attempt_at, r.error_code, r.error_message, r.idempotency_key,
     r.lease_until, r.failure_kind, r.check_name, r.check_url, r.diagnostic_url,
-    r.preflight_run_id, r.preflight_requested_at, r.snapshot_updated_at, r.snapshot_hash,
+    r.preflight_run_id, r.preflight_requested_at, r.snapshot_updated_at, r.snapshot_hash, r.snapshot_version_id, r.candidate_version_id,
     r.failure_history, r.failure_detail, r.failure_step, r.failure_file, r.failure_line,
     r.failure_column, r.failure_suggestion, r.created_by, r.created_at, r.updated_at`;
   const rows = await env.REPORTS.prepare(
@@ -20378,6 +21028,8 @@ const updateEditorialPublicationRun = async (
       | "preflight_requested_at"
       | "snapshot_updated_at"
       | "snapshot_hash"
+      | "snapshot_version_id"
+      | "candidate_version_id"
       | "failure_history"
       | "failure_detail"
       | "failure_step"
@@ -20410,6 +21062,8 @@ const updateEditorialPublicationRun = async (
     "preflight_requested_at",
     "snapshot_updated_at",
     "snapshot_hash",
+    "snapshot_version_id",
+    "candidate_version_id",
     "failure_history",
     "failure_detail",
     "failure_step",
@@ -20461,7 +21115,7 @@ const updateEditorialPublicationRun = async (
   );
   const now = new Date().toISOString();
   await env.REPORTS.prepare(
-    `UPDATE editorial_publication_runs SET ${finalEntries.map(([key]) => `${key} = ?`).join(", ")}, updated_at = ? WHERE id = ?`,
+    `UPDATE editorial_publication_runs SET ${finalEntries.map(([key]) => `${key} = ?`).join(", ")}, updated_at = ? WHERE id = ? AND state NOT IN ('published', 'unpublished')`,
   )
     .bind(...finalEntries.map(([, value]) => value), now, runId)
     .run();
@@ -20478,7 +21132,7 @@ const claimEditorialPublicationRun = async (
   documentId: string,
   action: "publish" | "unpublish",
   createdBy: string,
-  document?: Pick<EditorialDocument, "id" | "updated_at" | "subject" | "category" | "locale" | "slug" | "title" | "summary" | "concept_id" | "body" | "latex_engine" | "status" | "article_references">,
+  document?: EditorialDocument,
 ) => {
   const active = await env.REPORTS.prepare(
     `${publicationRunSelect} WHERE document_id = ? AND state IN (${publicationRunActiveStates.map(() => "?").join(",")}) ORDER BY created_at DESC LIMIT 1`,
@@ -20489,7 +21143,18 @@ const claimEditorialPublicationRun = async (
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  const snapshot = document ? await editorialPublicationSnapshot(document) : null;
+  const publicationVersion = document?.current_version_id
+    ? await loadEditorialPublicationVersion(
+        env,
+        document,
+        document.current_version_id,
+      )
+    : null;
+  const snapshot = publicationVersion
+    ? await editorialPublicationSnapshot(publicationVersion)
+    : document
+      ? await editorialPublicationSnapshot(document)
+      : null;
   // 同じ記事世代の二重クリックは同じキーで吸収し、失敗後の明示的な
   // 再試行は末尾にrun IDを付けて新しいrunとして開始できるようにする。
   const idempotencyKey = snapshot
@@ -20498,8 +21163,8 @@ const claimEditorialPublicationRun = async (
   const result = (await env.REPORTS.prepare(
     `INSERT OR IGNORE INTO editorial_publication_runs
       (id, document_id, action, state, attempt, idempotency_key, lease_until,
-       snapshot_updated_at, snapshot_hash, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?)`,
+       snapshot_updated_at, snapshot_hash, snapshot_version_id, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -20509,6 +21174,7 @@ const claimEditorialPublicationRun = async (
       new Date(Date.now() + 90_000).toISOString(),
       snapshot?.updatedAt ?? null,
       snapshot?.hash ?? null,
+      document?.current_version_id ?? null,
       createdBy,
       now,
       now,
@@ -20519,8 +21185,8 @@ const claimEditorialPublicationRun = async (
     await env.REPORTS.prepare(
       `INSERT OR IGNORE INTO editorial_publication_runs
         (id, document_id, action, state, attempt, idempotency_key, lease_until,
-         snapshot_updated_at, snapshot_hash, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?)`,
+         snapshot_updated_at, snapshot_hash, snapshot_version_id, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         id,
@@ -20530,6 +21196,7 @@ const claimEditorialPublicationRun = async (
         new Date(Date.now() + 90_000).toISOString(),
         snapshot.updatedAt,
         snapshot.hash,
+        document?.current_version_id ?? null,
         createdBy,
         now,
         now,
@@ -20560,10 +21227,15 @@ const ensureEditorialPublicationRun = async (
   if (active) return active;
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  const documentVersion = await env.REPORTS.prepare(
+    "SELECT current_version_id FROM editorial_documents WHERE id = ?",
+  )
+    .bind(documentId)
+    .first<{ current_version_id: string | null }>();
   await env.REPORTS.prepare(
     `INSERT OR IGNORE INTO editorial_publication_runs
-      (id, document_id, action, state, attempt, pull_request_number, pull_request_url, branch, idempotency_key, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, 'checks_pending', 0, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, document_id, action, state, attempt, pull_request_number, pull_request_url, branch, idempotency_key, snapshot_version_id, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, 'checks_pending', 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -20573,6 +21245,7 @@ const ensureEditorialPublicationRun = async (
       pullRequest.url,
       pullRequest.branch,
       `${documentId}:${action}:${pullRequest.branch ?? id}`,
+      documentVersion?.current_version_id ?? null,
       createdBy,
       now,
       now,
@@ -21002,50 +21675,6 @@ async function closeEditorialPublicationPullRequest(env: Env, number: number) {
   ).catch(() => undefined);
 }
 
-const publicArticleUrl = (env: Env, document: EditorialDocument) => {
-  const origin = (env.PUBLIC_SITE_ORIGIN ?? "https://atlasez.org").replace(/\/$/, "");
-  return `${origin}/atlas/${encodeURIComponent(document.locale)}/${encodeURIComponent(document.subject)}/${encodeURIComponent(document.category)}/${encodeURIComponent(document.slug)}/`;
-};
-
-async function verifyEditorialPublicationDeployment(
-  env: Env,
-  document: EditorialDocument,
-  run: EditorialPublicationRun,
-) {
-  const origin = (env.PUBLIC_SITE_ORIGIN ?? "https://atlasez.org").replace(/\/$/, "");
-  const buildResponse = await fetch(`${origin}/build-info.json?publication_run=${encodeURIComponent(run.id)}`, {
-    cache: "no-store",
-    headers: { "cache-control": "no-cache" },
-  });
-  if (!buildResponse.ok) return { ready: false, reason: "build_info_unavailable" };
-  const buildInfo = (await buildResponse.json().catch(() => ({}))) as { commit?: string };
-  let buildIncludesMerge = Boolean(run.merge_sha && buildInfo.commit === run.merge_sha);
-  if (!buildIncludesMerge && run.merge_sha && buildInfo.commit) {
-    const auth = await githubToken(env);
-    if (auth) {
-      const repository = env.GITHUB_REPOSITORY ?? "Atlasez/Atlasez01";
-      const comparison = await fetch(
-        `https://api.github.com/repos/${repository}/compare/${encodeURIComponent(run.merge_sha)}...${encodeURIComponent(buildInfo.commit)}`,
-        { headers: githubApiHeaders(auth.token, "atlasez-editorial-publication-run") },
-      );
-      if (comparison.ok) {
-        const data = (await comparison.json().catch(() => ({}))) as { status?: string };
-        buildIncludesMerge = data.status === "ahead" || data.status === "identical";
-      }
-    }
-  }
-  if (!buildIncludesMerge)
-    return { ready: false, reason: "build_pending" };
-  const articleResponse = await fetch(`${publicArticleUrl(env, document)}?publication_run=${encodeURIComponent(run.id)}`, {
-    cache: "no-store",
-    headers: { "cache-control": "no-cache" },
-  });
-  const expectedStatus = run.action === "publish" ? 200 : 404;
-  return articleResponse.status === expectedStatus
-    ? { ready: true, reason: "verified" }
-    : { ready: false, reason: "article_pending" };
-}
-
 const publicationRunBranch = (document: EditorialDocument, run: EditorialPublicationRun) =>
   run.branch ?? `editorial/${run.action === "publish" ? "published" : "draft"}-${document.id}-${run.id}`;
 
@@ -21084,6 +21713,13 @@ async function createEditorialPublicationRunPullRequest(
   document: EditorialDocument,
   run: EditorialPublicationRun,
 ) {
+  const versionId = run.snapshot_version_id ?? document.current_version_id;
+  if (!versionId)
+    throw new EditorialPublicationFailure(
+      "公開対象の保存版IDがありません。",
+      "publication_version_missing",
+      "validation",
+    );
   const branch = publicationRunBranch(document, run);
   await updateEditorialPublicationRun(env, run.id, {
     branch,
@@ -21095,6 +21731,7 @@ async function createEditorialPublicationRunPullRequest(
     run.action === "publish" ? "published" : "draft",
     `${run.action === "publish" ? "Publish" : "Unpublish"} article: ${document.title}`,
     branch,
+    { versionId },
   );
   if (result instanceof Response)
     throw await publicationFailureFromResponse(result, "公開用PRを作成できませんでした。");
@@ -21292,6 +21929,616 @@ async function receiveGithubPublicationWebhook(
   return json({ ok: true, event, ...(await progress) }, 202);
 }
 
+type EditorialReleaseManifestEntry = {
+  articleId: string;
+  path: string;
+  status: "draft" | "in-review" | "published";
+  versionId: string | null;
+};
+
+type EditorialReleaseCandidatePayload = {
+  repository: string;
+  workerName: string;
+  commitSha: string;
+  versionId: string;
+  manifest: {
+    schemaVersion: number;
+    commitSha: string;
+    entries: unknown[];
+  };
+};
+
+const editorialReleaseVersionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const editorialReleaseArticlePathPattern = /^src\/content\/articles\/[a-z]{3}\/[a-z0-9-]+(?:\/[a-z0-9-]+)+\.md$/;
+const editorialReleaseArticleIdPattern = /^[a-z0-9-]{1,120}$/;
+const editorialReleaseAccountId = "812021e62fa20465950b61be55dfe064";
+const editorialReleaseWorkerName = "atlasez01";
+const editorialReleaseRequestMaxBytes = 1_000_000;
+const editorialReleaseD1MaxBoundParameters = 100;
+const editorialReleaseCandidateArticleParameterCount = 6;
+const editorialReleaseCandidateArticleChunkSize = Math.floor(
+  editorialReleaseD1MaxBoundParameters /
+    editorialReleaseCandidateArticleParameterCount,
+);
+
+const editorialReleaseManifestFromPayload = (
+  value: unknown,
+): EditorialReleaseManifestEntry[] | Response => {
+  const payload = recordValue(value);
+  const releaseManifest = recordValue(payload?.manifest);
+  if (
+    !payload ||
+    payload.workerName !== editorialReleaseWorkerName ||
+    typeof payload.repository !== "string" ||
+    typeof payload.commitSha !== "string" ||
+    !/^[0-9a-f]{40}$/i.test(payload.commitSha) ||
+    typeof payload.versionId !== "string" ||
+    !editorialReleaseVersionIdPattern.test(payload.versionId) ||
+    !releaseManifest ||
+    releaseManifest.schemaVersion !== 1 ||
+    releaseManifest.commitSha !== payload.commitSha ||
+    !Array.isArray(releaseManifest.entries) ||
+    releaseManifest.entries.length > 2_000
+  )
+    return json({ error: "公開候補の識別情報を確認してください。", code: "invalid_release_candidate" }, 400);
+
+  const seenIds = new Set<string>();
+  const seenPaths = new Set<string>();
+  const entries: EditorialReleaseManifestEntry[] = [];
+  for (const raw of releaseManifest.entries) {
+    const entry = recordValue(raw);
+    if (!entry)
+      return json({ error: "公開候補の記事一覧に不正または重複した項目があります。", code: "invalid_release_manifest" }, 400);
+    const articleId = typeof entry.articleId === "string" ? entry.articleId.trim() : "";
+    const articlePath = typeof entry.path === "string" ? entry.path.replaceAll("\\", "/") : "";
+    const status = entry.status;
+    const versionId = entry.versionId == null || entry.versionId === ""
+      ? null
+      : typeof entry.versionId === "string" ? entry.versionId.trim() : "invalid";
+    if (
+      !editorialReleaseArticleIdPattern.test(articleId) ||
+      !editorialReleaseArticlePathPattern.test(articlePath) ||
+      !["draft", "in-review", "published"].includes(String(status)) ||
+      (versionId !== null && !editorialReleaseVersionIdPattern.test(versionId)) ||
+      seenIds.has(articleId) ||
+      seenPaths.has(articlePath)
+    )
+      return json({ error: "公開候補の記事一覧に不正または重複した項目があります。", code: "invalid_release_manifest" }, 400);
+    seenIds.add(articleId);
+    seenPaths.add(articlePath);
+    entries.push({
+      articleId,
+      path: articlePath,
+      status: status as EditorialReleaseManifestEntry["status"],
+      versionId,
+    });
+  }
+  return entries.sort((left, right) => left.path.localeCompare(right.path));
+};
+
+const editorialReleaseManifestHash = async (
+  commitSha: string,
+  entries: EditorialReleaseManifestEntry[],
+) => {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify({ schemaVersion: 1, commitSha, entries })),
+  );
+  return hexDigest(digest);
+};
+
+async function verifyEditorialReleaseRequest(
+  request: Request,
+  body: string,
+  env: Env,
+) {
+  const secret = env.EDITORIAL_RELEASE_WEBHOOK_SECRET?.trim();
+  if (!secret) return json({ error: "公開候補連携の署名鍵が設定されていません。" }, 503);
+  const timestamp = request.headers.get("x-atlasez-release-timestamp") ?? "";
+  const timestampNumber = Number(timestamp);
+  if (!/^\d{13}$/.test(timestamp) || !Number.isFinite(timestampNumber) || Math.abs(Date.now() - timestampNumber) > 5 * 60_000)
+    return json({ error: "公開候補連携の署名時刻が期限切れです。" }, 401);
+  const signature = request.headers.get("x-atlasez-release-signature");
+  if (!(await verifyGithubWebhookSignature(secret, `${timestamp}.${body}`, signature)))
+    return json({ error: "公開候補連携の署名が不正です。" }, 401);
+  return null;
+}
+
+const editorialReleaseDocumentArticlePath = (
+  document: Pick<EditorialDocument, "locale" | "subject" | "category" | "slug">,
+) => editorialArticlePath(document);
+const editorialReleaseDocumentArticleIdentity = (
+  document: Pick<EditorialDocument, "locale" | "subject" | "category" | "slug">,
+) => editorialArticleIdentity(document);
+
+async function linkEditorialPublicationRunsToCandidate(
+  env: Env,
+  versionId: string,
+  entries: Array<Pick<EditorialReleaseManifestEntry, "status" | "versionId"> & { documentId: string | null }>,
+) {
+  const runs = await env.REPORTS.prepare(
+    `SELECT id, document_id, action, snapshot_version_id
+       FROM editorial_publication_runs WHERE state = 'deploy_pending'`,
+  ).all<Pick<EditorialPublicationRun, "id" | "document_id" | "action" | "snapshot_version_id">>();
+  const articlesByDocument = new Map(
+    entries.filter((entry) => entry.documentId).map((entry) => [entry.documentId!, entry]),
+  );
+  const updates = (runs.results ?? []).flatMap((run) => {
+    const article = articlesByDocument.get(run.document_id);
+    const statusMatches = run.action === "publish"
+      ? article?.status === "published"
+      : Boolean(article && article.status !== "published");
+    return article && statusMatches && article.versionId && article.versionId === run.snapshot_version_id
+      ? [env.REPORTS.prepare(
+          `UPDATE editorial_publication_runs SET candidate_version_id = ?, error_code = 'candidate_recorded',
+             error_message = 'D1に公開候補の記事・版IDを記録しました。Cloudflareの切替を確認しています。',
+             updated_at = ? WHERE id = ? AND state = 'deploy_pending' AND snapshot_version_id = ?`,
+        ).bind(versionId, new Date().toISOString(), run.id, run.snapshot_version_id)]
+      : [];
+  });
+  for (let offset = 0; offset < updates.length; offset += 100)
+    await env.REPORTS.batch(updates.slice(offset, offset + 100));
+}
+
+async function registerEditorialReleaseCandidate(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  if (request.method !== "POST") return json({ error: "POSTのみ利用できます。" }, 405);
+  const contentLength = Number(request.headers.get("content-length") ?? 0);
+  if (contentLength > editorialReleaseRequestMaxBytes)
+    return json({ error: "公開候補マニフェストが大きすぎます。" }, 413);
+  const body = await request.text();
+  if (new TextEncoder().encode(body).byteLength > editorialReleaseRequestMaxBytes)
+    return json({ error: "公開候補マニフェストが大きすぎます。" }, 413);
+  const signatureFailure = await verifyEditorialReleaseRequest(request, body, env);
+  if (signatureFailure) return signatureFailure;
+  let payload: EditorialReleaseCandidatePayload;
+  try {
+    const parsed = JSON.parse(body);
+    const record = recordValue(parsed);
+    if (!record) throw new Error("invalid payload");
+    payload = record as unknown as EditorialReleaseCandidatePayload;
+  } catch {
+    return json({ error: "公開候補のJSONが不正です。" }, 400);
+  }
+  const manifest = editorialReleaseManifestFromPayload(payload);
+  if (manifest instanceof Response) return manifest;
+  if (!manifest.some((entry) => entry.status === "published"))
+    return json({ error: "公開記事がない候補は登録できません。", code: "empty_publication_candidate" }, 409);
+
+  const repository = env.GITHUB_REPOSITORY ?? "Atlasez/Atlasez01";
+  if (payload.repository !== repository)
+    return json({ error: "公開候補のrepositoryが公開連携設定と一致しません。" }, 409);
+
+  // Cloudflare切替後ではなく、候補Versionへ進む前に読み取り資格情報を
+  // 検証する。未設定・権限不足・API障害のまま本番だけ切り替わるのを防ぐ。
+  try {
+    await getCurrentEditorialWorkerDeployment(env);
+  } catch (error) {
+    const failure = publicationFailureDetails(error);
+    return json(
+      {
+        error: `公開Workerの配信状況を事前確認できないため、切替を停止しました。${failure.message}`,
+        code: failure.code,
+      },
+      publicationFailureStatus(failure),
+    );
+  }
+
+  const normalizedCommit = payload.commitSha.toLowerCase();
+  const manifestHash = await editorialReleaseManifestHash(normalizedCommit, manifest);
+  const existing = await env.REPORTS.prepare(
+    `SELECT repository, worker_name, commit_sha, manifest_hash
+       FROM editorial_release_candidates WHERE version_id = ?`,
+  ).bind(payload.versionId).first<{
+    repository: string;
+    worker_name: string;
+    commit_sha: string;
+    manifest_hash: string;
+  }>();
+  if (existing && (
+    existing.repository !== payload.repository ||
+    existing.worker_name !== payload.workerName ||
+    existing.commit_sha !== normalizedCommit ||
+    existing.manifest_hash !== manifestHash
+  ))
+    return json({ error: "同じCloudflare Version IDに異なる候補内容が登録されています。", code: "release_candidate_conflict" }, 409);
+
+  let resolvedEntries: Array<EditorialReleaseManifestEntry & { documentId: string | null }>;
+  if (existing) {
+    const savedEntries = await env.REPORTS.prepare(
+      `SELECT article_id, article_path, article_status, document_id, article_version_id
+         FROM editorial_release_candidate_articles WHERE candidate_version_id = ? ORDER BY article_path`,
+    ).bind(payload.versionId).all<{
+      article_id: string;
+      article_path: string;
+      article_status: EditorialReleaseManifestEntry["status"];
+      document_id: string | null;
+      article_version_id: string | null;
+    }>();
+    resolvedEntries = (savedEntries.results ?? []).map((entry) => ({
+      articleId: entry.article_id,
+      path: entry.article_path,
+      status: entry.article_status,
+      versionId: entry.article_version_id,
+      documentId: entry.document_id,
+    }));
+  } else {
+    const documents = await env.REPORTS.prepare(
+      `SELECT id, source_article_id, locale, subject, category, slug, current_version_id, published_version_id
+         FROM editorial_documents`,
+    ).all<Pick<EditorialDocument, "id" | "source_article_id" | "locale" | "subject" | "category" | "slug" | "current_version_id" | "published_version_id">>();
+    const documentsById = new Map<string, EditorialDocument>();
+    const documentsByPath = new Map<string, EditorialDocument[]>();
+    for (const document of documents.results ?? []) {
+      const typedDocument = document as EditorialDocument;
+      documentsById.set(typedDocument.id, typedDocument);
+      const articlePath = editorialReleaseDocumentArticlePath(typedDocument);
+      documentsByPath.set(articlePath, [
+        ...(documentsByPath.get(articlePath) ?? []),
+        typedDocument,
+      ]);
+    }
+    const catalogPaths = [...new Set(manifest.map((entry) => entry.path))];
+    const catalogIdentities = [
+      ...new Set(
+        manifest.flatMap((entry) =>
+          (documentsByPath.get(entry.path) ?? []).map(
+            editorialReleaseDocumentArticleIdentity,
+          ),
+        ),
+      ),
+    ];
+    const catalogRows: Array<{
+      path: string;
+      identity_key: string;
+      source_article_id: string | null;
+      document_id: string | null;
+    }> = [];
+    const catalogChunkSize = editorialReleaseD1MaxBoundParameters - 1;
+    for (const [column, values] of [
+      ["path", catalogPaths],
+      ["identity_key", catalogIdentities],
+    ] as const) {
+      for (let offset = 0; offset < values.length; offset += catalogChunkSize) {
+        const chunk = values.slice(offset, offset + catalogChunkSize);
+        const rows = await env.REPORTS.prepare(
+          `SELECT path, identity_key, source_article_id, document_id
+             FROM editorial_article_catalog
+            WHERE repository = ? AND ${column} IN (${chunk.map(() => "?").join(",")})`,
+        )
+          .bind(repository, ...chunk)
+          .all<{
+            path: string;
+            identity_key: string;
+            source_article_id: string | null;
+            document_id: string | null;
+          }>();
+        catalogRows.push(...(rows.results ?? []));
+      }
+    }
+    const catalogByPath = new Map(
+      catalogRows.map((row) => [row.path, row]),
+    );
+    const catalogByIdentity = new Map(
+      catalogRows.map((row) => [row.identity_key, row]),
+    );
+    const resolved = manifest.map((entry) => {
+      const pathDocuments = documentsByPath.get(entry.path) ?? [];
+      const catalog =
+        catalogByPath.get(entry.path) ??
+        pathDocuments
+          .map((document) =>
+            catalogByIdentity.get(
+              editorialReleaseDocumentArticleIdentity(document),
+            ),
+          )
+          .find((row) => row !== undefined);
+      if (
+        catalog?.source_article_id &&
+        catalog.source_article_id !== entry.articleId
+      )
+        return {
+          ...entry,
+          documentId: null,
+          versionId: null,
+          identityError: json(
+            {
+              error: `公開記事「${entry.articleId}」のパスとD1カタログのarticleIdが一致しません（${entry.path}）。`,
+              code: "release_article_identity_mismatch",
+            },
+            409,
+          ),
+        };
+      const catalogDocument = catalog?.document_id
+        ? documentsById.get(catalog.document_id)
+        : undefined;
+      if (
+        catalogDocument &&
+        editorialReleaseDocumentArticlePath(catalogDocument) !== entry.path
+      )
+        return {
+          ...entry,
+          documentId: null,
+          versionId: null,
+          identityError: json(
+            {
+              error: `公開記事「${entry.articleId}」のパスとD1カタログの原稿が一致しません（${entry.path}）。`,
+              code: "release_article_identity_mismatch",
+            },
+            409,
+          ),
+        };
+      if (!catalogDocument && pathDocuments.length > 1)
+        return {
+          ...entry,
+          documentId: null,
+          versionId: null,
+          identityError: json(
+            {
+              error: `公開記事「${entry.articleId}」に一致する運営原稿が複数あります（${entry.path}）。`,
+              code: "release_article_ambiguous",
+            },
+            409,
+          ),
+        };
+      const document = catalogDocument ?? pathDocuments[0];
+      if (
+        document?.source_article_id &&
+        document.source_article_id !== entry.articleId
+      )
+        return {
+          ...entry,
+          documentId: null,
+          versionId: null,
+          identityError: json(
+            {
+              error: `公開記事「${entry.articleId}」と運営原稿のarticleIdが一致しません（${entry.path}）。`,
+              code: "release_article_identity_mismatch",
+            },
+            409,
+          ),
+        };
+      const versionId = entry.versionId ?? (
+        entry.status === "published"
+          ? document?.published_version_id
+          : document?.current_version_id
+      ) ?? null;
+      return { ...entry, documentId: document?.id ?? null, versionId };
+    });
+    const identityFailure = resolved.find((entry) => "identityError" in entry);
+    if (identityFailure && "identityError" in identityFailure)
+      return identityFailure.identityError;
+    const versionIds = [...new Set(resolved.map((entry) => entry.versionId).filter((id): id is string => Boolean(id)))];
+    const versionDocuments = new Map<string, string>();
+    for (
+      let offset = 0;
+      offset < versionIds.length;
+      offset += editorialReleaseD1MaxBoundParameters
+    ) {
+      const chunk = versionIds.slice(
+        offset,
+        offset + editorialReleaseD1MaxBoundParameters,
+      );
+      const rows = await env.REPORTS.prepare(
+        `SELECT id, document_id FROM editorial_document_revisions WHERE id IN (${chunk.map(() => "?").join(",")})`,
+      ).bind(...chunk).all<{ id: string; document_id: string }>();
+      for (const row of rows.results ?? []) versionDocuments.set(row.id, row.document_id);
+    }
+    for (const entry of resolved) {
+      if (entry.status === "published" && (!entry.documentId || !entry.versionId))
+        return json({ error: `公開記事「${entry.articleId}」をD1の記事版へ紐付けられません。`, code: "release_article_version_missing" }, 409);
+      if (entry.versionId && (!entry.documentId || versionDocuments.get(entry.versionId) !== entry.documentId))
+        return json({ error: `記事「${entry.articleId}」の版IDがD1の記事履歴と一致しません。`, code: "release_article_version_mismatch" }, 409);
+    }
+    resolvedEntries = resolved;
+
+    const now = new Date().toISOString();
+    const statements = [env.REPORTS.prepare(
+      `INSERT INTO editorial_release_candidates
+        (version_id, repository, worker_name, commit_sha, manifest_hash, state, created_at)
+       VALUES (?, ?, ?, ?, ?, 'registered', ?)`,
+    ).bind(payload.versionId, payload.repository, payload.workerName, normalizedCommit, manifestHash, now)];
+    for (
+      let offset = 0;
+      offset < resolvedEntries.length;
+      offset += editorialReleaseCandidateArticleChunkSize
+    ) {
+      const chunk = resolvedEntries.slice(
+        offset,
+        offset + editorialReleaseCandidateArticleChunkSize,
+      );
+      statements.push(env.REPORTS.prepare(
+        `INSERT INTO editorial_release_candidate_articles
+          (candidate_version_id, article_id, article_path, document_id, article_version_id, article_status)
+         VALUES ${chunk.map(() => "(?, ?, ?, ?, ?, ?)").join(",")}`,
+      ).bind(...chunk.flatMap((entry) => [
+        payload.versionId,
+        entry.articleId,
+        entry.path,
+        entry.documentId,
+        entry.versionId,
+        entry.status,
+      ])));
+    }
+    await env.REPORTS.batch(statements);
+  }
+
+  await linkEditorialPublicationRunsToCandidate(env, payload.versionId, resolvedEntries);
+  return json({ ok: true, versionId: payload.versionId, manifestHash, replayed: Boolean(existing) });
+}
+
+type CloudflareWorkerDeployment = {
+  id: string;
+  versions: Array<{ version_id: string; percentage: number }>;
+};
+
+async function getCurrentEditorialWorkerDeployment(env: Env): Promise<CloudflareWorkerDeployment | null> {
+  const token = env.CLOUDFLARE_WORKERS_READ_TOKEN?.trim();
+  if (!token) throw new EditorialPublicationFailure(
+    "Cloudflare Workersの読み取り専用Tokenが設定されていません。",
+    "cloudflare_read_token_missing",
+    "configuration",
+  );
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${editorialReleaseAccountId}/workers/scripts/${editorialReleaseWorkerName}/deployments?per_page=1`,
+    { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, cache: "no-store" },
+  );
+  const payload = await response.json().catch(() => ({})) as {
+    success?: boolean;
+    result?: { deployments?: CloudflareWorkerDeployment[] };
+  };
+  if (!response.ok || payload.success !== true)
+    throw new EditorialPublicationFailure(
+      "Cloudflareの公開Deploymentを確認できません。",
+      "cloudflare_deployment_lookup_failed",
+      response.status >= 500 ? "deployment" : "configuration",
+      response.status >= 500 || response.status === 429,
+    );
+  return payload.result?.deployments?.[0] ?? null;
+}
+
+async function activateEditorialReleaseCandidate(env: Env, versionId: string) {
+  const history = await env.REPORTS.prepare(
+    `SELECT deployment_id, activated_at FROM editorial_publication_history WHERE candidate_version_id = ?`,
+  ).bind(versionId).first<{ deployment_id: string; activated_at: string }>();
+  if (history) return { ok: true, replayed: true, deploymentId: history.deployment_id };
+  const candidate = await env.REPORTS.prepare(
+    `SELECT version_id, repository, worker_name, commit_sha
+       FROM editorial_release_candidates WHERE version_id = ?`,
+  ).bind(versionId).first<{
+    version_id: string;
+    repository: string;
+    worker_name: string;
+    commit_sha: string;
+  }>();
+  if (!candidate) return { response: json({ error: "D1に公開候補がありません。", code: "release_candidate_not_recorded" }, 409) };
+  const deployment = await getCurrentEditorialWorkerDeployment(env);
+  const versions = deployment?.versions ?? [];
+  if (!deployment || versions.length !== 1 || versions[0]?.version_id !== versionId || versions[0]?.percentage !== 100)
+    return { response: json({ error: "Cloudflareで候補Versionの100%配信をまだ確認できません。", code: "release_candidate_not_active" }, 409) };
+
+  const now = new Date().toISOString();
+  const candidateArticles = await env.REPORTS.prepare(
+    `SELECT article_id, document_id, article_version_id, article_status
+       FROM editorial_release_candidate_articles WHERE candidate_version_id = ?`,
+  ).bind(versionId).all<{
+    article_id: string;
+    document_id: string | null;
+    article_version_id: string | null;
+    article_status: EditorialReleaseManifestEntry["status"];
+  }>();
+  const statements = [
+    env.REPORTS.prepare(
+      `UPDATE editorial_release_candidates SET state = 'activated', deployment_id = ?, activated_at = ?
+        WHERE version_id = ? AND state IN ('registered', 'activated')`,
+    ).bind(deployment.id, now, versionId),
+    env.REPORTS.prepare(
+      `INSERT OR IGNORE INTO editorial_publication_history
+        (id, candidate_version_id, deployment_id, repository, worker_name, commit_sha, activated_at, recorded_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(crypto.randomUUID(), versionId, deployment.id, candidate.repository, candidate.worker_name, candidate.commit_sha, now, now),
+    env.REPORTS.prepare(
+      `UPDATE editorial_documents
+          SET published_version_id = (
+                SELECT article_version_id FROM editorial_release_candidate_articles
+                 WHERE candidate_version_id = ? AND document_id = editorial_documents.id AND article_status = 'published'
+                 LIMIT 1
+              ),
+              published_at = CASE
+                WHEN EXISTS (SELECT 1 FROM editorial_release_candidate_articles
+                              WHERE candidate_version_id = ? AND document_id = editorial_documents.id AND article_status = 'published')
+                THEN CASE WHEN published_version_id = (
+                           SELECT article_version_id FROM editorial_release_candidate_articles
+                            WHERE candidate_version_id = ? AND document_id = editorial_documents.id AND article_status = 'published'
+                            LIMIT 1
+                         ) THEN published_at ELSE ? END
+                ELSE NULL
+              END`,
+    ).bind(versionId, versionId, versionId, now),
+    env.REPORTS.prepare(
+      `UPDATE editorial_documents
+          SET publication_pr_number = NULL, publication_pr_url = NULL,
+              publication_branch = NULL, publication_action = NULL,
+              publication_requested_at = NULL
+        WHERE id IN (
+          SELECT document_id FROM editorial_publication_runs
+           WHERE candidate_version_id = ? AND action IN ('publish', 'unpublish')
+        )`,
+    ).bind(versionId),
+    env.REPORTS.prepare(
+      `UPDATE editorial_publication_runs
+          SET state = CASE WHEN action = 'publish' THEN 'published' ELSE 'unpublished' END,
+              last_check_at = ?, error_code = NULL, error_message = NULL, failure_kind = NULL,
+              lease_until = NULL, next_attempt_at = NULL, updated_at = ?
+        WHERE state IN ('deploy_pending', 'needs_operator') AND candidate_version_id = ?
+          AND EXISTS (
+            SELECT 1 FROM editorial_release_candidate_articles article
+             WHERE article.candidate_version_id = ?
+               AND article.document_id = editorial_publication_runs.document_id
+               AND article.article_version_id = editorial_publication_runs.snapshot_version_id
+               AND ((editorial_publication_runs.action = 'publish' AND article.article_status = 'published')
+                 OR (editorial_publication_runs.action = 'unpublish' AND article.article_status <> 'published'))
+          )`,
+    ).bind(now, now, versionId, versionId),
+  ];
+  await env.REPORTS.batch(statements);
+  for (const entry of candidateArticles.results ?? [])
+    if (entry.document_id) await notifyEditorialDocumentChange(env, entry.document_id).catch(() => undefined);
+  return { ok: true, replayed: false, deploymentId: deployment.id };
+}
+
+async function receiveEditorialReleaseEvent(
+  request: Request,
+  env: Env,
+  event: "candidate" | "activated",
+): Promise<Response> {
+  if (request.method !== "POST") return json({ error: "POSTのみ利用できます。" }, 405);
+  if (event === "candidate") return registerEditorialReleaseCandidate(request, env);
+  const contentLength = Number(request.headers.get("content-length") ?? 0);
+  if (contentLength > editorialReleaseRequestMaxBytes)
+    return json({ error: "公開候補通知が大きすぎます。" }, 413);
+  const body = await request.text();
+  if (new TextEncoder().encode(body).byteLength > editorialReleaseRequestMaxBytes)
+    return json({ error: "公開候補通知が大きすぎます。" }, 413);
+  const signatureFailure = await verifyEditorialReleaseRequest(request, body, env);
+  if (signatureFailure) return signatureFailure;
+  let payload: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid payload");
+    payload = parsed as Record<string, unknown>;
+  } catch {
+    return json({ error: "公開候補通知のJSONが不正です。" }, 400);
+  }
+  const versionId = typeof payload.versionId === "string" ? payload.versionId.trim() : "";
+  if (!editorialReleaseVersionIdPattern.test(versionId))
+    return json({ error: "Cloudflare Version IDが不正です。" }, 400);
+  try {
+    const result = await activateEditorialReleaseCandidate(env, versionId);
+    return result.response ?? json(result);
+  } catch (error) {
+    const failure = publicationFailureDetails(error);
+    return json({ error: failure.message, code: failure.code }, publicationFailureStatus(failure));
+  }
+}
+
+async function reconcileEditorialReleaseCandidates(env: Env) {
+  if (!env.CLOUDFLARE_WORKERS_READ_TOKEN?.trim()) return;
+  try {
+    const deployment = await getCurrentEditorialWorkerDeployment(env);
+    const versions = deployment?.versions ?? [];
+    if (!deployment || versions.length !== 1 || versions[0]?.percentage !== 100) return;
+    const activeCandidate = await env.REPORTS.prepare(
+      `SELECT version_id FROM editorial_release_candidates WHERE version_id = ? AND state = 'registered'`,
+    ).bind(versions[0].version_id).first<{ version_id: string }>();
+    if (activeCandidate) await activateEditorialReleaseCandidate(env, activeCandidate.version_id);
+  } catch (error) {
+    console.error("editorial release reconciliation failed", error);
+  }
+}
+
 async function progressEditorialPublicationRun(env: Env, run: EditorialPublicationRun) {
   const document = await env.REPORTS.prepare(
     `${editorialDocumentSelect} WHERE id = ?`,
@@ -21307,13 +22554,17 @@ async function progressEditorialPublicationRun(env: Env, run: EditorialPublicati
     });
     return;
   }
-  if (!(await editorialPublicationSnapshotMatches(document, run))) {
+  const targetVersionId = run.snapshot_version_id ?? document.current_version_id;
+  const publicationDocument = targetVersionId
+    ? await loadEditorialPublicationVersion(env, document, targetVersionId)
+    : null;
+  if (!targetVersionId || !publicationDocument || !(await editorialPublicationSnapshotMatches(env, document, run))) {
     await updateEditorialPublicationRun(env, run.id, {
       state: "needs_operator",
       failure_kind: "validation",
-      error_code: "publication_superseded",
-      error_message: "公開処理中に記事が更新されたため、古い内容の公開を停止しました。最新内容を確認して再試行してください。",
-      failure_suggestion: "記事を保存して公開プレビューを確認した後、最新の公開操作をもう一度実行してください。",
+      error_code: "publication_version_unavailable",
+      error_message: "公開対象として固定した保存版を読み込めません。記事の版履歴を確認してください。",
+      failure_suggestion: "公開対象の版を確認し、必要であれば最新の保存版から公開操作をやり直してください。",
       next_attempt_at: null,
       lease_until: null,
     });
@@ -21325,160 +22576,34 @@ async function progressEditorialPublicationRun(env: Env, run: EditorialPublicati
   ) {
     // 旧バージョンで作成された「PR作成前」runも、Actions dispatchへ戻さず
     // そのままPRを作成してpull_request CIへ移行する。
-    await createEditorialPublicationRunPullRequest(env, document, run);
+    await createEditorialPublicationRunPullRequest(env, publicationDocument, run);
     return;
   }
   if (run.state === "deploy_pending") {
-    const deployment = await verifyEditorialPublicationDeployment(env, document, run);
-    if (!deployment.ready) {
-      const age = Date.now() - Date.parse(run.updated_at);
-      await updateEditorialPublicationRun(env, run.id, {
-        last_check_at: new Date().toISOString(),
-        ...(age > 30 * 60 * 1_000
-          ? {
-              state: "needs_operator",
-              failure_kind: "deployment",
-              error_code: deployment.reason,
-              error_message: "学習サイトのビルド確認がタイムアウトしました。配信状態を確認してください。",
-            }
-          : { failure_kind: "deployment", error_code: deployment.reason, error_message: "学習サイトの反映を確認しています。" }),
-      });
-      return;
-    }
-    const latestDocument = await env.REPORTS.prepare(
-      `${editorialDocumentSelect} WHERE id = ?`,
-    )
-      .bind(document.id)
-      .first<EditorialDocument>();
-    if (!latestDocument || !(await editorialPublicationSnapshotMatches(latestDocument, run))) {
-      await updateEditorialPublicationRun(env, run.id, {
-        state: "needs_operator",
-        failure_kind: "validation",
-        error_code: "publication_superseded",
-        error_message: "学習サイト反映の直前に記事が更新されたため、古い内容の公開を停止しました。",
-        failure_suggestion: "最新内容を保存・確認してから、もう一度公開してください。",
-        next_attempt_at: null,
-      });
-      return;
-    }
-    const now = new Date().toISOString();
-    if (run.action === "publish") {
-      if (document.base_document_id) {
-        // The PR was generated from the proposal, but the public identity is
-        // owned by the canonical document.  Apply the approved content to it
-        // only after the merged PR and deployment have been verified.
-        const base = await env.REPORTS.prepare(
-          `${editorialDocumentSelect} WHERE id = ?`,
-        )
-          .bind(document.base_document_id)
-          .first<EditorialDocument>();
-        if (!base || !base.published_at) {
-          await updateEditorialPublicationRun(env, run.id, {
+    const candidate = run.candidate_version_id
+      ? await env.REPORTS.prepare(
+          "SELECT state FROM editorial_release_candidates WHERE version_id = ?",
+        ).bind(run.candidate_version_id).first<{ state: string }>()
+      : null;
+    if (candidate?.state === "activated") return;
+    const age = Date.now() - Date.parse(run.updated_at);
+    await updateEditorialPublicationRun(env, run.id, {
+      last_check_at: new Date().toISOString(),
+      ...(age > 60 * 60 * 1_000
+        ? {
             state: "needs_operator",
-            failure_kind: "validation",
-            error_code: "update_proposal_base_missing",
-            error_message: "更新元の公開原稿を確認できないため、更新案を反映できません。",
-            next_attempt_at: null,
-          });
-          return;
-        }
-        if (document.base_document_updated_at && base.updated_at !== document.base_document_updated_at) {
-          await updateEditorialPublicationRun(env, run.id, {
-            state: "needs_operator",
-            failure_kind: "validation",
-            error_code: "update_proposal_base_changed",
-            error_message: "更新元の公開原稿が更新されたため、古い更新案の反映を停止しました。最新の公開原稿から更新案を作り直してください。",
-            next_attempt_at: null,
-          });
-          return;
-        }
-        const batchResults = await env.REPORTS.batch([
-          env.REPORTS.prepare(
-            `UPDATE editorial_documents SET source_article_id=?, subject=?, category=?, locale=?, slug=?, title=?, summary=?, concept_id=?, concept_name=?, concept_name_en=?, concept_is_new=?, body=?, writing_memo=?, latex_engine=?, locked_ranges=?, article_references=?, status='approved', updated_by=?, updated_at=?, reviewed_at=?, publication_pr_number=NULL, publication_pr_url=NULL, publication_branch=NULL, publication_action=NULL, publication_requested_at=NULL WHERE id=? AND updated_at=?`,
-          ).bind(
-            document.source_article_id,
-            document.subject,
-            document.category,
-            document.locale,
-            document.slug,
-            document.title,
-            document.summary,
-            document.concept_id,
-            document.concept_name,
-            document.concept_name_en,
-            document.concept_is_new,
-            document.body,
-            document.writing_memo,
-            document.latex_engine,
-            document.locked_ranges,
-            document.article_references,
-            document.updated_by,
-            now,
-            now,
-            base.id,
-            base.updated_at,
-          ),
-          env.REPORTS.prepare(
-            `UPDATE editorial_documents SET published_at=?, archived_at=?, archived_by=?, publication_pr_number=NULL, publication_pr_url=NULL, publication_branch=NULL, publication_action=NULL, publication_requested_at=NULL, updated_at=?, updated_by=? WHERE id=? AND updated_at=?`,
-          ).bind(now, now, document.updated_by, now, document.updated_by, document.id, document.updated_at),
-        ]);
-        const baseChanges = batchChangeCount(batchResults, 0);
-        const proposalChanges = batchChangeCount(batchResults, 1);
-        if (baseChanges !== null && (baseChanges !== 1 || proposalChanges !== 1)) {
-          await updateEditorialPublicationRun(env, run.id, {
-            state: "needs_operator",
-            failure_kind: "validation",
-            error_code: "publication_compare_and_set_failed",
-            error_message: "公開確認中に記事または更新元が変更されたため、反映を停止しました。最新内容を確認して再試行してください。",
-            failure_suggestion: "現行版と更新案を確認し、最新の更新案からもう一度公開してください。",
-            next_attempt_at: null,
-            lease_until: null,
-          });
-          return;
-        }
-        await syncEditorialOutlineDocument(env, base.id, {
-          subject: document.subject,
-          category: document.category,
-          slug: document.slug,
-        });
-      } else {
-        const canonicalResult = await env.REPORTS.prepare(
-          `UPDATE editorial_documents SET published_at = COALESCE(published_at, ?), publication_pr_number = NULL, publication_pr_url = NULL, publication_branch = NULL, publication_action = NULL, publication_requested_at = NULL WHERE id = ? AND updated_at = ?`,
-        ).bind(now, document.id, document.updated_at).run();
-        const canonicalChanges = batchChangeCount([canonicalResult], 0);
-        if (canonicalChanges !== null && canonicalChanges !== 1) {
-          await updateEditorialPublicationRun(env, run.id, {
-            state: "needs_operator",
-            failure_kind: "validation",
-            error_code: "publication_compare_and_set_failed",
-            error_message: "公開確認中に記事が更新されたため、反映を停止しました。最新内容を確認して再試行してください。",
-            failure_suggestion: "最新内容を保存・確認してから、もう一度公開してください。",
-            next_attempt_at: null,
-            lease_until: null,
-          });
-          return;
-        }
-      }
-      await updateEditorialPublicationRun(env, run.id, { state: "published", error_code: null, error_message: null, last_check_at: now });
-    } else {
-      const unpublishResult = await env.REPORTS.prepare(
-        `UPDATE editorial_documents SET status = 'draft', published_at = NULL, publication_pr_number = NULL, publication_pr_url = NULL, publication_branch = NULL, publication_action = NULL, publication_requested_at = NULL WHERE id = ? AND updated_at = ?`,
-      ).bind(document.id, document.updated_at).run();
-      const unpublishChanges = batchChangeCount([unpublishResult], 0);
-      if (unpublishChanges !== null && unpublishChanges !== 1) {
-        await updateEditorialPublicationRun(env, run.id, {
-          state: "needs_operator",
-          failure_kind: "validation",
-          error_code: "publication_compare_and_set_failed",
-          error_message: "公開取り消し中に記事が更新されたため、反映を停止しました。最新内容を確認して再試行してください。",
-          failure_suggestion: "最新内容を保存・確認してから、もう一度公開を取り消してください。",
-          next_attempt_at: null,
-          lease_until: null,
-        });
-        return;
-      }
-      await updateEditorialPublicationRun(env, run.id, { state: "unpublished", error_code: null, error_message: null, last_check_at: now });
-    }
+            failure_kind: "deployment",
+            error_code: run.candidate_version_id ? "candidate_not_activated" : "candidate_not_registered",
+            error_message: "公開PRはMergeされましたが、D1候補記録またはCloudflare切替を確認できません。公開中VersionとBuildの状態を確認してください。",
+          }
+        : {
+            failure_kind: "deployment",
+            error_code: run.candidate_version_id ? "candidate_activation_pending" : "candidate_build_pending",
+            error_message: run.candidate_version_id
+              ? "D1への候補記録が完了しました。Cloudflareの本番切替を確認しています。"
+              : "Merge済みです。Workers Buildsが候補を登録するのを待っています。",
+          }),
+    });
     return;
   }
   if (run.state === "queued" || run.state === "retry_wait") {
@@ -21486,7 +22611,7 @@ async function progressEditorialPublicationRun(env: Env, run: EditorialPublicati
       await updateEditorialPublicationRun(env, run.id, { state: "failed", error_code: "retry_exhausted", error_message: "自動再試行の上限に達しました。記事内容またはCIの失敗内容を確認してください。" });
       return;
     }
-    await startEditorialPublicationRun(env, document, {
+    await startEditorialPublicationRun(env, publicationDocument, {
       ...run,
       attempt: run.state === "retry_wait" ? run.attempt + 1 : run.attempt,
     });
@@ -21699,7 +22824,7 @@ async function writeEditorialDocumentToGitHub(
   publicationStatus: "published" | "draft",
   message: string,
   requestedBranch?: string,
-  options?: { createPullRequest?: boolean },
+  options?: { createPullRequest?: boolean; versionId?: string },
 ): Promise<{
   pullRequestUrl: string | null;
   pullRequestNumber: number | null;
@@ -21830,6 +22955,7 @@ async function writeEditorialDocumentToGitHub(
         ),
       },
       publicationStatus,
+      options?.versionId ?? null,
     );
     const articleExisting = await fetch(
       `${endpoint}?ref=${encodeURIComponent(branch)}`,
@@ -22179,18 +23305,42 @@ async function editorialFeedbackTaskState(
   env: Env,
   documentId: string,
 ): Promise<EditorialFeedbackTaskState> {
-  const row = await env.REPORTS.prepare(
-    `SELECT COUNT(*) AS total,
-            SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) AS done
+  const result = await env.REPORTS.prepare(
+    `SELECT t.id AS task_id, t.assignee_email, t.status
        FROM editorial_feedback_task_links link
        JOIN editorial_tasks t ON t.id = link.task_id
-      WHERE link.document_id = ?`,
+      WHERE link.document_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM workflow_transition_events e
+           WHERE e.entity_type='task' AND e.entity_id=t.id
+             AND json_extract(e.metadata_json, '$.action')=?
+        )`,
   )
-    .bind(documentId)
-    .first<{ total: number | string | null; done: number | string | null }>();
+    .bind(documentId, FEEDBACK_REQUEST_WITHDRAWAL_ACTION)
+    .all<{
+      task_id: string;
+      assignee_email: string | null;
+      status: string;
+    }>();
+  const recipientCompletion = new Map<string, boolean>();
+  for (const task of result.results ?? []) {
+    const recipients = (task.assignee_email ?? "")
+      .split(",")
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean);
+    const uniqueRecipients = recipients.length
+      ? [...new Set(recipients)]
+      : [`task:${task.task_id}`];
+    for (const recipient of uniqueRecipients) {
+      recipientCompletion.set(
+        recipient,
+        (recipientCompletion.get(recipient) ?? true) && task.status === "done",
+      );
+    }
+  }
   return {
-    total: Math.max(0, Number(row?.total ?? 0)),
-    done: Math.max(0, Number(row?.done ?? 0)),
+    total: recipientCompletion.size,
+    done: [...recipientCompletion.values()].filter(Boolean).length,
   };
 }
 
@@ -22232,30 +23382,152 @@ async function scheduleEditorialPublication(request: Request, env: Env, document
   return json({ ok: true, scheduledPublishAt });
 }
 
-async function dispatchScheduledEditorialPublications(env: Env) {
-  const now = new Date().toISOString();
+// Cron runs every five minutes; three intervals give a live claim room to finish.
+const scheduledPublicationClaimStaleAfterMs = 15 * 60 * 1000;
+
+export async function recoverStaleScheduledEditorialPublicationClaims(
+  env: Env,
+  now = new Date(),
+) {
+  const nowIso = now.toISOString();
+  const staleBefore = new Date(
+    now.getTime() - scheduledPublicationClaimStaleAfterMs,
+  ).toISOString();
+  const staleClaims = await env.REPORTS.prepare(
+    `SELECT id, scheduled_publish_at, scheduled_publish_claimed_at,
+            publication_pr_number
+       FROM editorial_documents
+      WHERE status='approved' AND published_at IS NULL
+        AND scheduled_publish_at IS NOT NULL AND scheduled_publish_at <= ?
+        AND scheduled_publish_claimed_at IS NOT NULL
+        AND scheduled_publish_claimed_at < ?
+      ORDER BY scheduled_publish_claimed_at
+      LIMIT 20`,
+  )
+    .bind(nowIso, staleBefore)
+    .all<
+      Pick<
+        EditorialDocument,
+        | "id"
+        | "scheduled_publish_at"
+        | "scheduled_publish_claimed_at"
+        | "publication_pr_number"
+      >
+    >();
+  let released = 0;
+  let consumed = 0;
+
+  for (const claim of staleClaims.results ?? []) {
+    const scheduledAt = claim.scheduled_publish_at;
+    const claimedAt = claim.scheduled_publish_claimed_at;
+    if (!scheduledAt || !claimedAt) continue;
+
+    // A run created after this claim owns the publication attempt. Clear the
+    // reservation even if the Worker stopped before it could clear it itself.
+    const run = await env.REPORTS.prepare(
+      `SELECT id FROM editorial_publication_runs
+        WHERE document_id=? AND action='publish' AND created_at >= ?
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+      .bind(claim.id, claimedAt)
+      .first<{ id: string }>();
+    const consumeSchedule = Boolean(run || claim.publication_pr_number);
+    const update = consumeSchedule
+      ? env.REPORTS.prepare(
+          `UPDATE editorial_documents
+              SET scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL
+            WHERE id=? AND scheduled_publish_at=?
+              AND scheduled_publish_claimed_at=?`,
+        )
+      : env.REPORTS.prepare(
+          `UPDATE editorial_documents
+              SET scheduled_publish_claimed_at=NULL
+            WHERE id=? AND status='approved' AND published_at IS NULL
+              AND publication_pr_number IS NULL
+              AND scheduled_publish_at=? AND scheduled_publish_claimed_at=?`,
+        );
+    const result = (await update
+      .bind(claim.id, scheduledAt, claimedAt)
+      .run()) as { meta?: { changes?: number } };
+    if (Number(result.meta?.changes ?? 0) !== 1) continue;
+    if (consumeSchedule) consumed += 1;
+    else released += 1;
+  }
+
+  return {
+    examined: staleClaims.results?.length ?? 0,
+    released,
+    consumed,
+  };
+}
+
+const updateScheduledPublicationClaim = (
+  env: Env,
+  document: Pick<EditorialDocument, "id" | "scheduled_publish_at">,
+  claimedAt: string,
+  consumeSchedule: boolean,
+) => {
+  if (!document.scheduled_publish_at)
+    return Promise.resolve({ meta: { changes: 0 } });
+  const query = consumeSchedule
+    ? `UPDATE editorial_documents
+          SET scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL
+        WHERE id=? AND scheduled_publish_at=?
+          AND scheduled_publish_claimed_at=?`
+    : `UPDATE editorial_documents
+          SET scheduled_publish_claimed_at=NULL
+        WHERE id=? AND status='approved' AND published_at IS NULL
+          AND publication_pr_number IS NULL
+          AND scheduled_publish_at=? AND scheduled_publish_claimed_at=?`;
+  return env.REPORTS.prepare(query)
+    .bind(document.id, document.scheduled_publish_at, claimedAt)
+    .run();
+};
+
+export async function dispatchScheduledEditorialPublications(env: Env) {
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  const recovery = await recoverStaleScheduledEditorialPublicationClaims(
+    env,
+    nowDate,
+  );
+  if (recovery.released || recovery.consumed)
+    console.info(
+      JSON.stringify({
+        event: "scheduled_editorial_publication_claim_recovery",
+        ...recovery,
+      }),
+    );
   const due = await env.REPORTS.prepare(
     `${editorialDocumentSelect} WHERE status='approved' AND published_at IS NULL AND publication_pr_number IS NULL AND scheduled_publish_at IS NOT NULL AND scheduled_publish_at <= ? AND scheduled_publish_claimed_at IS NULL LIMIT 20`,
   ).bind(now).all<EditorialDocument>();
   let requested = 0;
   for (const document of due.results ?? []) {
+    if (!document.scheduled_publish_at) continue;
     const claim = (await env.REPORTS.prepare(
-      "UPDATE editorial_documents SET scheduled_publish_claimed_at=? WHERE id=? AND published_at IS NULL AND scheduled_publish_claimed_at IS NULL",
+      `UPDATE editorial_documents SET scheduled_publish_claimed_at=?
+        WHERE id=? AND status='approved' AND published_at IS NULL
+          AND publication_pr_number IS NULL AND scheduled_publish_at=?
+          AND scheduled_publish_at <= ? AND scheduled_publish_claimed_at IS NULL`,
     )
-      .bind(now, document.id)
+      .bind(now, document.id, document.scheduled_publish_at, now)
       .run()) as { meta?: { changes?: number } };
     if (!claim.meta?.changes) continue;
     let runClaim: Awaited<ReturnType<typeof claimEditorialPublicationRun>> | null = null;
     try {
       runClaim = await claimEditorialPublicationRun(env, document.id, "publish", "scheduled-publisher", document);
-      if (!runClaim.run || !runClaim.created) {
-        await env.REPORTS.prepare("UPDATE editorial_documents SET scheduled_publish_claimed_at = NULL WHERE id = ?").bind(document.id).run();
+      if (!runClaim.run) {
+        await updateScheduledPublicationClaim(env, document, now, false);
+        continue;
+      }
+      if (!runClaim.created) {
+        // An existing publication run now owns this due item. Do not keep
+        // reclaiming the same reservation on every Cron invocation.
+        await updateScheduledPublicationClaim(env, document, now, true);
         continue;
       }
       await startEditorialPublicationRun(env, document, runClaim.run);
-      await env.REPORTS.prepare(
-        "UPDATE editorial_documents SET scheduled_publish_at = NULL, scheduled_publish_claimed_at = NULL WHERE id = ?",
-      ).bind(document.id).run();
+      await updateScheduledPublicationClaim(env, document, now, true);
       requested += 1;
     } catch (error) {
       console.error("scheduled editorial publication failed", { documentId: document.id, error });
@@ -22274,7 +23546,12 @@ async function dispatchScheduledEditorialPublications(env: Env) {
           lease_until: null,
         });
       }
-      await env.REPORTS.prepare("UPDATE editorial_documents SET scheduled_publish_claimed_at=NULL WHERE id=?").bind(document.id).run();
+      await updateScheduledPublicationClaim(
+        env,
+        document,
+        now,
+        Boolean(runClaim?.run),
+      );
     }
   }
   return { requested, due: due.results?.length ?? 0 };
@@ -22305,7 +23582,8 @@ async function getPublicationReviewState(
     stage: document.publication_review_stage,
     round: document.publication_review_round,
     canCompleteWriting:
-      !document.published_at &&
+      !document.archived_at &&
+      (!document.published_at || editorialDocumentHasUnpublishedChanges(document)) &&
       !document.publication_review_stage &&
       (document.status === "in-review" || document.status === "draft") &&
       (canEditSubject(scope, document.subject) || document.created_by === scope.email),
@@ -22313,10 +23591,16 @@ async function getPublicationReviewState(
     feedbackTaskDone: feedbackTasks.done,
     feedbackComplete,
     canDecide:
-      Boolean(scope.isManager) ||
-      (document.publication_review_stage === "subject-coordinator" && canCoordinateSubject(scope, document.subject)) ||
-      (document.publication_review_stage === "project-leader" && Boolean(scope.isProjectLeader)),
+      !document.archived_at &&
+      document.status === "in-review" &&
+      Boolean(document.publication_review_stage) &&
+      (Boolean(scope.isManager) ||
+        (document.publication_review_stage === "subject-coordinator" &&
+          canCoordinateSubject(scope, document.subject)) ||
+        (document.publication_review_stage === "project-leader" &&
+          Boolean(scope.isProjectLeader))),
     managerOverride: Boolean(scope.isManager),
+    archived: Boolean(document.archived_at),
     coordinatorCount: coordinators.length,
     leaderCount: leaders.length,
   });
@@ -22344,7 +23628,12 @@ async function startPublicationReview(
     document.created_by !== scope.email
   )
     return json({ error: "執筆担当者だけが執筆完了にできます。" }, 403);
-  if (document.published_at)
+  if (document.archived_at)
+    return json({ error: "アーカイブ中の原稿は公開審査へ進められません。先に一覧から復元してください。" }, 409);
+  if (
+    document.published_at &&
+    !editorialDocumentHasUnpublishedChanges(document)
+  )
     return json({ error: "公開済みの記事です。" }, 400);
   if (document.publication_review_stage && !scope.isManager)
     return json({ error: "すでに公開審査中です。" }, 409);
@@ -22355,9 +23644,11 @@ async function startPublicationReview(
   const managerCanBypassReview = scope.isManager && !localDevelopmentEnabled(request, env);
   if (managerCanBypassReview) {
     const now = new Date().toISOString();
-    await env.REPORTS.prepare(
-      `UPDATE editorial_documents SET status='approved', publication_review_stage=NULL, publication_review_started_at=NULL, reviewed_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=?`,
-    ).bind(now, now, scope.email, documentId).run();
+    const update = await env.REPORTS.prepare(
+      `UPDATE editorial_documents SET status='approved', publication_review_stage=NULL, publication_review_started_at=NULL, reviewed_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND (published_at IS NULL OR (current_version_id IS NOT NULL AND published_version_id IS NOT NULL AND current_version_id <> published_version_id)) AND publication_review_stage IS NULL AND updated_at=?`,
+    ).bind(now, now, scope.email, documentId, document.updated_at).run();
+    if (Number(update.meta?.changes ?? 0) !== 1)
+      return json({ error: "原稿の状態が変わりました。再読み込みしてから公開審査へ進んでください。" }, 409);
     await recordWorkflowEvent(env, { entityType: "document", entityId: documentId, fromState: document.status, toState: "approved", actorEmail: scope.email, expectedUpdatedAt: document.updated_at, metadata: { managerOverride: true }, createdAt: now });
     await recordAdminAudit(env, scope.email, "article_approved", "article", documentId, document.title, `全分野管理者が記事を承認：${document.title}`, { managerOverride: true });
     await notifyEditorialDocumentChange(env, documentId);
@@ -22385,11 +23676,13 @@ async function startPublicationReview(
     : "project-leader";
   const now = new Date().toISOString();
   const round = (document.publication_review_round ?? 0) + 1;
-  await env.REPORTS.prepare(
-    `UPDATE editorial_documents SET status='in-review', publication_review_stage=?, publication_review_round=?, publication_review_started_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=?`,
+  const update = await env.REPORTS.prepare(
+    `UPDATE editorial_documents SET status='in-review', publication_review_stage=?, publication_review_round=?, publication_review_started_at=?, scheduled_publish_at=NULL, scheduled_publish_claimed_at=NULL, updated_at=?, updated_by=? WHERE id=? AND archived_at IS NULL AND (published_at IS NULL OR (current_version_id IS NOT NULL AND published_version_id IS NOT NULL AND current_version_id <> published_version_id)) AND publication_review_stage IS NULL AND status IN ('draft', 'in-review') AND updated_at=?`,
   )
-    .bind(stage, round, now, now, scope.email, documentId)
+    .bind(stage, round, now, now, scope.email, documentId, document.updated_at)
     .run();
+  if (Number(update.meta?.changes ?? 0) !== 1)
+    return json({ error: "原稿の状態が変わりました。再読み込みしてから公開審査へ進んでください。" }, 409);
   if (document.status !== "in-review")
     await recordWorkflowEvent(env, { entityType: "document", entityId: documentId, fromState: document.status, toState: "in-review", actorEmail: scope.email, idempotencyKey, expectedUpdatedAt: document.updated_at, metadata: { stage }, createdAt: now });
   await notifyEditorialDocumentChange(env, documentId);
@@ -22429,8 +23722,11 @@ async function decidePublicationReview(
     .bind(documentId)
     .first<EditorialDocument>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
+  if (document.archived_at)
+    return json({ error: "アーカイブ中の原稿は公開審査を処理できません。先に復元してください。" }, 409);
   const stage = document.publication_review_stage;
-  if (!stage) return json({ error: "この原稿は公開審査中ではありません。" }, 409);
+  if (document.status !== "in-review" || !stage)
+    return json({ error: "この原稿は公開審査中ではありません。" }, 409);
   const managerOverride = scope.isManager;
   const authorized = managerOverride || (stage === "subject-coordinator"
     ? canCoordinateSubject(scope, document.subject)
@@ -22782,71 +24078,6 @@ const memberPagePaths = new Set([
   "/admin/member-calendar",
   "/admin/member-calendar/",
 ]);
-// These exact methods use getMemberOperationScope in their handlers instead of
-// the generic admin-only API gate; no other /api/admin endpoint is exempt.
-const memberScopedApiMethods = new Map<string, ReadonlySet<string>>([
-  ["/api/admin/project-profile", new Set(["GET", "PUT"])],
-  ["/api/admin/project-introductions", new Set(["GET"])],
-  ["/api/admin/project-profile-change-requests", new Set(["GET"])],
-  ["/api/admin/profile-change-requests", new Set(["GET"])],
-  ["/api/admin/applications", new Set(["GET"])],
-  ["/api/admin/member-intake", new Set(["GET", "PUT"])],
-  ["/api/admin/my-intake", new Set(["GET"])],
-  ["/api/admin/portal", new Set(["GET"])],
-  ["/api/admin/task-templates", new Set(["GET","POST"])],
-  ["/api/admin/member-tasks", new Set(["GET"])],
-  ["/api/admin/my-access", new Set(["GET"])],
-  ["/api/admin/member-calendar", new Set(["GET"])],
-  ["/api/admin/notifications/preferences", new Set(["GET","PUT"])],
-  ["/api/admin/notifications/snooze", new Set(["POST"])],
-  ["/api/admin/notifications", new Set(["GET"])],
-  ["/api/admin/notifications/read", new Set(["POST"])],
-  ["/api/admin/operations/tasks", new Set(["POST"])],
-  ["/api/admin/operations/availability-blocks", new Set(["POST"])],
-  ["/api/admin/operations/availability-rules", new Set(["POST"])],
-]);
-// Application intake creates deterministic, UUID-backed task IDs. Keep the
-// operation-task route narrowly compatible with those IDs while preserving
-// the handler's project membership and assignment checks.
-const operationTaskPath =
-  /^\/api\/admin\/operations\/tasks\/((?:[0-9a-f-]{36}|application-(?:response|recovery)(?::|%3a)[0-9a-f-]{36}))$/i;
-const memberScopedApiDynamicMethods: Array<{
-  path: RegExp;
-  methods: ReadonlySet<string>;
-}> = [
-  { path: /^\/api\/admin\/project-profile-change-requests\/[0-9a-f-]{36}$/i, methods: new Set(["PATCH"]) },
-  { path: /^\/api\/admin\/profile-change-requests\/[0-9a-f-]{36}$/i, methods: new Set(["PATCH"]) },
-  { path: /^\/api\/admin\/applications\/[0-9a-f-]{36}$/i, methods: new Set(["PATCH"]) },
-  { path: /^\/api\/admin\/applications\/[0-9a-f-]{36}\/(?:interview|interview-review)$/i, methods: new Set(["GET", "PUT"]) },
-  { path: /^\/api\/admin\/applications\/[0-9a-f-]{36}\/(?:interview\/notify|interview\/complete|discord-retry)$/i, methods: new Set(["POST"]) },
-  { path: /^\/api\/admin\/task-workspaces\/[0-9a-f-]{36}$/i, methods: new Set(["GET", "PUT"]) },
-  { path: /^\/api\/admin\/task-templates\/[0-9a-f-]{36}$/i, methods: new Set(["PATCH"]) },
-  { path: /^\/api\/admin\/task-templates\/[0-9a-f-]{36}\/create$/i, methods: new Set(["POST"]) },
-  {
-    path: operationTaskPath,
-    methods: new Set(["PATCH"]),
-  },
-  {
-    path: /^\/api\/admin\/operations\/events\/[0-9a-f-]{36}\/availability$/i,
-    methods: new Set(["PUT"]),
-  },
-  {
-    path: /^\/api\/admin\/operations\/availability-blocks\/[0-9a-f-]{36}$/i,
-    methods: new Set(["DELETE"]),
-  },
-  {
-    path: /^\/api\/admin\/operations\/availability-rules\/[0-9a-f-]{36}$/i,
-    methods: new Set(["DELETE"]),
-  },
-];
-const isMemberScopedApiMethod = (pathname: string, method: string) =>
-  Boolean(
-    memberScopedApiMethods.get(pathname)?.has(method) ||
-      memberScopedApiDynamicMethods.some(
-        (route) => route.path.test(pathname) && route.methods.has(method),
-      ),
-  );
-
 const projectHomeForPath = (pathname: string): string | null => ({
   "/admin/atlas": "atlas",
   "/admin/secretariat": "secretariat",
@@ -22866,10 +24097,63 @@ const userAreaForPath = (pathname: string): UserArea | null => {
   return null;
 };
 
+const legacySeminarReviewPage = (pathname: string) =>
+  /^\/seminars\/operations\/?$/.test(pathname);
+
+const seminarPage = (pathname: string) =>
+  /^\/seminars(?:\/(?:detail|propose|join|member|workspace))?\/?$/.test(pathname);
+const publicSeminarPage = (pathname: string) =>
+  /^\/seminars(?:\/(?:detail|propose|join|member|workspace))?\/?$/.test(
+    pathname,
+  );
+
+const safePublicSeminarReturnTarget = (candidate: string) => {
+  let target: URL;
+  try {
+    target = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (
+    target.origin !== "https://atlasez.org" ||
+    target.username ||
+    target.password ||
+    target.hash
+  )
+    return null;
+
+  if (
+    [
+      "/seminars/",
+      "/seminars/propose/",
+      "/seminars/member/",
+    ].includes(target.pathname)
+  )
+    return target.search ? null : target.href;
+
+  if (
+    target.pathname !== "/seminars/join/" &&
+    target.pathname !== "/seminars/detail/" &&
+    target.pathname !== "/seminars/workspace/"
+  )
+    return null;
+  if (!target.search) return null;
+  const numbers = target.searchParams.getAll("number");
+  if (
+    [...target.searchParams.keys()].some((key) => key !== "number") ||
+    numbers.length !== 1 ||
+    !/^\d{1,10}$/.test(numbers[0])
+  )
+    return null;
+  return `${target.origin}${target.pathname}?number=${numbers[0]}`;
+};
+
 /** Safe OAuth return target for every authenticated user area. */
 const userReturnPath = (value: string | null) => {
   if (!value) return "/apply/";
   const candidate = value.trim();
+  if (/^https?:\/\//i.test(candidate))
+    return safePublicSeminarReturnTarget(candidate) ?? "/apply/";
   if (
     !candidate.startsWith("/") ||
     candidate.startsWith("//") ||
@@ -22896,6 +24180,8 @@ const userReturnPath = (value: string | null) => {
     return `/auth/native-app/complete?state=${encodeURIComponent(state)}&challenge=${encodeURIComponent(challenge)}&redirect_uri=${encodeURIComponent(redirectURI)}`;
   }
   if (parsed.pathname === "/") return "/";
+  if (legacySeminarReviewPage(parsed.pathname)) return SEMINAR_REVIEW_PATH;
+  if (seminarPage(parsed.pathname)) return parsed.pathname + parsed.search;
   if (isAdminPagePath(parsed.pathname)) return adminReturnPath(candidate);
   if (isApplicantPath(parsed.pathname)) return "/applicant/";
   if (isOnboardingPath(parsed.pathname))
@@ -23875,11 +25161,12 @@ async function completeGoogleLogin(
   const requestedArea = requestedPathname === "/auth/native-app/complete"
     ? "admin"
     : userAreaForPath(requestedPathname);
-  const stage = await getUserStageForEmail(account.canonical_email, env);
-  const location =
-    requestedArea && canAccess(stage.stage, requestedArea)
-      ? requestedReturnTo
-      : stageHome(stage.stage, stage.projectSlug);
+  let location = requestedReturnTo;
+  if (!seminarPage(requestedPathname) && !isSeminarReviewPath(requestedPathname)) {
+    const stage = await getUserStageForEmail(account.canonical_email, env);
+    if (!requestedArea || !canAccess(stage.stage, requestedArea))
+      location = stageHome(stage.stage, stage.projectSlug);
+  }
   const headers = new Headers({ location });
   headers.append(
     "set-cookie",
@@ -24324,10 +25611,10 @@ async function adminNotifications(
       [scope.email, scope.email, scope.email, ...notificationProjectBindings, scope.email],
     ),
     queryNotificationSource<{
-      id: string; title: string; task_kind: string; details: string; project_id: string;
+      id: string; title: string; task_kind: string; details: string; project_id: string; subject: string | null;
       feedback_document_id: string | null; project_slug: string; updated_at: string;
     }>(
-      `SELECT t.id,t.title,t.task_kind,t.details,t.project_id,t.updated_at,
+      `SELECT t.id,t.title,t.task_kind,t.details,t.project_id,t.subject,t.updated_at,
          feedback_link.document_id AS feedback_document_id,
          COALESCE(p.slug,t.project_id) AS project_slug
        FROM editorial_tasks t
@@ -24460,9 +25747,11 @@ async function adminNotifications(
       kind: item.task_kind === "feedback" ? "feedback-request" : "task-request",
       title: `${taskKindLabel(item.task_kind)}：${item.title}`,
       detail: item.details?.split("\n")[0] || "依頼内容を確認してください。",
-      href: !scope.memberAccess && item.task_kind === "feedback" && item.feedback_document_id
-        ? `/admin/editor/?document=${encodeURIComponent(item.feedback_document_id)}`
-        : `/admin/task-detail/?task=${encodeURIComponent(item.id)}`,
+      href: item.subject === "member-profile-change"
+        ? "/admin/profile-requests/"
+        : !scope.memberAccess && item.task_kind === "feedback" && item.feedback_document_id
+          ? `/admin/editor/?document=${encodeURIComponent(item.feedback_document_id)}`
+          : `/admin/task-detail/?task=${encodeURIComponent(item.id)}`,
       updatedAt: item.updated_at,
     })),
     ...(applicationRows.results ?? []).map((item) => ({
@@ -24771,7 +26060,7 @@ async function notifyEditorialDocumentChange(
   if (!namespace) return;
   try {
     const document = await env.REPORTS.prepare(
-      `SELECT status, publication_review_stage, published_at, updated_at,
+      `SELECT status, publication_review_stage, published_at, published_version_id, current_version_id, updated_at,
               publication_pr_number, publication_pr_url, publication_branch,
               publication_action, publication_requested_at
        FROM editorial_documents WHERE id = ?`,
@@ -24781,6 +26070,8 @@ async function notifyEditorialDocumentChange(
         status: EditorialDocumentStatus;
         publication_review_stage: EditorialPublicationReviewStage | null;
         published_at: string | null;
+        published_version_id: string | null;
+        current_version_id: string | null;
         updated_at: string;
         publication_pr_number: number | null;
         publication_pr_url: string | null;
@@ -24807,6 +26098,8 @@ async function notifyEditorialDocumentChange(
         publicationStage: document.publication_review_stage,
         publishedAt: Boolean(document.published_at),
         publishedAtValue: document.published_at,
+        publishedVersionId: document.published_version_id,
+        currentVersionId: document.current_version_id,
         updatedAt: document.updated_at,
         publicationPrNumber: document.publication_pr_number,
         publicationPrUrl: document.publication_pr_url,
@@ -24907,8 +26200,42 @@ async function handleAdminRequest(
       },
       { status: 503, headers: { "cache-control": "no-store" } },
     );
+  const adminApiAccess = getAdminApiAccessPolicy(url.pathname, request.method);
+  const adminApiAccessFailure = await enforceAdminApiAccessPolicy(
+    request,
+    env,
+    adminApiAccess,
+  );
+  if (adminApiAccessFailure) return adminApiAccessFailure;
+
+  if (url.pathname === "/api/seminars" || url.pathname.startsWith("/api/seminars/"))
+    return handleSeminarApi(request, env.REPORTS, {
+      account: () => getAuthenticatedAtlasezAccount(request, env),
+      reviewer: async () => {
+        const access = await getProjectReviewerScope(request, env, "seminar-platform");
+        return isResponse(access) ? access : true;
+      },
+      primaryEmail: primaryAdminEmail(env),
+      origin: env.ADMIN_PUBLIC_ORIGIN ?? "https://admin.atlasez.org",
+    });
+  if (request.method === "GET" || request.method === "HEAD") {
+    if (legacySeminarReviewPage(url.pathname))
+      return new Response(null, { status: 302, headers: { location: SEMINAR_REVIEW_PATH } });
+    if (publicSeminarPage(url.pathname)) {
+      const pathname = url.pathname.endsWith("/") ? url.pathname : `${url.pathname}/`;
+      return Response.redirect(
+        new URL(`${pathname}${url.search}`, "https://atlasez.org").href,
+        302,
+      );
+    }
+    if (seminarPage(url.pathname)) return fetchAdminAsset(request, env);
+  }
   if (url.pathname === "/api/internal/github-publication-webhook")
     return receiveGithubPublicationWebhook(request, env, ctx);
+  if (url.pathname === "/api/internal/editorial-release/candidate")
+    return receiveEditorialReleaseEvent(request, env, "candidate");
+  if (url.pathname === "/api/internal/editorial-release/activated")
+    return receiveEditorialReleaseEvent(request, env, "activated");
   if (url.pathname === "/internal/article-reports")
     return ingestArticleReport(request, env);
   if (url.pathname === "/") {
@@ -25047,20 +26374,6 @@ async function handleAdminRequest(
   if (url.pathname === "/api/admin/member-procedures")
     return memberProcedureRequests(request, env);
 
-  // すべての管理APIは、個別ハンドラの処理へ入る前に共通の管理スコープを
-  // 解決する。各ハンドラはプロジェクト・分野・操作種別に応じた追加境界を
-  // 引き続き検証するが、ここで認証・基本的な管理権限のチェック漏れを防ぐ。
-  // auth-status/profile と、メンバー用の取得・本人通知APIは専用スコープを
-  // 各ハンドラで検証するため、この管理者ゲートの対象外とする。
-  if (
-    url.pathname.startsWith("/api/admin/") &&
-    url.pathname !== "/api/admin/profile" &&
-    url.pathname !== "/api/admin/developer/diagnostics" &&
-    !isMemberScopedApiMethod(url.pathname, request.method)
-  ) {
-    const baselineScope = await getAdminScope(request, env);
-    if (isResponse(baselineScope)) return baselineScope;
-  }
   if (url.pathname === "/api/admin/notifications/preferences" || url.pathname === "/api/admin/notifications/snooze") {
     const scope=await getMemberOperationScope(request,env);
     if(isResponse(scope))return scope;
@@ -25078,6 +26391,11 @@ async function handleAdminRequest(
     if (isResponse(scope)) return scope;
     return handleManagerGrants(request, env.REPORTS, scope.email);
   }
+  if (
+    url.pathname === "/api/admin/member-migrations" &&
+    request.method === "POST"
+  )
+    return migrateLegacyMembers(request, env);
   if (url.pathname === "/api/admin/report-admin-permissions") {
     if (request.method === "GET")
       return listReportAdminPermissions(request, env);
@@ -25113,8 +26431,9 @@ async function handleAdminRequest(
   if (url.pathname === "/api/admin/member-management") {
     if (request.method === "GET") return listArchivedAtlasMembers(request, env);
     if (request.method === "POST") return changeAtlasMemberLifecycle(request, env);
+    if (request.method === "PATCH") return updateAtlasMemberProfile(request, env);
     if (request.method === "DELETE") return removeAtlasMember(request, env);
-    return json({ error: "GET、POST、DELETEのみ利用できます。" }, 405);
+    return json({ error: "GET、POST、PATCH、DELETEのみ利用できます。" }, 405);
   }
   if (url.pathname === "/api/admin/genre-role-catalog")
     return genreRoleCatalog(request, env);
@@ -25406,7 +26725,7 @@ async function handleAdminRequest(
   );
   if (availabilityRuleMatch && request.method === "DELETE")
     return deleteAvailabilityRule(request, env, availabilityRuleMatch[1]);
-  const taskMatch = url.pathname.match(operationTaskPath);
+  const taskMatch = url.pathname.match(adminOperationTaskPath);
   if (taskMatch && request.method === "PATCH")
     return updateTask(request, env, decodeURIComponent(taskMatch[1]));
   const availabilityMatch = url.pathname.match(
@@ -25447,21 +26766,6 @@ async function handleAdminRequest(
     );
   if (url.pathname === "/api/admin/editor/catalog" && request.method === "GET")
     return getEditorialArticleCatalog(request, env);
-  if (
-    url.pathname === "/api/admin/editor/catalog/diagnostics" &&
-    request.method === "GET"
-  )
-    return getEditorialArticleCatalogDiagnostics(request, env);
-  if (
-    url.pathname === "/api/admin/editor/catalog/register" &&
-    request.method === "POST"
-  )
-    return registerPublicArticleInEditorialCatalog(request, env);
-  if (
-    url.pathname === "/api/admin/editor/catalog/register-bulk" &&
-    request.method === "POST"
-  )
-    return registerPublicArticlesInEditorialCatalog(request, env);
   if (url.pathname === "/api/admin/editor/documents") {
     if (request.method === "GET") return listEditorialDocuments(request, env);
     if (request.method === "POST") return createEditorialDocument(request, env);
@@ -25476,15 +26780,6 @@ async function handleAdminRequest(
       env,
       editorialArchiveMatch[1],
       editorialArchiveMatch[2].toLowerCase() === "archive",
-    );
-  const editorialUpdateProposalMatch = url.pathname.match(
-    /^\/api\/admin\/editor\/documents\/([0-9a-f-]{36})\/update-proposal$/i,
-  );
-  if (editorialUpdateProposalMatch && request.method === "POST")
-    return createEditorialUpdateProposal(
-      request,
-      env,
-      editorialUpdateProposalMatch[1],
     );
   if (url.pathname === "/api/admin/editor/board" && request.method === "GET")
     return editorialBoard(request, env);
@@ -25540,6 +26835,16 @@ async function handleAdminRequest(
     request.method === "GET"
   )
     return listEditorialReviewRequests(request, env);
+  const editorialFeedbackWithdrawalMatch = url.pathname.match(
+    /^\/api\/admin\/editor\/review-requests\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/withdraw$/i,
+  );
+  if (editorialFeedbackWithdrawalMatch && request.method === "POST")
+    return withdrawEditorialFeedbackRequest(
+      request,
+      env,
+      editorialFeedbackWithdrawalMatch[1],
+      editorialFeedbackWithdrawalMatch[2],
+    );
   const editorialReviewAssignmentMatch = url.pathname.match(
     /^\/api\/admin\/editor\/review-requests\/([0-9a-f-]{36})$/i,
   );
@@ -25654,11 +26959,17 @@ async function handleAdminRequest(
       ? updateArticleReport(request, env, match[1])
       : json({ error: "PATCHのみ利用できます。" }, 405);
   // プロジェクト固有ページは所属・担当roleで判定し、記事管理権限を要求しない。
-  if (projectHomeForPath(url.pathname) || /^\/admin\/(?:manage|workspace|introductions|applications|member-intake|project-profile-requests|profile-requests)\/?$/.test(url.pathname)) {
+  const seminarReviewPage = isSeminarReviewPath(url.pathname);
+  if (seminarReviewPage || projectHomeForPath(url.pathname) || /^\/admin\/(?:manage|workspace|introductions|applications|member-intake|project-profile-requests|profile-requests)\/?$/.test(url.pathname)) {
     // Home paths define their project. A query must never grant a different home.
     const requestedProject = projectHomeForPath(url.pathname) ?? url.searchParams.get("project") ?? "atlas";
     let access: AdminScope | ProjectReviewerScope | OperationProject | Response;
-    if (/^\/admin\/profile-requests\/?$/.test(url.pathname))
+    if (seminarReviewPage) {
+      if (request.method !== "GET" && request.method !== "HEAD")
+        return json({ error: "GET、HEADのみ利用できます。" }, 405);
+      access = await getProjectReviewerScope(request, env, "seminar-platform");
+    }
+    else if (/^\/admin\/profile-requests\/?$/.test(url.pathname))
       access = await getSecretariatReviewerScope(request, env);
     else if (/^\/admin\/project-profile-requests\/?$/.test(url.pathname))
       access = await getProjectProfileReviewerScope(request, env, requestedProject);
@@ -25720,8 +27031,6 @@ async function handleAdminRequest(
       "/admin/workflow/",
       "/admin/ui-prototype",
       "/admin/ui-prototype/",
-      "/admin/ui-prototype/learning-content",
-      "/admin/ui-prototype/learning-content/",
       "/admin/portal-prototype",
       "/admin/portal-prototype/",
       ...globalAdminPrototypePaths,
@@ -25760,8 +27069,7 @@ async function handleAdminRequest(
     url.pathname === "/build-info.json" ||
     url.pathname === "/admin-manifest.webmanifest" ||
     url.pathname === "/admin-sw.js" ||
-    url.pathname === "/favicon.svg" ||
-    url.pathname === "/admin-codemirror.js"
+    url.pathname === "/favicon.svg"
   ) {
     return env.ASSETS.fetch(request);
   }
@@ -25952,7 +27260,10 @@ export default {
       return;
     }
     if (cron === "*/1 * * * *") {
-      ctx.waitUntil(progressEditorialPublicationRuns(env));
+      ctx.waitUntil(Promise.all([
+        progressEditorialPublicationRuns(env),
+        reconcileEditorialReleaseCandidates(env),
+      ]));
       return;
     }
     if (cron === "*/2 * * * *") {
@@ -25968,12 +27279,14 @@ export default {
       ctx.waitUntil(
         Promise.allSettled([
           progressEditorialPublicationRuns(env),
+          reconcileEditorialReleaseCandidates(env),
           dispatchDueTaskReminders(env),
           dispatchTaskTemplates(env.REPORTS,primaryAdminEmail(env)),
           applyDueMemberProcedures(env.REPORTS),
           archiveStaleCompletedTasks(env),
           reconcilePendingApplicationIntakes(env),
           dispatchApplicationEmails(env),
+          dispatchApplicationEmails(env, { channel: "seminar" }),
           dispatchPendingDiscordProvisioning(env),
           syncDiscordRolesToAdmin(env),
           dispatchScheduledEditorialPublications(env),
@@ -26003,6 +27316,7 @@ export default {
     ctx.waitUntil(
       Promise.all([
         progressEditorialPublicationRuns(env),
+        reconcileEditorialReleaseCandidates(env),
         runPersonalDataRetention(env.REPORTS, new Date(), {
           clearArticleReportData: personalDataRetentionEnabled,
           deleteTerminalApplications: applicationRetentionEnabled,

@@ -10,8 +10,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const TARGET_MIGRATION = "0134_application_intake_reconciliation.sql";
-const SYNTHETIC_APPLICATION_ID = "staging-migration-fixture-0134";
+const TARGET_MIGRATION = "0141_application_intake_reconciliation.sql";
+const SYNTHETIC_APPLICATION_ID = "staging-migration-fixture-0141";
 const NOW = "2026-11-03T00:00:00.000Z";
 
 function columnNames(db) {
@@ -37,13 +37,13 @@ export function runAdminStagingMigrationDrill({
   assert.notEqual(
     targetIndex,
     -1,
-    "migration 0134 must be present on the tested branch",
+    "migration 0141 must be present on the tested branch",
   );
   const directory = mkdtempSync(
     join(tmpdir(), "atlasez-admin-staging-migration-"),
   );
   const databasePath = join(directory, "staging.sqlite");
-  const backupPath = join(directory, "before-0134.sqlite");
+  const backupPath = join(directory, "before-0141.sqlite");
   let db;
 
   try {
@@ -205,7 +205,7 @@ export function runAdminStagingMigrationDrill({
         .get(TARGET_MIGRATION),
     );
 
-    // An older Worker that inserts only its pre-0134 columns remains compatible:
+    // An older Worker that inserts only its pre-0141 columns remains compatible:
     // the two added columns are nullable/defaulted and do not become required inputs.
     db.prepare(
       `
@@ -227,7 +227,7 @@ export function runAdminStagingMigrationDrill({
     db.close();
     db = undefined;
 
-    // Restore only the isolated SQLite fixture and verify it returns to pre-0134.
+    // Restore only the isolated SQLite fixture and verify it returns to pre-0141.
     copyFileSync(backupPath, databasePath);
     db = new DatabaseSync(databasePath);
     const restoredColumns = columnNames(db);

@@ -11,14 +11,15 @@
 
 ## 記事を書く・直す
 
-| ドキュメント                                   | 内容                                                                 |
-| ---------------------------------------------- | -------------------------------------------------------------------- |
-| **[ADDING_ARTICLES.md](ADDING_ARTICLES.md)**   | **記事の追加手順。まずここ**（コマンド・本文の書き方・詰まりどころ） |
-| [CONTENT_MODEL.md](CONTENT_MODEL.md)           | frontmatter の全項目と、概念・記事の二層構造                         |
-| [CONCEPT_GRAPH.md](CONCEPT_GRAPH.md)           | 概念グラフの線の意味、学習地図の見え方、線の足し方                   |
-| [EDITORIAL_WORKFLOW.md](EDITORIAL_WORKFLOW.md) | ブランチ・PR・査読・公開の流れ                                       |
-| [BACKLOG.md](BACKLOG.md)                       | 着手前の積み残しメモ                                                 |
-| [SUMMARY_TODO.md](SUMMARY_TODO.md)             | 要約が定型文のままの記事一覧（手書き待ち）                           |
+| ドキュメント                                                           | 内容                                                                 |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **[ADDING_ARTICLES.md](ADDING_ARTICLES.md)**                           | **記事の追加手順。まずここ**（コマンド・本文の書き方・詰まりどころ） |
+| [CONTENT_MODEL.md](CONTENT_MODEL.md)                                   | frontmatter の全項目と、概念・記事の二層構造                         |
+| [CONCEPT_GRAPH.md](CONCEPT_GRAPH.md)                                   | 概念グラフの線の意味、学習地図の見え方、線の足し方                   |
+| [EDITORIAL_WORKFLOW.md](EDITORIAL_WORKFLOW.md)                         | ブランチ・PR・査読・公開の流れ                                       |
+| [EDITORIAL_PRODUCTION_READINESS.md](EDITORIAL_PRODUCTION_READINESS.md) | 記事自動公開の本番設定・受入確認・復旧手順                           |
+| [BACKLOG.md](BACKLOG.md)                                               | 着手前の積み残しメモ                                                 |
+| [SUMMARY_TODO.md](SUMMARY_TODO.md)                                     | 要約が定型文のままの記事一覧（手書き待ち）                           |
 
 ## サイトを運用する
 

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../helpers/verification-test";
 import * as Y from "yjs";
 
 const editorDocumentListRoute = /\/api\/admin\/editor\/documents(?:\?.*)?$/;
@@ -97,7 +97,6 @@ async function mockAdminApi(
   },
   document: Record<string, unknown> = documentItem,
   feedbackRequests: Record<string, unknown>[] = [],
-  outlineEntries: Record<string, unknown>[] = [],
 ) {
   await page.route("**/api/admin/**", async (route) => {
     const request = route.request();
@@ -109,28 +108,29 @@ async function mockAdminApi(
         mentionNames: ["Alice", "Bob"],
         scope,
       };
-    } else if (url.pathname === "/api/admin/editor/outline") {
-      payload = {
-        entries: outlineEntries.length
-          ? outlineEntries
-          : [
-              {
-                id: "outline-1",
-                key: "mathematics/group-theory/2",
-                subject: "mathematics",
-                category: "group-theory",
-                slug: "lagrange-theorem",
-                title: "ラグランジュの定理",
-                summary: "群の位数と部分群の関係",
-                order: 2,
-                status: "active",
-              },
-            ],
-      };
     } else if (url.pathname === "/api/admin/editor/taxonomy") {
       payload = { catalog: [] };
     } else if (url.pathname === "/api/admin/editor/documents/doc-1") {
       payload = { document, comments };
+    } else if (url.pathname === "/api/admin/article-reports") {
+      const articleId = url.searchParams.get("articleId");
+      payload = {
+        reports:
+          articleId === document.source_article_id
+            ? [
+                {
+                  id: "report-1",
+                  article_title: "群の定義",
+                  article_id: articleId,
+                  report_type: "error",
+                  details: `本文の不等式 x < 0 を確認してください。\nhttps://${"a".repeat(120)}.example/path`,
+                  status: "new",
+                  created_at: "2026-08-20T00:00:00.000Z",
+                },
+              ]
+            : [],
+        pagination: { limit: 200, hasMore: false, nextCursor: null },
+      };
     } else if (url.pathname.endsWith("/assets")) {
       payload = { assets: [] };
     } else if (url.pathname === "/api/admin/personal-workspace") {
@@ -180,116 +180,55 @@ test("E-5: 記事設定には担当分野だけを表示する", async ({ page }
   await expect(personalNotebook).toHaveAttribute("open", "");
 });
 
-test("新規記事作成では記事作成方法を選択できる", async ({ page }) => {
-  await mockAdminApi(page);
-  await page.goto("./admin/editor/?new=1&choose=1");
-
-  const dialog = page.locator("[data-new-document-choice]");
-  await expect(dialog).toBeVisible();
-  await expect(
-    dialog.getByRole("button", { name: "記事から作成" }),
-  ).toBeVisible();
-  await expect(
-    dialog.getByRole("link", { name: "目次から作成" }),
-  ).toHaveAttribute("href", "/admin/editor/outline/");
-
-  await dialog.getByRole("button", { name: "記事から作成" }).click();
-  await expect(dialog).toBeHidden();
-  await expect(page.locator("[data-document-form]")).toBeVisible();
-  await expect(page.locator('input[name="title"]')).toHaveValue("");
-});
-
-test("記事編集画面に目次サイドバーを追加せず、独立した目次から執筆を開始できる", async ({
-  page,
-}) => {
-  await mockAdminApi(page);
-  await page.goto("./admin/editor/?new=1");
-
-  await expect(page.locator(".document-sidebar")).toBeHidden();
-  await expect(
-    page.getByRole("link", { name: "学習サイトの目次" }),
-  ).toHaveAttribute("href", "/admin/editor/outline/");
-});
-
-test("独立した目次ページから未着手の記事を執筆開始できる", async ({ page }) => {
-  await mockAdminApi(page);
-  await page.goto("./admin/editor/outline/");
-  await expect(
-    page.getByRole("heading", { name: "学習サイトの目次" }),
-  ).toBeVisible();
-  await page.locator("[data-outline-subject]").selectOption("mathematics");
-  await expect(
-    page.locator("[data-outline-list] .outline-entry").first(),
-  ).toBeVisible();
-  const startLink = page.locator("[data-outline-list] a").first();
-  await expect(startLink).toHaveText(/執筆を開始|記事を開く/);
-  const href = await startLink.getAttribute("href");
-  expect(href).toContain("subject=mathematics");
-  if (href?.includes("new=1")) {
-    await page.goto(`.${href}`);
-    await expect(page.locator('input[name="title"]')).toHaveValue(
-      "ラグランジュの定理",
-    );
-    await expect(page.locator('input[name="slug"]')).toHaveValue(
-      "lagrange-theorem",
-    );
-  }
-});
-
-test("目次APIがHTMLを返しても内部のJSON解析エラーを表示しない", async ({
-  page,
-}, testInfo) => {
-  await page.route("**/api/admin/editor/**", (route) =>
-    route.fulfill({
-      status: 502,
-      contentType: "text/html",
-      body: "<!doctype html><title>temporary upstream error</title>",
-    }),
-  );
-  await page.goto("./admin/editor/outline/?subject=mathematics");
-  await expect(page.locator("[data-outline-list]")).toContainText(
-    "原稿一覧を読み込めませんでした。（HTTP 502）",
-  );
-  await expect(page.locator("body")).not.toContainText("Unexpected token");
-  await page.screenshot({
-    path: testInfo.outputPath("outline-html-error.png"),
-    fullPage: true,
-  });
-});
-
-test("目次APIのDB列名を画面モデルへ正規化して表示する", async ({ page }) => {
+test("記事編集画面で該当記事の問題報告を確認できる", async ({ page }) => {
+  const sourceArticleId = "ja-mathematics-group-definition";
   await mockAdminApi(
     page,
-    undefined,
-    undefined,
-    [],
-    [
-      {
-        id: "outline-db-1",
-        subject_slug: "mathematics",
-        category_slug: "group-theory",
-        slug: "concentration-test",
-        title: "集中不等式",
-        summary: "APIのsnake_case行",
-        sort_order: 10,
-        parent_id: null,
-        status: "active",
-      },
-    ],
+    {
+      email: "alice@example.com",
+      subjects: ["mathematics"],
+      isManager: true,
+    },
+    { ...documentItem, source_article_id: sourceArticleId },
   );
-  await page.goto(
-    "./admin/editor/outline/?subject=mathematics&category=group-theory",
+  await page.goto("./admin/editor/?document=doc-1");
+
+  const reports = page.locator("[data-article-reports]");
+  await reports.locator(":scope > summary").click();
+  await expect(reports.locator("[data-article-report-count]")).toHaveText(
+    "1件",
   );
-  await expect(
-    page
-      .locator("[data-outline-list] .outline-entry-title")
-      .filter({ hasText: "集中不等式" }),
-  ).toHaveCount(1);
-  await expect(
-    page
-      .locator("[data-outline-list] .outline-entry-meta")
-      .filter({ hasText: "concentration-test" }),
-  ).toHaveCount(1);
+  await expect(reports.locator(".article-report-card")).toContainText("未確認");
+  await expect(reports.locator(".article-report-card")).toContainText(
+    "本文の不等式 x < 0 を確認してください。",
+  );
+  const reportDetails = reports.locator(".article-report-card p");
+  await expect(reportDetails).toHaveCSS("white-space", "pre-wrap");
+  await expect(reportDetails).toHaveCSS("overflow-wrap", "anywhere");
+  await expect(reports.locator("[data-article-report-manage]")).toHaveAttribute(
+    "href",
+    `/admin/reports/?articleId=${sourceArticleId}`,
+  );
+});
+
+test("目次ページを廃止し、新規記事作成は直接開始する", async ({ page }) => {
+  await mockAdminApi(page);
+  const removedPage = await page.goto("./admin/editor/outline/");
+  expect(removedPage?.status()).toBe(404);
+
+  await page.goto("./admin/editor/?new=1&from=articles");
+  await expect(page.locator("[data-document-form]")).toBeVisible();
+  await expect(page.locator('input[name="title"]')).toHaveValue("");
+  await expect(page.locator("[data-new-document-choice]")).toHaveCount(0);
+  await expect(page.getByText("学習サイトの目次", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(page.getByRole("link", { name: /目次/ })).toHaveCount(0);
+
+  await page.goto("./admin/editor/");
+  await page.getByRole("button", { name: "新規原稿を作成" }).click();
+  await expect(page.locator("[data-document-form]")).toBeVisible();
+  await expect(page.locator('input[name="title"]')).toHaveValue("");
 });
 
 test("分野情報APIの失敗時は読み込み中を残さず、再試行で表示を復旧する", async ({
@@ -392,11 +331,10 @@ test("分野情報APIの失敗時は読み込み中を残さず、再試行で�
   await expect(page.locator("[data-genre-roles] .loading")).toHaveCount(0);
 });
 
-test("分野・カテゴリ・目次を順に追加して、目次から記事作成へ進める", async ({
+test("分野・カテゴリを管理し、新規原稿の選択肢へ反映する", async ({
   page,
 }, testInfo) => {
   const taxonomy: Array<Record<string, unknown>> = [];
-  const outlineEntries: Array<Record<string, unknown>> = [];
   let sequence = 0;
   await page.route("**/api/admin/**", async (route) => {
     const request = route.request();
@@ -459,38 +397,6 @@ test("分野・カテゴリ・目次を順に追加して、目次から記事�
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({ catalog: taxonomy }),
-      });
-      return;
-    }
-    if (url.pathname === "/api/admin/editor/outline") {
-      if (request.method() === "POST") {
-        const body = JSON.parse(request.postData() ?? "{}");
-        const id = `outline-${++sequence}`;
-        const entry = {
-          id,
-          key: id,
-          subject: body.subject,
-          category: body.category,
-          slug: body.slug || `outline-${sequence}`,
-          title: body.title,
-          summary: body.summary ?? "",
-          order: Number(body.sortOrder ?? 0),
-          sort_order: Number(body.sortOrder ?? 0),
-          status: "active",
-          document_id: null,
-        };
-        outlineEntries.push(entry);
-        await route.fulfill({
-          status: 201,
-          contentType: "application/json",
-          body: JSON.stringify({ ok: true, id }),
-        });
-        return;
-      }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ entries: outlineEntries }),
       });
       return;
     }
@@ -708,43 +614,21 @@ test("分野・カテゴリ・目次を順に追加して、目次から記事�
     page.locator("[data-taxonomy-content] .taxonomy-card").nth(0),
   ).toContainText("統計学");
 
-  await page.goto("./admin/editor/outline/?subject=subject-1");
-  await expect(page.locator("[data-outline-subject]")).toHaveValue("subject-1");
-  await page.getByText("目次項目を追加", { exact: true }).click();
-  await expect(
-    page.locator('[data-form-category] option[value="category-2"]'),
-  ).toHaveText("機械学習（基礎）");
-  await page.locator("[data-form-category]").selectOption("category-2");
-  await page
-    .locator('[data-outline-form] input[name="title"]')
-    .fill("集中不等式");
-  await page
-    .locator('[data-outline-form] input[name="slug"]')
-    .fill("concentration-inequality");
-  await page.locator('[data-outline-form] button[type="submit"]').click();
-  await expect(
-    page.locator("[data-outline-list] .outline-entry-title", {
-      hasText: "集中不等式",
-    }),
-  ).toBeVisible();
-  await expect(page.locator("[data-outline-list] a").first()).toHaveAttribute(
-    "href",
-    /subject-1/,
+  await page.goto("./admin/editor/?new=1");
+  const editorSubject = page.locator('select[name="subject"]');
+  const editorCategory = page.locator('select[name="category"]');
+  await expect(page.locator("[data-document-form]")).toBeVisible();
+  await expect(editorSubject.locator('option[value="subject-1"]')).toHaveText(
+    "情報",
   );
-  const articleHref = await page
-    .locator("[data-outline-list] a")
-    .first()
-    .getAttribute("href");
-  expect(articleHref).toContain("new=1");
-  expect(articleHref).toContain("outline-");
-  await page.goto(`.${articleHref}`);
-  await expect(page.locator('input[name="title"]')).toHaveValue("集中不等式");
-  await expect(page.locator('input[name="slug"]')).toHaveValue(
-    "concentration-inequality",
+  await editorSubject.selectOption("subject-1");
+  await expect(editorCategory.locator('option[value="category-2"]')).toHaveText(
+    "機械学習（基礎）",
   );
-  await expect(page.locator('select[name="subject"]')).toHaveValue("subject-1");
-  await expect(page.locator('select[name="category"]')).toHaveValue(
-    "category-2",
+  await expect(page.getByRole("link", { name: "目次を開く" })).toHaveCount(0);
+  await expect(page.getByText("目次から作成", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("学習サイトの目次", { exact: true })).toHaveCount(
+    0,
   );
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("./admin/genre-roles/?project=atlas");
@@ -761,173 +645,7 @@ test("分野・カテゴリ・目次を順に追加して、目次から記事�
   });
 });
 
-test("目次項目をドラッグして親子関係を変更し、再読込後も維持できる", async ({
-  page,
-}) => {
-  const entries = [
-    {
-      id: "outline-a",
-      key: "outline-a",
-      subject: "mathematics",
-      category: "group-theory",
-      slug: "lagrange-theorem",
-      title: "ラグランジュの定理",
-      summary: "",
-      order: 10,
-      sort_order: 10,
-      parent_id: null,
-      status: "active",
-      document_id: null,
-    },
-    {
-      id: "outline-b",
-      key: "outline-b",
-      subject: "mathematics",
-      category: "group-theory",
-      slug: "group-order",
-      title: "群の位数",
-      summary: "",
-      order: 20,
-      sort_order: 20,
-      parent_id: null,
-      status: "active",
-      document_id: null,
-    },
-  ];
-  let savedItems: Array<Record<string, unknown>> = [];
-  await page.route("**/api/admin/**", async (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
-    if (url.pathname === "/api/admin/editor/outline") {
-      if (request.method() === "PATCH") {
-        const body = JSON.parse(request.postData() ?? "{}");
-        if (body.action === "reorder" && Array.isArray(body.items)) {
-          savedItems = body.items;
-          for (const item of body.items) {
-            const entry = entries.find((candidate) => candidate.id === item.id);
-            if (entry) {
-              entry.parent_id = item.parentId ?? null;
-              entry.sort_order = Number(item.sortOrder ?? entry.sort_order);
-            }
-          }
-        }
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ ok: true }),
-        });
-        return;
-      }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ entries }),
-      });
-      return;
-    }
-    if (url.pathname === "/api/admin/editor/documents") {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          documents: [],
-          scope: { subjects: [], isManager: true },
-        }),
-      });
-      return;
-    }
-    if (url.pathname === "/api/admin/editor/taxonomy") {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ catalog: [] }),
-      });
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({}),
-    });
-  });
-
-  await page.goto(
-    "./admin/editor/outline/?subject=mathematics&category=group-theory",
-  );
-  const source = page.locator(
-    '[data-outline-entry][data-entry-id="outline-a"]',
-  );
-  const target = page.locator(
-    '[data-outline-entry][data-entry-id="outline-b"]',
-  );
-  await expect(source).toBeVisible();
-  await expect(target).toBeVisible();
-  await page.evaluate(() => {
-    const source = document.querySelector<HTMLElement>(
-      '[data-outline-entry][data-entry-id="outline-a"]',
-    );
-    const target = document.querySelector<HTMLElement>(
-      '[data-outline-entry][data-entry-id="outline-b"]',
-    );
-    if (!source || !target) throw new Error("目次項目が見つかりません。");
-    const dataTransfer = new DataTransfer();
-    source.dispatchEvent(
-      new DragEvent("dragstart", { bubbles: true, dataTransfer }),
-    );
-    const rect = target.getBoundingClientRect();
-    const clientY = rect.top + rect.height / 2;
-    target.dispatchEvent(
-      new DragEvent("dragover", { bubbles: true, clientY, dataTransfer }),
-    );
-    target.dispatchEvent(
-      new DragEvent("drop", { bubbles: true, clientY, dataTransfer }),
-    );
-    source.dispatchEvent(
-      new DragEvent("dragend", { bubbles: true, dataTransfer }),
-    );
-  });
-  await expect(
-    page.getByRole("button", { name: "並び順を保存" }),
-  ).toBeEnabled();
-  await page.getByRole("button", { name: "並び順を保存" }).click();
-  await expect
-    .poll(() => savedItems.find((item) => item.id === "outline-a")?.parentId)
-    .toBe("outline-b");
-  await page.reload();
-  await expect(
-    page.locator(
-      '.outline-children[data-parent-id="outline-b"] [data-entry-id="outline-a"]',
-    ),
-  ).toBeVisible();
-});
-
-test("目次項目を選択して編集・アーカイブ操作を開始できる", async ({ page }) => {
-  await mockAdminApi(page);
-  await page.goto("./admin/editor/outline/");
-  const outlineArchiveCheckbox = page.locator(
-    "[data-outline-include-archived]",
-  );
-  const outlineArchiveBox = await outlineArchiveCheckbox.boundingBox();
-  expect(outlineArchiveBox?.width).toBeLessThanOrEqual(20);
-  expect(outlineArchiveBox?.height).toBeLessThanOrEqual(20);
-  await page.locator("[data-outline-subject]").selectOption("mathematics");
-  const entry = page.locator("[data-outline-entry]").first();
-  await expect(entry).toBeVisible();
-  await expect(entry.locator("[data-outline-select]")).toBeEnabled();
-  await expect(entry.getByRole("button", { name: "編集" })).toBeVisible();
-  await expect(entry.getByRole("button", { name: "アーカイブ" })).toBeVisible();
-
-  await entry.locator("[data-outline-select]").check();
-  await expect(page.getByText("1件選択")).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "選択項目を確認" }),
-  ).toBeEnabled();
-  await expect(
-    page.getByRole("button", { name: "並び順を保存" }),
-  ).toBeDisabled();
-});
-
-test("タスク管理と目次のチェックボックスはコンパクトなサイズで表示する", async ({
+test("タスク管理の完了チェックボックスはコンパクトなサイズで表示する", async ({
   page,
 }) => {
   await mockAdminApi(page);
@@ -936,61 +654,6 @@ test("タスク管理と目次のチェックボックスはコンパクトな�
   const taskBox = await taskCheckbox.boundingBox();
   expect(taskBox?.width).toBeLessThanOrEqual(20);
   expect(taskBox?.height).toBeLessThanOrEqual(20);
-
-  await page.goto("./admin/editor/outline/");
-  await page.locator("[data-outline-subject]").selectOption("mathematics");
-  const outlineCheckbox = page.locator("[data-outline-select]").first();
-  const outlineBox = await outlineCheckbox.boundingBox();
-  expect(outlineBox?.width).toBeLessThanOrEqual(20);
-  expect(outlineBox?.height).toBeLessThanOrEqual(20);
-});
-
-test("目次項目は階層表示とキーボード代替操作を提供する", async ({ page }) => {
-  await mockAdminApi(page, undefined, undefined, undefined, [
-    {
-      id: "outline-parent",
-      key: "outline-parent",
-      subject: "mathematics",
-      category: "group-theory",
-      slug: "groups",
-      title: "群",
-      summary: "",
-      order: 1,
-      status: "active",
-    },
-    {
-      id: "outline-child",
-      key: "outline-child",
-      subject: "mathematics",
-      category: "group-theory",
-      slug: "cyclic-groups",
-      title: "巡回群",
-      summary: "",
-      parent_id: "outline-parent",
-      order: 2,
-      status: "active",
-    },
-  ]);
-  await page.goto("./admin/editor/outline/");
-  await page.locator("[data-outline-subject]").selectOption("mathematics");
-  await expect(page.getByText("巡回群")).toBeVisible();
-  await expect(
-    page.locator("[data-parent-id=outline-parent] [data-outline-entry]"),
-  ).toHaveCount(1);
-  await expect(
-    page.getByRole("button", { name: "巡回群を上へ" }),
-  ).toBeVisible();
-});
-
-test("目次項目の編集はダイアログで行える", async ({ page }) => {
-  await mockAdminApi(page);
-  await page.goto("./admin/editor/outline/");
-  await page.locator("[data-outline-subject]").selectOption("mathematics");
-  await page.locator("[data-edit-entry]").first().click();
-  await expect(page.locator("[data-outline-edit-dialog]")).toBeVisible();
-  await expect(
-    page.locator("[data-outline-edit-dialog] input[name=title]"),
-  ).toHaveValue("ラグランジュの定理");
 });
 
 test("既存記事では設定を要約表示し、本文までの占有高を抑える", async ({
@@ -1035,6 +698,9 @@ test("公開前テスト機能は入力を確認し、保存・公開APIを呼�
 }) => {
   await mockAdminApi(page);
   await page.goto("./admin/editor/?document=doc-1");
+  const testTools = page.locator(".editor-test-tools");
+  await expect(testTools).not.toHaveAttribute("open", "");
+  await testTools.locator(":scope > summary").click();
   await expect(page.locator("[data-run-editorial-preflight]")).toBeVisible();
   await expect(page.locator("[data-preview]")).toHaveAttribute(
     "data-preview-status",
@@ -1054,7 +720,7 @@ test("公開前テスト機能は入力を確認し、保存・公開APIを呼�
 
   const dialog = page.locator("[data-editorial-preflight]");
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("公開前チェック（テスト機能）");
+  await expect(dialog).toContainText("入力内容の確認（試験）");
   await expect(dialog).toContainText("保存・公開・通信を行いません");
   await expect(
     dialog.locator("[data-editorial-preflight-summary]"),
@@ -1071,9 +737,7 @@ test("個別記事を開いたときは未選択用の開始パネルを表示�
   await expect(page.locator("[data-editor-empty]")).toBeHidden();
 });
 
-test("個別記事の読み込み失敗時も公開記事の登録パネルを表示しない", async ({
-  page,
-}) => {
+test("個別記事の読み込み失敗時も未選択画面を誤表示しない", async ({ page }) => {
   await mockAdminApi(page);
   await page.route(editorDocumentListRoute, async (route) => {
     await route.fulfill({
@@ -1084,7 +748,7 @@ test("個別記事の読み込み失敗時も公開記事の登録パネルを�
   });
   await page.goto("./admin/editor/?document=doc-1");
   await expect(page.locator("[data-editor-empty]")).toBeHidden();
-  await expect(page.locator("[data-import-source]")).toBeHidden();
+  await expect(page.locator("[data-import-source]")).toHaveCount(0);
   await expect(page.locator("[data-admin-load-error]")).toBeVisible();
 });
 
@@ -1156,7 +820,7 @@ test("公開操作は処理中の二重送信を防ぐ", async ({ page }) => {
   await publishButton.click();
   const confirm = page
     .locator("[data-approval-dialog]")
-    .getByRole("button", { name: "はい（公開する）" });
+    .locator("[data-approval-confirm]");
   await expect(confirm).toBeVisible();
   await confirm.click();
   // 公開処理の開始直後に同じ確認イベントが届いても、二重送信を
@@ -1309,8 +973,12 @@ test("概念名を選ぶと内部IDが自動設定され、利用者はIDを覚�
 test("新規記事には概念IDを初期値として設定する", async ({ page }) => {
   await mockAdminApi(page);
   await page.goto("./admin/editor/?new=1");
+  await expect(
+    page.locator('[data-editor-workspace][data-editor-initialized="true"]'),
+  ).toBeVisible();
 
   const slug = page.locator('[name="slug"]');
+  await expect(slug).toHaveValue(/^new-article-[a-z0-9-]+$/);
   const draftSlug = await slug.inputValue();
   expect(draftSlug).toMatch(/^new-article-[a-z0-9-]+$/);
   await expect(page.locator('[name="conceptId"]')).toHaveValue(
@@ -1364,6 +1032,165 @@ test("フィードバック済みは公開審査の承認前に状態選択で�
   );
 });
 
+test("未完了の依頼から状態操作へ移動し、完了後に審査ボタンが有効になる", async ({
+  page,
+}) => {
+  const feedbackRequest = {
+    task_id: "feedback-task-1",
+    title: "フィードバック依頼：記事の確認",
+    details: "本文を確認してください。",
+    status: "open",
+    assignee_email: "alice@example.com",
+    created_by: "alice@example.com",
+    created_at: "2026-08-28T00:00:00.000Z",
+    canUpdate: true,
+  };
+  let feedbackDone = false;
+  await mockAdminApi(
+    page,
+    undefined,
+    { ...documentItem, status: "in-review" },
+    [feedbackRequest],
+  );
+  await page.route(
+    "**/api/admin/editor/documents/doc-1/publication-review",
+    async (route) =>
+      route.fulfill({
+        json: {
+          canCompleteWriting: true,
+          canDecide: false,
+          feedbackTaskTotal: 1,
+          feedbackTaskDone: feedbackDone ? 1 : 0,
+          feedbackComplete: feedbackDone,
+        },
+      }),
+  );
+  await page.route(
+    "**/api/admin/operations/tasks/feedback-task-1",
+    async (route) => {
+      feedbackDone = true;
+      feedbackRequest.status = "done";
+      await route.fulfill({ json: { ok: true, status: "done" } });
+    },
+  );
+
+  await page.goto("./admin/editor/?document=doc-1");
+  const completeButton = page.locator("[data-complete-writing]");
+  const feedbackLink = page.locator("[data-feedback-task-link]");
+  await expect(
+    page.getByRole("button", { name: "追加でフィードバックを依頼" }),
+  ).toBeVisible();
+  await expect(completeButton).toBeDisabled();
+  await expect(feedbackLink).toBeVisible();
+  await feedbackLink.click();
+
+  const taskStatus = page.locator(
+    '[data-feedback-task-status="feedback-task-1"]',
+  );
+  await expect(taskStatus).toBeFocused();
+  await taskStatus.selectOption("done");
+  await page.locator('[data-save-feedback-task="feedback-task-1"]').click();
+
+  await expect(completeButton).toBeEnabled();
+  await expect(feedbackLink).toBeHidden();
+});
+
+test("公開審査段階がない原稿では運営管理者にも代理承認を表示しない", async ({
+  page,
+}) => {
+  await mockAdminApi(page, undefined, { ...documentItem, status: "in-review" });
+  await page.route(
+    "**/api/admin/editor/documents/doc-1/publication-review",
+    async (route) =>
+      route.fulfill({
+        json: {
+          stage: null,
+          canCompleteWriting: true,
+          canDecide: false,
+          managerOverride: true,
+          feedbackTaskTotal: 1,
+          feedbackTaskDone: 0,
+          feedbackComplete: false,
+        },
+      }),
+  );
+
+  await page.goto("./admin/editor/?document=doc-1");
+
+  await expect(page.locator("[data-publication-review]")).toBeHidden();
+  await expect(page.locator("[data-complete-writing]")).toBeDisabled();
+});
+
+test("公開審査の競合エラーを審査ダイアログ内に表示する", async ({ page }) => {
+  await mockAdminApi(page, undefined, { ...documentItem, status: "in-review" });
+  await page.route(
+    "**/api/admin/editor/documents/doc-1/publication-review",
+    async (route) => {
+      const isGet = route.request().method() === "GET";
+      await route.fulfill({
+        status: isGet ? 200 : 409,
+        json: isGet
+          ? {
+              stage: "project-leader",
+              canCompleteWriting: false,
+              canDecide: true,
+              managerOverride: true,
+              feedbackTaskTotal: 1,
+              feedbackTaskDone: 1,
+              feedbackComplete: true,
+            }
+          : { error: "この原稿は公開審査中ではありません。" },
+      });
+    },
+  );
+
+  await page.goto("./admin/editor/?document=doc-1");
+  await page.locator("[data-publication-review]").click();
+  const dialog = page.locator("[data-publication-review-dialog]");
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "承認する" }).click();
+
+  await expect(dialog.locator("[data-publication-review-message]")).toHaveText(
+    "この原稿は公開審査中ではありません。",
+  );
+  await expect(dialog).toBeVisible();
+});
+
+test("公開連携の確認事項をポップアップで確認できる", async ({ page }) => {
+  await mockAdminApi(page);
+  await page.route(
+    "**/api/admin/editor/publication-integration",
+    async (route) => {
+      await route.fulfill({
+        json: {
+          ready: true,
+          configured: true,
+          canWrite: true,
+          automationReady: false,
+          repository: "Atlasez/Atlasez01",
+          automationError: "GitHub Appの接続を確認してください。",
+        },
+      });
+    },
+  );
+  await page.goto("./admin/editor/?document=doc-1");
+
+  const integrationTrigger = page.locator("[data-publication-integration]");
+  await expect(integrationTrigger).toHaveText("公開連携要確認");
+  const details = page.locator("[data-publication-details-dialog]");
+  await integrationTrigger.click();
+  await expect(details).toBeVisible();
+  await expect(
+    details.locator("[data-publication-integration-state]"),
+  ).toHaveText("要確認");
+  await expect(
+    details.locator("[data-publication-integration-message]"),
+  ).toContainText("GitHub Appの接続を確認してください。");
+  await expect(
+    details.locator("[data-publication-integration-repository]"),
+  ).toHaveText("Atlasez/Atlasez01");
+});
+
 test("公開Runの失敗原因・CIログ・再試行導線を表示する", async ({ page }) => {
   await page.setViewportSize({ width: 1367, height: 768 });
   const failedDocument = {
@@ -1398,82 +1225,39 @@ test("公開Runの失敗原因・CIログ・再試行導線を表示する", asy
   await page.goto("./admin/editor/?document=doc-1");
 
   const publicationRun = page.locator("[data-publication-run]");
-  await expect(publicationRun).toContainText(
-    "CIが失敗しました（content-check）。［原因：CI］（ci_failed）",
-  );
-  await expect(
-    publicationRun.locator("[data-publication-run-state]"),
-  ).toHaveText("自動公開失敗");
   await expect(publicationRun).toHaveAttribute(
     "aria-label",
-    /GitHub反映：自動公開失敗/,
+    /同期状態：自動公開失敗/,
   );
-  await expect(publicationRun).toHaveCSS("white-space", "normal");
-  await expect(publicationRun).toHaveCSS("overflow-wrap", "anywhere");
-  await expect(publicationRun).toHaveCSS("overflow", "visible");
-  await expect(page.locator("[data-publication-link] a")).toHaveCount(2);
-  await expect(page.locator("[data-publication-link] a").nth(0)).toHaveText(
+  await expect(publicationRun).toHaveText("同期エラー");
+  const details = page.locator("[data-publication-details-dialog]");
+  await expect(details).toBeHidden();
+  await publicationRun.click();
+  await expect(details).toBeVisible();
+  await expect(
+    details.locator("[data-publication-details-run-state]"),
+  ).toHaveText("自動公開失敗");
+  await expect(details.locator("[data-publication-run-label]")).toContainText(
+    "CIが失敗しました（content-check）。［原因：CI］（ci_failed）",
+  );
+  await expect(details.locator("[data-publication-link] a")).toHaveCount(2);
+  await expect(details.locator("[data-publication-link] a").nth(0)).toHaveText(
     "公開PRを確認",
   );
-  await expect(page.locator("[data-publication-link] a").nth(1)).toHaveText(
+  await expect(details.locator("[data-publication-link] a").nth(1)).toHaveText(
     "CIログ（content-check）",
   );
   await expect(
-    page.locator("[data-publication-link] a").nth(1),
+    details.locator("[data-publication-link] a").nth(1),
   ).toHaveAttribute(
     "href",
     "https://github.com/Atlasez/Atlasez01/actions/runs/123",
   );
-  const statusLayout = await page.evaluate(() => {
-    const statuses = document.querySelector<HTMLElement>(".document-statuses");
-    const link = document.querySelector<HTMLAnchorElement>(
-      "[data-publication-link] a",
-    );
-    return {
-      statusWidth: statuses?.clientWidth ?? 0,
-      statusScrollWidth: statuses?.scrollWidth ?? 0,
-      linkWidth: link?.getBoundingClientRect().width ?? 0,
-      linkHeight: link?.getBoundingClientRect().height ?? 0,
-      children: statuses
-        ? [...statuses.children].map((child) => ({
-            cls: child.className,
-            rect: child.getBoundingClientRect().toJSON(),
-            scrollWidth: (child as HTMLElement).scrollWidth,
-            cssWidth: getComputedStyle(child).width,
-            position: getComputedStyle(child).position,
-          }))
-        : [],
-    };
-  });
-  expect(statusLayout.statusScrollWidth).toBeLessThanOrEqual(
-    statusLayout.statusWidth,
+  const publicationDiagnostic = details.locator(
+    "[data-publication-diagnostic]",
   );
-  expect(statusLayout.linkWidth).toBeGreaterThan(60);
-  expect(statusLayout.linkHeight).toBeLessThan(44);
-  const publicationRunPseudo = await publicationRun.evaluate((element) => ({
-    before: getComputedStyle(element, "::before").display,
-    after: getComputedStyle(element, "::after").display,
-    beforeContent: getComputedStyle(element, "::before").content,
-    afterContent: getComputedStyle(element, "::after").content,
-  }));
-  expect(publicationRunPseudo.before).toBe("none");
-  expect(publicationRunPseudo.after).toBe("none");
-  expect(publicationRunPseudo.beforeContent).toBe("none");
-  expect(publicationRunPseudo.afterContent).toBe("none");
-  const publicationDiagnostic = page.locator("[data-publication-diagnostic]");
   await expect(publicationDiagnostic).toBeVisible();
-  // 診断欄は後続の「記事設定」と重ならないよう、状態表示の通常フローに置く。
-  await expect(publicationDiagnostic).toHaveCSS("position", "static");
-  const documentActions = page.locator(".document-actions");
-  const beforeOpen = await documentActions.boundingBox();
   await publicationDiagnostic.locator("summary").click();
-  const afterOpen = await documentActions.boundingBox();
-  expect(afterOpen?.x).toBe(beforeOpen?.x);
-  // 詳細欄は通常フローにあるため、開いたときは後続操作が下へ移動する。
-  expect(afterOpen?.y).toBeGreaterThanOrEqual(beforeOpen?.y ?? 0);
-  const diagnosticBox = await publicationDiagnostic.boundingBox();
-  expect(diagnosticBox?.width).toBeLessThanOrEqual(440);
-  expect(diagnosticBox?.height).toBeLessThanOrEqual(270);
   await expect(publicationDiagnostic).toContainText(
     "node scripts/validate-content.mjs",
   );
@@ -1485,7 +1269,7 @@ test("公開Runの失敗原因・CIログ・再試行導線を表示する", asy
   );
   await expect(publicationDiagnostic).toContainText("登録済みの概念IDへ修正");
   await expect(
-    page.getByRole("button", { name: "公開処理を再試行" }),
+    page.getByRole("button", { name: "公開を再試行" }),
   ).toBeVisible();
 });
 
@@ -1510,22 +1294,25 @@ test("公開PRのCI確認中を視覚表示し、最終更新時刻を示す", a
 
   const publicationRun = page.locator("[data-publication-run]");
   await expect(publicationRun).toHaveAttribute("aria-busy", "true");
-  await expect(
-    publicationRun.locator("[data-publication-run-label]"),
-  ).toContainText("CIを自動確認しています");
-  await expect(
-    publicationRun.locator("[data-publication-run-state]"),
-  ).toHaveText("自動検証中");
-  await expect(publicationRun).toHaveCSS("display", "grid");
-  await expect(
-    publicationRun.locator("[data-publication-run-updated]"),
-  ).toContainText("最終更新：");
+  await expect(publicationRun).toHaveAttribute(
+    "aria-label",
+    /同期状態：自動検証中/,
+  );
+  await expect(publicationRun).toHaveText("同期中");
   await expect(
     publicationRun.locator(".publication-run-indicator"),
   ).toBeVisible();
-  await expect(publicationRun.locator(".publication-run-indicator")).toHaveCSS(
-    "width",
-    "16px",
+  const details = page.locator("[data-publication-details-dialog]");
+  await publicationRun.click();
+  await expect(details).toBeVisible();
+  await expect(
+    details.locator("[data-publication-details-run-state]"),
+  ).toHaveText("自動検証中");
+  await expect(details.locator("[data-publication-run-label]")).toContainText(
+    "CIを自動確認しています",
+  );
+  await expect(details.locator("[data-publication-run-updated]")).toContainText(
+    "最終更新：",
   );
 });
 
@@ -1603,10 +1390,13 @@ test("公開済み記事の未反映変更は運営サイトから再公開で�
     status: "approved" as const,
     updated_at: "2026-08-31T01:34:00.000Z",
     published_at: "2026-08-30T01:34:00.000Z",
+    current_version_id: "version-current",
+    published_version_id: "version-published",
     publication_run: {
       id: "run-published-1",
       state: "failed",
       action: "publish" as const,
+      snapshot_version_id: "version-current",
       attempt: 3,
       error_code: "ci_failed",
       error_message: "CIが失敗しました（verify）。",
@@ -1627,10 +1417,10 @@ test("公開済み記事の未反映変更は運営サイトから再公開で�
     "自動公開失敗",
   );
   await expect(page.locator("[data-workflow-help]")).toContainText(
-    "最新の変更は学習サイトに未反映",
+    "公開中の版は維持されています",
   );
   await expect(
-    page.getByRole("button", { name: "公開内容を更新して再試行" }),
+    page.getByRole("button", { name: "更新公開を再試行" }),
   ).toBeVisible();
 });
 
@@ -1950,21 +1740,18 @@ test("E-6b: ダークモードで編集ツールバーの状態UIを読み分け
       const statusText = getComputedStyle(
         element.querySelector(".document-status-pill strong")!,
       );
-      const engine = getComputedStyle(element.querySelector("select")!);
       return {
         toolbarBackground: toolbar.backgroundColor,
         statusBackground: statusPill.backgroundColor,
         statusText: statusText.color,
-        engineBackground: engine.backgroundColor,
-        engineText: engine.color,
       };
     });
 
+  await expect(page.locator(".engine-control")).toHaveText("プレビュー：KaTeX");
+  await expect(page.locator(".engine-control select")).toHaveCount(0);
   expect(toolbarColors.toolbarBackground).not.toBe("rgb(255, 255, 255)");
   expect(toolbarColors.statusBackground).toBe("rgb(25, 25, 25)");
   expect(toolbarColors.statusText).toBe("rgba(255, 255, 255, 0.92)");
-  expect(toolbarColors.engineBackground).toBe("rgb(21, 21, 21)");
-  expect(toolbarColors.engineText).toBe("rgba(255, 255, 255, 0.92)");
 });
 
 test("E-6c: ダークモード解除時に公開連携の状態UIをライト配色へ戻す", async ({
@@ -1992,10 +1779,108 @@ test("E-6c: ダークモード解除時に公開連携の状態UIをライト配
       };
     });
 
-  expect(colors.dark.background).toBe("rgb(29, 58, 42)");
-  expect(colors.dark.text).toBe("rgb(200, 240, 213)");
+  expect(colors.dark.background).toBe("rgb(32, 42, 36)");
+  expect(colors.dark.text).toBe("rgb(197, 239, 211)");
   expect(colors.light.background).not.toBe(colors.dark.background);
   expect(colors.light.text).toBe("rgb(36, 100, 58)");
+});
+
+test("E-6d: 処理中の公開状態カードをダーク／ライト両テーマで読みやすくする", async ({
+  page,
+}) => {
+  const queuedDocument = {
+    ...documentItem,
+    publication_run: {
+      id: "run-queued",
+      state: "queued",
+      action: "publish" as const,
+      attempt: 1,
+      error_code: null,
+      error_message: null,
+      failure_kind: null,
+      check_name: null,
+      check_url: null,
+      diagnostic_url: null,
+      failure_detail: null,
+      failure_step: null,
+      failure_file: null,
+      failure_line: null,
+      failure_column: null,
+      started_at: "2026-11-12T00:00:00.000Z",
+      updated_at: "2026-11-12T00:00:00.000Z",
+      last_check_at: "2026-11-12T00:00:00.000Z",
+    },
+  };
+  await mockAdminApi(page, undefined, queuedDocument);
+  await page.goto("./admin/editor/?document=doc-1");
+  await page.locator("[data-publication-run]").waitFor({ state: "visible" });
+
+  const colors = await page
+    .locator("[data-publication-run]")
+    .evaluate((element) => {
+      const status = element as HTMLElement;
+      document.documentElement.setAttribute("data-pref-bg", "dark");
+      const dark = getComputedStyle(status);
+      const darkColors = { background: dark.backgroundColor, text: dark.color };
+      document.documentElement.removeAttribute("data-pref-bg");
+      const light = getComputedStyle(status);
+      return {
+        dark: darkColors,
+        light: { background: light.backgroundColor, text: light.color },
+      };
+    });
+
+  expect(colors.dark.background).toBe("rgb(32, 39, 44)");
+  expect(colors.dark.text).toBe("rgb(199, 231, 247)");
+  expect(colors.light.background).not.toBe(colors.dark.background);
+  expect(colors.light.text).toBe("rgb(36, 82, 124)");
+});
+
+test("E-6e: コメントとフィードバックの状態チップを暗色テーマに合わせる", async ({
+  page,
+}) => {
+  await mockAdminApi(page);
+  await page.goto("./admin/editor/?document=doc-1");
+
+  const colors = await page.evaluate(() => {
+    const workspace = document.querySelector<HTMLElement>(".editor-workspace");
+    if (!workspace) throw new Error("編集画面がありません。");
+
+    const fixture = document.createElement("div");
+    fixture.className = "review-panel";
+    fixture.innerHTML = [
+      '<span class="thread-status is-pending">未確認</span>',
+      '<span class="thread-status is-acknowledged">確認済み</span>',
+      '<span class="thread-status is-resolved">解決済み</span>',
+      '<span class="feedback-request-status is-open">未対応</span>',
+      '<span class="feedback-request-status is-doing">対応中</span>',
+      '<span class="feedback-request-status is-done">完了</span>',
+    ].join("");
+    workspace.append(fixture);
+    document.documentElement.dataset.prefBg = "dark";
+
+    const read = (selector: string) => {
+      const element = fixture.querySelector<HTMLElement>(selector);
+      if (!element) throw new Error(`状態チップがありません: ${selector}`);
+      const style = getComputedStyle(element);
+      return { background: style.backgroundColor, text: style.color };
+    };
+    return {
+      pending: read(".thread-status.is-pending"),
+      acknowledged: read(".thread-status.is-acknowledged"),
+      resolved: read(".thread-status.is-resolved"),
+      open: read(".feedback-request-status.is-open"),
+      doing: read(".feedback-request-status.is-doing"),
+      done: read(".feedback-request-status.is-done"),
+    };
+  });
+
+  expect(colors.pending.background).toBe("rgb(74, 58, 27)");
+  expect(colors.acknowledged.background).toBe("rgb(32, 39, 44)");
+  expect(colors.resolved.background).toBe("rgb(32, 42, 36)");
+  expect(colors.open.background).toBe(colors.pending.background);
+  expect(colors.doing.background).toBe(colors.acknowledged.background);
+  expect(colors.done.background).toBe(colors.resolved.background);
 });
 
 test("E-7: 未保存の変更があると戻る・離脱を警告する", async ({ page }) => {
@@ -2015,7 +1900,7 @@ test("戻るの離脱確認前に別窓を閉じない", async ({ page }) => {
   await page.goto("./admin/editor/?new=1");
   const popupPromise = page.waitForEvent("popup");
   await page
-    .locator('[data-editor-pane="writing"] [data-pane-popout="writing"]')
+    .locator('.pane-layout-controls [data-pane-popout="writing"]')
     .click();
   const popup = await popupPromise;
   await page.locator('[name="title"]').fill("未保存のタイトル");
@@ -2066,7 +1951,7 @@ test("インライン数式・表示数式を本文と別窓へ挿入できる",
 
   const popupPromise = page.waitForEvent("popup");
   await page
-    .locator('[data-editor-pane="writing"] [data-pane-popout="writing"]')
+    .locator('.pane-layout-controls [data-pane-popout="writing"]')
     .click();
   const popup = await popupPromise;
   const popupBody = popup.locator("[data-body]");
@@ -2186,7 +2071,7 @@ test("LaTeX構造スニペットを本文と別窓へ挿入できる", async ({ 
 
   const popupPromise = page.waitForEvent("popup");
   await page
-    .locator('[data-editor-pane="writing"] [data-pane-popout="writing"]')
+    .locator('.pane-layout-controls [data-pane-popout="writing"]')
     .click();
   const popup = await popupPromise;
   const popupBody = popup.locator("[data-body]");
@@ -2267,7 +2152,7 @@ test("画像参照を含む未保存の変更を公開前に保存してからPR
   await page.getByRole("button", { name: "公開する" }).click();
   await page
     .locator("[data-approval-dialog]")
-    .getByRole("button", { name: "はい（公開する）" })
+    .locator("[data-approval-confirm]")
     .click();
 
   await expect
@@ -2361,7 +2246,7 @@ test("LaTeXの自動保存中に公開すると最新の数式を保存してか
   await page.getByRole("button", { name: "公開する" }).click();
   await page
     .locator("[data-approval-dialog]")
-    .getByRole("button", { name: "はい（公開する）" })
+    .locator("[data-approval-confirm]")
     .click();
 
   releaseFirstPatch();
@@ -2438,6 +2323,63 @@ test("E-8: 入力内容は自動保存され、手動保存UIを表示しない"
   await expect.poll(() => revisionLoads).toBe(1);
 });
 
+test("新規原稿の自動保存内容は再読み込み後も復元できる", async ({ page }) => {
+  await mockAdminApi(page);
+  let savedDocument: Record<string, unknown> | null = null;
+  await page.route("**/api/admin/editor/documents", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    savedDocument = {
+      ...documentItem,
+      ...(route.request().postDataJSON() as Record<string, unknown>),
+      id: "doc-durable",
+      status: "draft",
+    };
+    await route.fulfill({
+      status: 201,
+      json: { ok: true, id: "doc-durable" },
+    });
+  });
+  await page.route(
+    "**/api/admin/editor/documents/doc-durable",
+    async (route) => {
+      if (route.request().method() === "PATCH") {
+        savedDocument = {
+          ...savedDocument,
+          ...(route.request().postDataJSON() as Record<string, unknown>),
+          updated_at: "2026-11-16T00:00:00.000Z",
+        };
+        await route.fulfill({
+          json: { ok: true, updatedAt: "2026-11-16T00:00:00.000Z" },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: { document: savedDocument, comments: [] },
+      });
+    },
+  );
+  await page.route(
+    "**/api/admin/editor/documents/doc-durable/revisions",
+    (route) => route.fulfill({ json: { revisions: [] } }),
+  );
+
+  await page.goto("./admin/editor/?new=1");
+  await page.locator('[name="title"]').fill("再読み込み確認用の記事");
+  const body = "保存後にもう一度読み込みます。";
+  await page.locator("[data-body]").fill(body);
+  await expect(page).toHaveURL(/\?document=doc-durable$/);
+  await expect.poll(() => savedDocument?.body).toBe(body);
+  await expect(page.locator("[data-save-message]")).toContainText(
+    "入力内容を自動保存しました",
+  );
+
+  await page.reload();
+  await expect(page.locator('[name="title"]')).toHaveValue(
+    "再読み込み確認用の記事",
+  );
+  await expect(page.locator("[data-body]")).toHaveValue(body);
+});
+
 test("新規原稿の自動保存中に別の記事へ切り替えても入力先を混同しない", async ({
   page,
 }) => {
@@ -2473,6 +2415,9 @@ test("新規原稿の自動保存中に別の記事へ切り替えても入力�
   await page.goto("./admin/editor/?new=1");
   await page.locator("[data-body]").fill("最初の新規原稿");
   await firstPostStartedPromise;
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.getByRole("link", { name: "編集・フィードバックへ戻る" }).click();
+  await expect(page).toHaveURL(/\/admin\/articles\/?$/);
   await expect(page.locator('[data-document-id="doc-1"]')).toHaveCount(1);
   await page
     .locator('[data-document-id="doc-1"]')
@@ -2542,205 +2487,195 @@ test("既存記事を承認へ自動保存すると公開操作と版履歴を�
   await expect.poll(() => revisionLoads).toBe(2);
 });
 
-test("公開済み記事の本文は更新案を作成するまでロックする", async ({ page }) => {
-  const publishedDocument = {
+test("公開済み記事を編集すると新しい版を保存し公開版を保持する", async ({
+  page,
+}) => {
+  let currentDocument: Omit<typeof documentItem, "published_at" | "status"> & {
+    status: "draft" | "in-review" | "approved";
+    published_at: string;
+    current_version_id: string;
+    published_version_id: string;
+    publication_review_stage: string | null;
+  } = {
     ...documentItem,
     status: "approved" as const,
     published_at: "2026-08-30T01:34:00.000Z",
+    current_version_id: "version-public",
+    published_version_id: "version-public",
+    publication_review_stage: null,
   };
-  await mockAdminApi(page, undefined, publishedDocument);
-  await page.route(
-    "**/api/admin/editor/documents/doc-1/update-proposal",
-    async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          ok: true,
-          id: "doc-1-update-proposal",
-          baseDocumentId: "doc-1",
-        }),
-      });
-    },
-  );
-  await page.route(
-    "**/api/admin/editor/documents/doc-1-update-proposal",
-    async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          document: {
-            ...publishedDocument,
-            id: "doc-1-update-proposal",
-            document_kind: "update-proposal",
-            base_document_id: "doc-1",
-            base_document_updated_at: publishedDocument.updated_at,
-            status: "draft",
-            published_at: null,
-          },
-          comments: [],
-        }),
-      });
-    },
-  );
-  await page.goto("./admin/editor/?document=doc-1");
-
-  const body = page.locator("[data-body]");
-  const bodySurface = page.locator("[data-body-surface]");
-  const bodyEditor = page.locator(".body-codemirror").first();
-  const bodyEditorContent = bodyEditor.locator(".cm-content");
-  await expect(page.locator("[data-create-update-proposal]")).toBeVisible();
-  await expect(body).toHaveAttribute("readonly", "");
-  if (await bodyEditorContent.count()) {
-    await expect(bodyEditor).toHaveAttribute("data-readonly", "true");
-    await expect(bodyEditorContent).toHaveAttribute("contenteditable", "false");
-    await bodyEditor.click({ position: { x: 180, y: 80 } });
-  } else await bodySurface.click({ position: { x: 180, y: 80 } });
-  await expect(page.locator("[data-save-message]")).toContainText(
-    "公開中の記事を編集するには「更新案を作成」を押してください",
-  );
-  await page.screenshot({
-    path: "test-results/editor-published-body-locked.png",
-    fullPage: true,
-  });
-
-  await page.locator("[data-create-update-proposal]").click();
-  await expect(body).not.toHaveAttribute("readonly");
-  if (await bodyEditorContent.count()) {
-    await expect(bodyEditor).toHaveAttribute("data-readonly", "false");
-    await expect(bodyEditorContent).toHaveAttribute("contenteditable", "true");
-    await page.screenshot({
-      path: "test-results/editor-published-update-proposal.png",
-      fullPage: true,
-    });
-  }
-});
-
-test("記事一覧は保存済みの更新案を作成中として表示する", async ({ page }) => {
-  const publishedUpdateDocument = {
-    ...documentItem,
-    status: "draft" as const,
-    published_at: "2026-08-30T01:34:00.000Z",
-    updated_at: "2026-09-01T01:34:00.000Z",
-  };
-  await mockAdminApi(page, undefined, publishedUpdateDocument);
-  await page.goto("./admin/editor/?new=1");
-
-  const article = page
-    .locator(".outline-article", { hasText: "群の定義" })
-    .first();
-  await expect(article.locator(".outline-status")).toContainText(
-    "更新案作成中",
-  );
-  await expect(article.locator("[data-outline-article]")).toHaveText(
-    "更新案作成中",
-  );
-  await page.screenshot({
-    path: "test-results/editor-article-list-update-in-progress.png",
-    fullPage: true,
-  });
-});
-
-test("更新案の保存成功と現行版への切り替えを独立して扱う", async ({ page }) => {
-  const canonical = {
-    ...documentItem,
-    status: "approved" as const,
-    published_at: "2026-08-30T01:34:00.000Z",
-  };
-  const proposal = {
-    ...canonical,
-    id: "doc-1-update-proposal",
-    document_kind: "update-proposal",
-    base_document_id: "doc-1",
-    base_document_updated_at: canonical.updated_at,
-    status: "draft" as const,
-    published_at: null,
-    body: `${canonical.body}\n\n更新案の本文です。`,
-  };
-  await mockAdminApi(page, undefined, canonical);
-  let proposalCreated = false;
-  await page.route(/\/api\/admin\/editor\/documents\/doc-1$/, async (route) => {
-    await route.fulfill({
-      json: {
-        document: canonical,
-        comments: [],
-        ...(proposalCreated
-          ? { versions: { canonicalId: canonical.id, proposalId: proposal.id } }
-          : {}),
-      },
-    });
-  });
-  await page.route(
-    /\/api\/admin\/editor\/documents\/doc-1\/update-proposal$/,
-    async (route) => {
-      proposalCreated = true;
-      await route.fulfill({
-        json: { ok: true, id: proposal.id, baseDocumentId: canonical.id },
-      });
-    },
-  );
-  await page.route(
-    /\/api\/admin\/editor\/documents\/doc-1-update-proposal$/,
-    async (route) => {
-      if (route.request().method() === "PATCH")
-        return route.fulfill({
-          json: { ok: true, updatedAt: "2026-08-20T00:05:00.000Z" },
-        });
+  const savedPayloads: Record<string, unknown>[] = [];
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/admin/editor/documents") {
       await route.fulfill({
         json: {
-          document: proposal,
-          comments: [],
-          versions: { canonicalId: canonical.id, proposalId: proposal.id },
+          documents: [currentDocument],
+          mentionNames: ["Alice", "Bob"],
+          scope: {
+            email: "alice@example.com",
+            subjects: ["mathematics"],
+            isManager: true,
+          },
         },
       });
-    },
-  );
-  await page.route(
-    /\/api\/admin\/editor\/documents\/doc-1-update-proposal\/revisions$/,
-    async (route) => {
+      return;
+    }
+    if (url.pathname === "/api/admin/editor/documents/doc-1") {
+      if (request.method() === "PATCH") {
+        const payload = request.postDataJSON() as Record<string, unknown>;
+        savedPayloads.push(payload);
+        currentDocument = {
+          ...currentDocument,
+          body: String(payload.body ?? currentDocument.body),
+          status: "draft",
+          updated_at: "2026-08-31T01:34:00.000Z",
+          current_version_id: "version-next",
+        };
+        await route.fulfill({
+          json: {
+            ok: true,
+            status: "draft",
+            updatedAt: currentDocument.updated_at,
+            versionId: "version-next",
+            currentVersionId: "version-next",
+          },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: { document: currentDocument, comments: [] },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/editor/documents/doc-1/revisions") {
       await route.fulfill({
         json: {
           revisions: [
             {
-              id: "base-doc-1",
-              title: canonical.title,
-              summary: canonical.summary,
-              body: canonical.body,
-              status: "published",
-              saved_by: canonical.updated_by,
-              saved_at: canonical.updated_at,
+              id: "version-next",
+              title: currentDocument.title,
+              summary: currentDocument.summary,
+              body: currentDocument.body,
+              status: "draft",
+              saved_by: "alice@example.com",
+              saved_at: currentDocument.updated_at,
+              is_current_version: 1,
+              is_published_version: 0,
+            },
+            {
+              id: "version-public",
+              title: documentItem.title,
+              summary: documentItem.summary,
+              body: documentItem.body,
+              status: "approved",
+              saved_by: "alice@example.com",
+              saved_at: documentItem.updated_at,
+              is_current_version: 0,
+              is_published_version: 1,
             },
           ],
           feedbackRequests: [],
         },
       });
-    },
-  );
-  await page.route(
-    /\/api\/admin\/editor\/documents\/doc-1-update-proposal\/publication-review$/,
-    async (route) => {
+      return;
+    }
+    if (url.pathname.endsWith("/publication-review")) {
+      if (request.method() === "POST") {
+        currentDocument = {
+          ...currentDocument,
+          status: "in-review",
+          publication_review_stage: "project-leader",
+        };
+        await route.fulfill({
+          json: {
+            ok: true,
+            status: "in-review",
+            stage: "project-leader",
+          },
+        });
+        return;
+      }
+      const hasNewVersion =
+        currentDocument.current_version_id !==
+        currentDocument.published_version_id;
+      const reviewStage = currentDocument.publication_review_stage ?? null;
       await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "一時的に取得できません" }),
+        json: {
+          stage: reviewStage,
+          canCompleteWriting: hasNewVersion && !reviewStage,
+          canDecide: Boolean(reviewStage),
+          feedbackTaskTotal: hasNewVersion ? 1 : 0,
+          feedbackTaskDone: hasNewVersion ? 1 : 0,
+          feedbackComplete: hasNewVersion,
+        },
       });
-    },
-  );
+      return;
+    }
+    if (url.pathname.endsWith("/assets")) {
+      await route.fulfill({ json: { assets: [] } });
+      return;
+    }
+    if (url.pathname === "/api/admin/article-reports") {
+      await route.fulfill({
+        json: {
+          reports: [],
+          pagination: { limit: 200, hasMore: false, nextCursor: null },
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/editor/taxonomy") {
+      await route.fulfill({ json: { catalog: [] } });
+      return;
+    }
+    if (url.pathname === "/api/admin/editor/catalog") {
+      await route.fulfill({ json: { catalog: [] } });
+      return;
+    }
+    if (url.pathname === "/api/admin/personal-workspace") {
+      await route.fulfill({ json: { privateNote: "", updatedAt: null } });
+      return;
+    }
+    await route.fulfill({ json: {} });
+  });
+
   await page.goto("./admin/editor/?document=doc-1");
-  await page.locator("[data-create-update-proposal]").click();
-  await expect(page.locator("[data-document-version-switcher]")).toBeVisible();
-  const bodyEditor = page.locator(".body-codemirror .cm-content").first();
-  if (await bodyEditor.count())
-    await bodyEditor.fill(`${proposal.body}\n\n保存確認`);
-  else await page.locator("[data-body]").fill(`${proposal.body}\n\n保存確認`);
+  await expect(page.locator("[data-create-update-proposal]")).toHaveCount(0);
+  const body = page.locator("[data-body]");
+  await expect(body).not.toHaveAttribute("readonly", "");
+  const bodyEditorContent = page
+    .locator(".body-codemirror .cm-content")
+    .first();
+  const nextBody = `${documentItem.body}\n\n保存版への追記`;
+  if (await bodyEditorContent.count()) await bodyEditorContent.fill(nextBody);
+  else await body.fill(nextBody);
+
+  await expect.poll(() => savedPayloads.length).toBe(1);
+  await expect
+    .poll(() => currentDocument.current_version_id)
+    .toBe("version-next");
   await expect(page.locator("[data-save-message]")).toContainText(
-    "入力内容を自動保存しました",
+    "修正を自動保存しました",
   );
-  await expect(page.locator("[data-open-current-version]")).toBeVisible();
-  await page.locator("[data-open-current-version]").click();
   await expect(page.locator("[data-document-version-label]")).toContainText(
-    "更新案あり",
+    "公開版のまま保持",
+  );
+  await expect(page.locator('[name="status"]')).toHaveValue("draft");
+  await expect(page.locator("[data-revision-list]")).toContainText(
+    "最新保存版",
+  );
+  await expect(page.locator("[data-revision-list]")).toContainText("公開版");
+  expect(currentDocument.published_version_id).toBe("version-public");
+  expect(savedPayloads[0]?.body).toBe(nextBody);
+  const completeButton = page.locator("[data-complete-writing]");
+  await expect(completeButton).toBeVisible();
+  await expect(completeButton).toBeEnabled();
+  page.once("dialog", (dialog) => dialog.accept());
+  await completeButton.click();
+  await expect(page.locator("[data-save-message]")).toContainText(
+    "フィードバック完了として公開審査を開始しました",
   );
 });
 
@@ -2836,6 +2771,121 @@ test("V-2: フィードバック担当者と依頼内容を選んで保存でき
   await expect(page.locator("[data-save-message]")).toHaveText(
     "フィードバックを依頼しました。",
   );
+});
+
+test("既存の未完了依頼を重ねず、画面上部から取り下げられる", async ({
+  page,
+}) => {
+  const activeRequest = {
+    task_id: "feedback-task-1",
+    title: "フィードバック依頼：群の定義",
+    details: "確認してください。",
+    status: "open",
+    assignee_email: "bob@example.com",
+    created_at: "2026-08-20T00:00:00.000Z",
+    requester_display_name: "Alice",
+    created_by: "alice@example.com",
+    canUpdate: true,
+    canWithdraw: true,
+  };
+  await mockAdminApi(
+    page,
+    { email: "alice@example.com", subjects: ["mathematics"], isManager: true },
+    { ...documentItem, status: "in-review" },
+    [activeRequest],
+  );
+  await page.route(
+    "**/api/admin/editor/documents/doc-1/publication-review",
+    async (route) => {
+      await route.fulfill({
+        json: {
+          canCompleteWriting: true,
+          feedbackTaskTotal: 1,
+          feedbackTaskDone: 0,
+          feedbackComplete: false,
+        },
+      });
+    },
+  );
+  await page.route(
+    /\/api\/admin\/editor\/review-requests\?documentId=doc-1$/,
+    async (route) => {
+      await route.fulfill({
+        json: {
+          requests: [
+            {
+              id: "doc-1",
+              reviewer_email: "bob@example.com",
+              activeReviewerEmails: ["bob@example.com"],
+              hasActiveAllReviewerRequest: false,
+            },
+          ],
+          reviewers: [
+            {
+              email: "bob@example.com",
+              displayName: "Bob",
+              subjects: ["mathematics"],
+            },
+            {
+              email: "carol@example.com",
+              displayName: "Carol",
+              subjects: ["mathematics"],
+            },
+          ],
+        },
+      });
+    },
+  );
+  let withdrawalRequest = false;
+  await page.route(
+    "**/api/admin/editor/review-requests/doc-1/feedback-task-1/withdraw",
+    async (route) => {
+      withdrawalRequest = true;
+      await route.fulfill({
+        json: { ok: true, withdrawn: true, documentStatus: "draft" },
+      });
+    },
+  );
+
+  await page.goto("./admin/editor/?document=doc-1");
+  const manageRequests = page.getByRole("button", {
+    name: "未完了の依頼を管理・取り下げ",
+  });
+  await expect(manageRequests).toBeVisible();
+  await manageRequests.click();
+  const requestHistory = page.locator("[data-feedback-request-history-panel]");
+  await expect(requestHistory).toHaveAttribute("open", "");
+  const withdrawButton = requestHistory.getByRole("button", {
+    name: "依頼を取り下げる",
+  });
+  await expect(withdrawButton).toBeVisible();
+  page.on("dialog", (dialog) => dialog.accept());
+  await withdrawButton.click();
+  await expect.poll(() => withdrawalRequest).toBe(true);
+  await expect(page.locator("[data-save-message]")).toHaveText(
+    "依頼を取り下げ、記事を下書きに戻しました。",
+  );
+
+  await page
+    .getByRole("button", { name: "追加でフィードバックを依頼" })
+    .click();
+  const dialog = page.locator("[data-review-request-dialog]");
+  const reviewerSelect = dialog.locator("[data-review-request-assignee]");
+  expect(
+    await reviewerSelect
+      .locator('option[value="bob@example.com"]')
+      .evaluate((option: HTMLOptionElement) => option.disabled),
+  ).toBe(true);
+  expect(
+    await reviewerSelect
+      .locator('option[value="carol@example.com"]')
+      .evaluate((option: HTMLOptionElement) => option.disabled),
+  ).toBe(false);
+  expect(
+    await reviewerSelect
+      .locator('option[value="bob@example.com"]')
+      .evaluate((option: HTMLOptionElement) => option.selected),
+  ).toBe(false);
 });
 
 test("V-3: 依頼先未選択でもキャンセルできる", async ({ page }) => {
@@ -3677,7 +3727,7 @@ test("IM-3: 認証切れ等でHTMLが返った場合は画像として扱わず�
   ).not.toHaveAttribute("src", /api\/admin/);
 });
 
-test("E-1〜E-5/E-13: 全4枠をボタンで切り替え、四辺移動とライブ別窓同期が使える", async ({
+test("E-1〜E-5/E-13: 全4枠を切り替え、四辺移動とライブ別窓同期が使える", async ({
   page,
 }) => {
   await mockAdminApi(page);
@@ -3742,7 +3792,9 @@ test("E-1〜E-5/E-13: 全4枠をボタンで切り替え、四辺移動とライ
   await expect(preview).toHaveCSS("grid-column-start", "1");
 
   const popupPromise = page.waitForEvent("popup");
-  await writing.locator('[data-pane-popout="writing"]').click();
+  await page
+    .locator('.pane-layout-controls [data-pane-popout="writing"]')
+    .click();
   const popup = await popupPromise;
   await expect(writing).toBeHidden();
   await expect(popup.locator("[data-body]")).toBeVisible();
@@ -3818,7 +3870,7 @@ for (const resized of [false, true]) {
   });
 }
 
-test("コメント枠をスクロールしても見出しと別窓ボタンは動かない", async ({
+test("コメント枠をスクロールしても見出しは動かない", async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 1600, height: 1100 });
@@ -3843,8 +3895,7 @@ test("コメント枠をスクロールしても見出しと別窓ボタンは�
     .toBeGreaterThan(100);
   await page.screenshot({ path: testInfo.outputPath("comments-scrolled.png") });
   const after = await heading.boundingBox();
-  expect(Math.abs((after?.y ?? 0) - before.y)).toBeLessThanOrEqual(1);
-  await expect(heading.locator('[data-pane-popout="review"]')).toBeInViewport();
+  expect(Math.abs((after?.y ?? 0) - before.y)).toBeLessThan(1);
 });
 
 for (const returnVia of ["popup", "close", "toggle", "tab"] as const) {
@@ -3853,12 +3904,11 @@ for (const returnVia of ["popup", "close", "toggle", "tab"] as const) {
   }, testInfo) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
     await mockAdminApi(page);
-    await page.goto("./admin/editor/?document=doc-1", {
-      waitUntil: "domcontentloaded",
-    });
+    await page.goto("./admin/editor/?document=doc-1");
     const panel = page.locator('[data-editor-pane="writing"]');
-    const button = panel.locator('[data-pane-popout="writing"]');
-    await expect(button).toBeVisible();
+    const button = page.locator(
+      '.pane-layout-controls [data-pane-popout="writing"]',
+    );
     const popupPromise = page.waitForEvent("popup");
     await button.click();
     const popup = await popupPromise;
@@ -3881,7 +3931,7 @@ for (const returnVia of ["popup", "close", "toggle", "tab"] as const) {
     else await page.locator('[data-pane-tab="writing"]').click();
     await expect(panel).toBeVisible();
     await expect(button).toBeEnabled();
-    await expect(button).toHaveText("別窓");
+    await expect(button).toHaveAttribute("aria-label", "本文を別窓で表示");
     await expect.poll(() => popup.isClosed()).toBe(true);
     await expect(
       page.locator('.pane-layout-controls [data-pane-popout="writing"]'),
@@ -3893,7 +3943,7 @@ for (const returnVia of ["popup", "close", "toggle", "tab"] as const) {
     const secondPopup = await secondPopupPromise;
     await secondPopup.close();
     await expect(panel).toBeVisible();
-    await expect(button).toHaveText("別窓");
+    await expect(button).toHaveAttribute("aria-label", "本文を別窓で表示");
   });
 }
 
@@ -4106,7 +4156,9 @@ test("コメント別窓から新規コメントを追加し、閉じた後も�
 
   const panel = page.locator('[data-editor-pane="review"]');
   const popupPromise = page.waitForEvent("popup");
-  await panel.locator('[data-pane-popout="review"]').click();
+  await page
+    .locator('.pane-layout-controls [data-pane-popout="review"]')
+    .click();
   const popup = await popupPromise;
   const commentTag = popup.locator(
     '.review-pane-content > .comment-tags [data-comment-tag="定義不足"]',
@@ -4600,12 +4652,20 @@ test("公開Runの状態・CI失敗詳細を再読込なしでリアルタイム
   await expect(page.locator("[data-publication-state]")).toHaveText(
     "自動公開失敗",
   );
-  await expect(page.locator("[data-publication-diagnostic]")).toBeVisible();
-  await expect(page.locator("[data-publication-diagnostic]")).toContainText(
+  const publicationRun = page.locator("[data-publication-run]");
+  await expect(publicationRun).toHaveText("同期エラー");
+  const details = page.locator("[data-publication-details-dialog]");
+  await publicationRun.click();
+  await expect(details).toBeVisible();
+  await expect(details.locator("[data-publication-run-label]")).toContainText(
+    "CIが失敗しました（verify）。",
+  );
+  await expect(details.locator("[data-publication-diagnostic]")).toBeVisible();
+  await expect(details.locator("[data-publication-diagnostic]")).toContainText(
     "npm run check:math-directives",
   );
   await expect(
-    page.getByRole("button", { name: "公開処理を再試行" }),
+    page.getByRole("button", { name: "公開を再試行" }),
   ).toBeVisible();
   expect(documentReads).toBe(readsAfterInitialLoad);
 });

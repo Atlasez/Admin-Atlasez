@@ -29,7 +29,7 @@ export function missingAdminStagingDeployConfirmations(
   const required = [
     "ATLASEZ_STAGING_DEPLOY_CONFIRMED",
     "ATLASEZ_STAGING_PROVIDER_SETTINGS_VERIFIED",
-    "ATLASEZ_STAGING_0134_VERIFIED",
+    "ATLASEZ_STAGING_0141_VERIFIED",
   ];
   if (noCron) required.push("ATLASEZ_STAGING_NO_CRON_CONFIRMED");
   return required.filter((name) => env[name] !== "1");

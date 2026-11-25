@@ -1336,6 +1336,95 @@ describe("admin API scope gate", () => {
     expect(response.status).toBe(200);
   });
 
+  it("saves a profile image immediately without creating an approval request", async () => {
+    const base = stageEnv("accepted", false, true);
+    const originalDatabase = base.REPORTS;
+    const avatarUrl =
+      "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+    let savedValues: unknown[] | null = null;
+    let approvalBatches = 0;
+    const database = {
+      prepare(query: string) {
+        const statement = originalDatabase.prepare(query);
+        if (
+          query.includes(
+            "INSERT INTO editorial_member_profiles (email, avatar_url, updated_at)",
+          )
+        ) {
+          const originalBind = statement.bind.bind(statement);
+          statement.bind = (...values: unknown[]) => {
+            savedValues = values;
+            return originalBind(...values);
+          };
+        }
+        return statement;
+      },
+      batch: async (...args: Parameters<typeof originalDatabase.batch>) => {
+        approvalBatches += 1;
+        return originalDatabase.batch(...args);
+      },
+    };
+    const response = await worker.fetch(
+      new Request("https://admin.example/api/admin/profile", {
+        method: "PUT",
+        headers: {
+          cookie: "atlasez_admin_session=logged-in",
+          origin: "https://admin.example",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ avatarUrl }),
+      }),
+      { ...base, REPORTS: database } as never,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      approvalRequired: false,
+    });
+    expect(savedValues?.[1]).toBe(avatarUrl);
+    expect(approvalBatches).toBe(0);
+  });
+
+  it("rejects profile images above the storage limit before writing to D1", async () => {
+    const base = stageEnv("accepted", false, true);
+    let avatarWrites = 0;
+    const originalDatabase = base.REPORTS;
+    const database = {
+      prepare(query: string) {
+        const statement = originalDatabase.prepare(query);
+        if (
+          query.includes(
+            "INSERT INTO editorial_member_profiles (email, avatar_url, updated_at)",
+          )
+        ) {
+          statement.run = async () => {
+            avatarWrites += 1;
+            return { meta: { changes: 1 } };
+          };
+        }
+        return statement;
+      },
+      batch: originalDatabase.batch,
+    };
+    const avatarUrl = `data:image/gif;base64,${"A".repeat(1_850_001)}`;
+    const response = await worker.fetch(
+      new Request("https://admin.example/api/admin/profile", {
+        method: "PUT",
+        headers: {
+          cookie: "atlasez_admin_session=logged-in",
+          origin: "https://admin.example",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ avatarUrl }),
+      }),
+      { ...base, REPORTS: database } as never,
+    );
+
+    expect(response.status).toBe(413);
+    expect(avatarWrites).toBe(0);
+  });
+
   it.each([
     "/admin/member-management/?project=atlas",
     "/admin/genre-roles/?project=atlas",
@@ -2513,6 +2602,18 @@ describe("applicant stage server-side access", () => {
       ],
       ["POST", "/api/admin/operations/availability-rules", { weekday: 1 }, 200],
       [
+        "POST",
+        "/api/admin/operations/availability-rules",
+        { weekdays: [2, 3, 4] },
+        200,
+      ],
+      [
+        "POST",
+        "/api/admin/operations/availability-rules",
+        { weekdays: [2, 7] },
+        400,
+      ],
+      [
         "DELETE",
         "/api/admin/operations/availability-blocks/123e4567-e89b-12d3-a456-426614174000",
         undefined,
@@ -3606,7 +3707,7 @@ describe("applicant stage server-side access", () => {
     expect(practice.status).toBe(403);
   });
 
-  it("limits nested UI prototypes to full global admins", async () => {
+  it("returns 404 for removed editor prototypes", async () => {
     const paths = [
       "/admin/ui-prototype/editor-header/",
       "/admin/ui-prototype/editor-header-admin",
@@ -3615,6 +3716,19 @@ describe("applicant stage server-side access", () => {
       "/admin/ui-prototype/editor-header-focus/",
       "/admin/ui-prototype/editor-header-jreast",
       "/admin/ui-prototype/editor-toolbar/",
+      "/admin/ui-prototype/learning-content/",
+    ];
+    for (const path of paths) {
+      const response = await worker.fetch(
+        loggedInRequest(path),
+        stageEnv("accepted", true, false, false, true) as never,
+      );
+      expect(response.status, path).toBe(404);
+    }
+  });
+
+  it("limits active nested UI prototypes to full global admins", async () => {
+    const paths = [
       "/admin/ui-prototype/welcome-login/",
       "/admin/ui-prototype/welcome-not-found/",
       "/admin/ui-prototype/welcome-screens/",

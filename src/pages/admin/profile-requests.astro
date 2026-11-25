@@ -158,7 +158,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       return allowed ? `<img src="${escape(value)}" alt="" loading="lazy" decoding="async" />` : escape(initial(name));
     };
     const commonFields = (row: RequestRow, prefix: "current" | "proposed") =>
-      [["氏名", row[`${prefix}_display_name`]], ["所属", row[`${prefix}_university`]], ["学年等", row[`${prefix}_year`]], ["所属区分", row[`${prefix}_affiliation_type`]], ["国・地域", row[`${prefix}_country`]], ["タイムゾーン", row[`${prefix}_timezone`]], ["運営外自己紹介（共通プロフィール）", row[`${prefix}_bio`]]]
+      [["氏名", row[`${prefix}_display_name`]], ["所属", row[`${prefix}_university`]], ["学年等", row[`${prefix}_year`]], ["所属区分", row[`${prefix}_affiliation_type`]], ["国・地域", row[`${prefix}_country`]], ["タイムゾーン", row[`${prefix}_timezone`]], ["運営内自己紹介（共通プロフィール）", row[`${prefix}_bio`]]]
         .map(([label, value]) => `<dt>${escape(label)}</dt><dd>${escape(value) || "未登録"}</dd>`).join("");
     const atlasFields = (row: RequestRow, prefix: "current" | "proposed") =>
       `<dt>運営内自己紹介（学習サイト「アトラス」）</dt><dd>${renderSafeLinks(String(prefix === "current" ? row.current_internal_bio ?? "" : row.proposed_internal_bio ?? "")) || "未登録"}</dd>`;

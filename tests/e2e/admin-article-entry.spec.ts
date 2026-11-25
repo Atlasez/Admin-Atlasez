@@ -18,7 +18,12 @@ test.describe("A/D 原稿一覧の作業導線", () => {
       groups.nth(0).getByRole("link", { name: "編集・フィードバックを開く" }),
     ).toHaveAttribute("href", "/admin/articles/");
     await expect(groups.nth(0).locator(".project-links small")).toHaveCount(0);
-    await expect(groups.nth(1).locator(".project-links > a")).toHaveCount(4);
+    await expect(groups.nth(1).locator(".project-links > a")).toHaveCount(3);
+    await expect(
+      groups
+        .nth(1)
+        .locator('.project-links a[href="/admin/calendar/?project=atlas"]'),
+    ).toHaveCount(1);
     await expect(groups.nth(2).locator(".project-links > a")).toHaveCount(4);
     await expect(
       groups.nth(2).getByRole("link", { name: /諸手続きを開く/ }),
@@ -250,7 +255,7 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(page.getByRole("link", { name: /^査読/ })).toHaveCount(0);
   });
 
-  test("D-1: 原稿一覧に3つの作業入口を表示し、カード内の旧ボタンは表示しない", async ({
+  test("D-1: 原稿一覧に作業内容ごとの入口を表示し、カード内の旧ボタンは表示しない", async ({
     page,
   }) => {
     await page.goto("admin/articles/");
@@ -258,14 +263,41 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(page.locator(".workflow-card")).toHaveCount(0);
     await expect(
       page.getByRole("link", { name: /新規記事作成/ }),
-    ).toHaveAttribute("href", "/admin/editor/?new=1&choose=1&from=articles");
+    ).toHaveAttribute("href", "/admin/editor/?new=1&from=articles");
     await expect(
       page.getByRole("button", { name: /加筆・修正/ }),
     ).toBeVisible();
     await expect(
       page.getByRole("button", { name: /フィードバック/ }),
     ).toBeVisible();
+    await expect(
+      page.locator(".workflow-actions > a, .workflow-actions > button"),
+    ).toHaveCount(3);
     await expect(page.locator("[data-workflow-action]")).toHaveCount(2);
+    await expect(page.locator(".workflow-actions")).toContainText(
+      "新規記事作成",
+    );
+    await expect(page.locator(".workflow-actions")).toContainText("加筆・修正");
+    await expect(page.locator(".workflow-actions")).toContainText(
+      "フィードバック",
+    );
+    await expect(page.locator("[data-workflow-filter]")).toHaveValue("all");
+    await expect(page.locator("[data-workflow-filter]")).toBeHidden();
+    await page.locator(".advanced-filters > summary").click();
+    await expect(page.locator("[data-workflow-filter]")).toBeVisible();
+    await expect(
+      page.locator("[data-workflow-filter] option[value=request]"),
+    ).toHaveText("依頼できる記事");
+    await page.getByRole("button", { name: /フィードバック/ }).click();
+    await expect(page).toHaveURL(/mode=review/);
+    await page.locator("[data-workflow-filter]").selectOption("request");
+    await expect(page).toHaveURL(/mode=request/);
+    await page.reload();
+    await expect(page.locator("[data-workflow-filter]")).toHaveValue("request");
+    await page.locator(".advanced-filters > summary").click();
+    await page.locator("[data-workflow-filter]").selectOption("all");
+    expect(new URL(page.url()).searchParams.has("mode")).toBe(false);
+    await page.reload();
     await expect(page.locator("[data-workflow-filter]")).toHaveValue("all");
     await expect(page.locator(".article-view-tabs")).toHaveCount(0);
     await expect(page.locator(".header-actions")).toHaveCount(0);
@@ -346,9 +378,7 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     expect(listLayout.gridTemplateColumns.split(" ")).toHaveLength(1);
   });
 
-  test("D-3c: 公開済み記事の更新案作成中を一覧のボタンで示す", async ({
-    page,
-  }) => {
+  test("D-3c: 公開中の未公開版を版IDで一覧に表示する", async ({ page }) => {
     await page.route("**/api/admin/editor/documents**", async (route) => {
       const requestUrl = new URL(route.request().url());
       if (requestUrl.pathname !== "/api/admin/editor/documents")
@@ -362,10 +392,12 @@ test.describe("A/D 原稿一覧の作業導線", () => {
               subject: "mathematics",
               category: "group-theory",
               slug: "group-definition",
-              title: "更新案作成中の記事",
+              title: "未公開版がある記事",
               status: "draft",
               published_at: "2026-08-30T01:34:00.000Z",
               updated_at: "2026-09-01T01:34:00.000Z",
+              current_version_id: "version-current",
+              published_version_id: "version-public",
             },
           ],
         },
@@ -378,18 +410,17 @@ test.describe("A/D 原稿一覧の作業導線", () => {
       "すべての分野（全権限）",
     );
     const card = page.locator('[data-document-id="update-progress-doc"]');
-    await expect(
-      card.locator('[data-update-proposal-state="in-progress"]'),
-    ).toHaveText("更新案作成中");
+    await expect(card.locator("[data-update-proposal-state]")).toHaveCount(0);
     await expect(card.locator(".article-status-group")).toContainText([
       "編集",
       "学習サイト",
-      "運営連携",
     ]);
+    await expect(card).not.toContainText("運営連携");
     await expect(card).toContainText("公開中");
-    await expect(card).toContainText("更新案作成中");
+    await expect(card).toContainText("公開中・未公開の版あり");
+    await expect(card).not.toContainText("更新案を作成");
     await page.screenshot({
-      path: "test-results/admin-articles-update-proposal-in-progress.png",
+      path: "test-results/admin-articles-unpublished-version.png",
       fullPage: true,
     });
   });
@@ -490,6 +521,135 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await page.getByRole("button", { name: "全分野に戻る" }).click();
     await expect(page.locator("[data-category]")).toHaveValue("ring-theory");
     await expect(page.locator("[data-list] .article")).toHaveCount(1);
+  });
+
+  test("最初に全件を自動で読み込み分野を選んでも全件を表示する", async ({
+    page,
+  }) => {
+    const requestedUrls: string[] = [];
+    const makeMathArticle = (index: number) => ({
+      id: `math-doc-${index}`,
+      subject: "mathematics",
+      category: "group-theory",
+      title: `数学の記事 ${index}`,
+      status: "draft" as const,
+      updated_at: new Date(Date.UTC(2026, 8, 30 - index)).toISOString(),
+      published_at: null,
+    });
+
+    await page.route(editorDocumentListRoute, async (route) => {
+      const url = new URL(route.request().url());
+      requestedUrls.push(url.href);
+      if (url.searchParams.get("subject") === "mathematics") {
+        if (url.searchParams.get("cursor") === "math-page-2") {
+          await route.fulfill({
+            json: {
+              scope: { email: "alice@example.com", allSubjects: true },
+              documents: [makeMathArticle(101)],
+              pagination: { limit: 100, hasMore: false, nextCursor: null },
+            },
+          });
+          return;
+        }
+        await route.fulfill({
+          json: {
+            scope: { email: "alice@example.com", allSubjects: true },
+            documents: Array.from({ length: 100 }, (_, index) =>
+              makeMathArticle(index + 1),
+            ),
+            pagination: {
+              limit: 100,
+              hasMore: true,
+              nextCursor: "math-page-2",
+            },
+          },
+        });
+        return;
+      }
+      if (url.searchParams.get("cursor") === "global-page-2") {
+        await route.fulfill({
+          json: {
+            scope: { email: "alice@example.com", allSubjects: true },
+            documents: [
+              {
+                id: "global-doc-101",
+                subject: "history",
+                category: "japan-history",
+                title: "全件読み込み確認用の記事",
+                status: "draft",
+                updated_at: "2026-08-02T00:00:00.000Z",
+                published_at: null,
+              },
+            ],
+            pagination: { limit: 100, hasMore: false, nextCursor: null },
+          },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: {
+          scope: { email: "alice@example.com", allSubjects: true },
+          documents: [
+            makeMathArticle(1),
+            {
+              id: "physics-doc-1",
+              subject: "physics",
+              category: "mechanics",
+              title: "物理の記事",
+              status: "draft",
+              updated_at: "2026-08-01T00:00:00.000Z",
+              published_at: null,
+            },
+          ],
+          pagination: {
+            limit: 100,
+            hasMore: true,
+            nextCursor: "global-page-2",
+          },
+        },
+      });
+    });
+
+    await page.goto("admin/articles/?verify=subject-load-all");
+    await expect(
+      page.locator('[data-document-id="global-doc-101"]'),
+    ).toContainText("全件読み込み確認用の記事");
+    await expect(page.locator("[data-list] .article")).toHaveCount(3);
+    await expect(page.locator("[data-article-load-more]")).toHaveCount(0);
+    await page.locator("[data-query]").fill("全件読み込み確認用");
+    await expect(page.locator("[data-list] .article")).toHaveCount(1);
+    await expect(page.locator("[data-list]")).toContainText(
+      "全件読み込み確認用の記事",
+    );
+    await page.locator("[data-query]").fill("");
+    expect(
+      requestedUrls.some(
+        (url) =>
+          new URL(url).searchParams.get("cursor") === "global-page-2" &&
+          new URL(url).searchParams.get("limit") === "100",
+      ),
+    ).toBe(true);
+    await page.locator('[data-subject-quick="mathematics"]').click();
+
+    await expect(page.locator("[data-list] .article")).toHaveCount(101);
+    await expect(
+      page.locator('[data-document-id="math-doc-101"]'),
+    ).toContainText("数学の記事 101");
+    await expect(
+      page.locator("[data-list] [data-expand-category]"),
+    ).toHaveCount(0);
+    await expect(page.locator("[data-article-pagination]")).toBeHidden();
+    await expect(page.locator("[data-article-load-more]")).toHaveCount(0);
+    expect(
+      requestedUrls.some(
+        (url) => new URL(url).searchParams.get("subject") === "mathematics",
+      ),
+    ).toBe(true);
+    expect(
+      requestedUrls.some(
+        (url) => new URL(url).searchParams.get("cursor") === "math-page-2",
+      ),
+    ).toBe(true);
   });
 
   test("D-3a: 公開予約済みの記事を日時付きで表示し、絞り込める", async ({
@@ -748,9 +908,10 @@ test.describe("A/D 原稿一覧の作業導線", () => {
 
     await page.goto("admin/articles/?verify=retry");
     await expect(page.locator("[data-admin-load-error]")).toBeVisible();
-    await expect(page.locator("[data-catalog-summary]")).not.toContainText(
+    await expect(page.locator("[data-list]")).not.toContainText(
       "確認しています",
     );
+    await expect(page.locator("[data-catalog-overview]")).toHaveCount(0);
     await expect(page.locator("[data-scope-note]")).toHaveAttribute(
       "data-state",
       "error",
@@ -947,6 +1108,82 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(page.locator("[data-list]")).toContainText("保管中の下書き");
     await expect(page.locator("[data-list]")).not.toContainText(
       "整理前の下書き",
+    );
+  });
+
+  test("D-5: フィードバック中はアーカイブでき、公開審査中はできない", async ({
+    page,
+  }) => {
+    const feedbackId = "33333333-3333-4333-8333-333333333333";
+    const reviewId = "44444444-4444-4444-8444-444444444444";
+    let archived = false;
+    const feedbackDocument = {
+      id: feedbackId,
+      subject: "mathematics",
+      category: "algebra",
+      title: "フィードバック中の記事",
+      status: "in-review",
+      publication_review_stage: null,
+      created_by: "alice@example.com",
+      updated_at: "2026-08-28T00:00:00.000Z",
+      published_at: null,
+      archived_at: null,
+    };
+    await page.route("**/api/admin/editor/documents**", async (route) => {
+      await route.fulfill({
+        json: {
+          scope: { email: "alice@example.com" },
+          documents: [
+            ...(archived
+              ? [
+                  {
+                    ...feedbackDocument,
+                    archived_at: "2026-08-28T01:00:00.000Z",
+                  },
+                ]
+              : [feedbackDocument]),
+            {
+              id: reviewId,
+              subject: "mathematics",
+              category: "algebra",
+              title: "公開審査中の記事",
+              status: "in-review",
+              publication_review_stage: "subject-coordinator",
+              created_by: "alice@example.com",
+              updated_at: "2026-08-27T00:00:00.000Z",
+              published_at: null,
+              archived_at: null,
+            },
+          ],
+        },
+      });
+    });
+    await page.route(
+      `**/api/admin/editor/documents/${feedbackId}/archive`,
+      async (route) => {
+        archived = true;
+        await route.fulfill({
+          json: {
+            ok: true,
+            archived: true,
+            archived_at: "2026-08-28T01:00:00.000Z",
+            archive_expires_at: "2026-09-27T01:00:00.000Z",
+          },
+        });
+      },
+    );
+
+    await page.goto("admin/articles/?verify=feedback-archive");
+    const feedbackRow = page.locator(`[data-document-id="${feedbackId}"]`);
+    const reviewRow = page.locator(`[data-document-id="${reviewId}"]`);
+    await expect(
+      feedbackRow.locator('[data-archive-action="archive"]'),
+    ).toBeVisible();
+    await expect(reviewRow.locator("[data-archive-action]")).toHaveCount(0);
+
+    await feedbackRow.locator('[data-archive-action="archive"]').click();
+    await expect(page.locator("[data-list]")).not.toContainText(
+      "フィードバック中の記事",
     );
   });
 

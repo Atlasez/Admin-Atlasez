@@ -123,6 +123,49 @@ function fixture() {
   return { db, request, now };
 }
 
+it("prevents a withdrawn feedback task from being reopened through either task update API", async () => {
+  const { db, request, now } = fixture();
+  const taskId = "11111111-1111-4111-8111-111111111111";
+  db.prepare(
+    `INSERT INTO editorial_tasks
+      (id,project_id,assignee_email,title,details,status,due_timezone,created_by,created_at,updated_at,task_kind)
+     VALUES (?,'thinking-cafe','member@atlasez.test','取り下げ済み依頼','','done','Asia/Tokyo','manager@atlasez.test',?,?,'feedback')`,
+  ).run(taskId, now, now);
+  db.prepare(
+    `INSERT INTO workflow_transition_events
+      (id,entity_type,entity_id,from_state,to_state,actor_email,idempotency_key,expected_updated_at,metadata_json,created_at)
+     VALUES (?,'task',?,'doing','done','manager@atlasez.test',?,?,?,?)`,
+  ).run(
+    "22222222-2222-4222-8222-222222222222",
+    taskId,
+    `feedback-withdrawal-task:${taskId}`,
+    now,
+    JSON.stringify({ action: "feedback_request_withdrawn" }),
+    now,
+  );
+
+  const compatibilityUpdate = await request(
+    "manager@atlasez.test",
+    `/api/admin/operations/tasks/${taskId}`,
+    "PATCH",
+    { status: "open", archived: false },
+  );
+  expect(compatibilityUpdate.status).toBe(409);
+
+  const workflowUpdate = await request(
+    "manager@atlasez.test",
+    `/api/admin/operations/tasks/${taskId}`,
+    "PATCH",
+    { status: "open" },
+  );
+  expect(workflowUpdate.status).toBe(409);
+  expect(
+    db
+      .prepare("SELECT status,archived_at FROM editorial_tasks WHERE id=?")
+      .get(taskId),
+  ).toEqual({ status: "done", archived_at: null });
+});
+
 it("運営が作るテストタスクは明示マーカー付きで通常一覧・リマインダー配送から除外される", async () => {
   const { db, request } = fixture();
   const created = await request(

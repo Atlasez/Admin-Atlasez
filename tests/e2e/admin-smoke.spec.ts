@@ -93,14 +93,14 @@ const pages = [
   ["記事一覧", "admin/articles/", "編集・フィードバック"],
   ["ジャンル概要", "admin/genres/", "各ジャンル概要"],
   ["ジャンル・役割管理", "admin/genre-roles/", "ジャンル・役割管理"],
-  ["タスク管理", "admin/member-tasks/", "タスク管理"],
+  ["自分の担当タスク", "admin/member-tasks/", "自分の担当タスク"],
   ["同時作業会", "admin/co-working/", "同時作業会"],
   ["諸手続き", "admin/procedures/", "諸手続き"],
   ["応募管理", "admin/applications/", "応募管理"],
   [
-    "面談メモ",
+    "応募者対応",
     "admin/application-interview/?application=smoke&project=atlas",
-    "面談メモ",
+    "応募者対応",
   ],
   ["問題報告", "admin/reports/", "問題報告"],
   ["運営メンバー管理", "admin/member-management/", "運営メンバー管理"],
@@ -109,7 +109,7 @@ const pages = [
   [
     "プロジェクトマイページ",
     "admin/workspace/?project=secretariat",
-    "マイページ",
+    "担当・自己紹介",
   ],
   ["記事編集", "admin/editor/", "記事編集ワークスペース"],
   ["作業の進め方", "admin/guide/", "作業の進め方"],
@@ -417,7 +417,26 @@ test("運営メンバー一覧からプロフィールと変更履歴を確認�
       },
     });
   });
+  let savedProfile: {
+    displayName: string;
+    university: string;
+    year: string;
+  } | null = null;
+  let profileUpdatePayload: Record<string, unknown> | null = null;
   await page.route("**/api/admin/member-management*", async (route) => {
+    if (route.request().method() === "PATCH") {
+      const update = route.request().postDataJSON() as Record<string, unknown>;
+      profileUpdatePayload = update;
+      savedProfile = {
+        displayName: String(update.displayName ?? ""),
+        university: String(update.university ?? ""),
+        year: String(update.year ?? ""),
+      };
+      await route.fulfill({
+        json: { ok: true, updatedAt: "2026-10-01T00:00:00.000Z" },
+      });
+      return;
+    }
     if (!new URL(route.request().url()).searchParams.has("email")) {
       await route.fulfill({ json: { members: [] } });
       return;
@@ -432,11 +451,11 @@ test("運営メンバー一覧からプロフィールと変更履歴を確認�
           archivedBy: null,
           archivedAt: null,
           profile: {
-            displayName: "運営メンバー",
+            displayName: savedProfile?.displayName ?? "運営メンバー",
             avatarUrl: "",
             bio: "プロフィール本文",
-            university: "東京大学",
-            year: "2年",
+            university: savedProfile?.university ?? "東京大学",
+            year: savedProfile?.year ?? "2年",
             interests: "数学",
             affiliationType: "student",
             country: "日本",
@@ -484,6 +503,25 @@ test("運営メンバー一覧からプロフィールと変更履歴を確認�
   await expect(dialog).toContainText("作成記事：2件");
   await expect(dialog).toContainText("記録なし");
   await expect(dialog).toContainText("担当分野を変更");
+  await dialog.locator("[data-edit-member-profile]").click();
+  await dialog
+    .locator('[data-profile-field="displayName"]')
+    .fill("編集後の運営メンバー");
+  await dialog.locator('[data-profile-field="university"]').fill("京都大学");
+  await dialog.locator('[data-profile-field="year"]').fill("B3");
+  await dialog.locator("[data-save-profile]").click();
+  await expect(dialog).toContainText("表示名：編集後の運営メンバー");
+  await expect(dialog).toContainText("京都大学 / B3");
+  expect(profileUpdatePayload).toMatchObject({
+    email: "member@example.org",
+    expectedUpdatedAt: "2026-09-28T00:00:00.000Z",
+    displayName: "編集後の運営メンバー",
+    university: "京都大学",
+    year: "B3",
+  });
+  await dialog.locator("[data-edit-member-profile]").click();
+  await expect(dialog.locator("[data-save-profile]")).toBeEnabled();
+  await dialog.locator("[data-cancel-profile-edit]").click();
   await dialog.locator("[data-close-member-detail]").click();
   await expect(dialog).toBeHidden();
 });
