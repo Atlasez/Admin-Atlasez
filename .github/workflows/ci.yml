@@ -9,9 +9,11 @@ on:
   pull_request:
 
 env:
-  # 本番と同じパス構成（ルート配信）で検証する。
-  # SITE_URL は設定しない＝ビルドは noindex 付きになるが、検証には影響しない。
+  # CI preview is served only inside the runner. Use the public origin so
+  # Lighthouse measures the production indexing policy instead of PR noindex.
+  # The build artifact is not published or deployed.
   BASE_PATH: /
+  SITE_URL: https://atlasez.org
 
 jobs:
   verify:
