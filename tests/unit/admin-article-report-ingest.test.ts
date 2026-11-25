@@ -1,5 +1,5 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type {
   D1Database,
   D1PreparedStatement,
@@ -143,4 +143,64 @@ it("keeps report IDs idempotent and limits content-hash dedupe to seven days", a
   expect(
     db.prepare("SELECT COUNT(*) AS count FROM article_reports").get(),
   ).toEqual({ count: 2 });
+});
+
+it("bounds internal report ingestion and rejects non-object JSON before D1", async () => {
+  const prepare = vi.fn();
+  const env = {
+    REPORTS: { prepare },
+    ARTICLE_REPORT_INGEST_TOKEN: "test-ingest-token",
+  } as never;
+
+  for (const body of ["null", "[]", '"text"']) {
+    const response = await worker.fetch(
+      new Request("https://admin.atlasez.org/internal/article-reports", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-atlasez-article-report-token": "test-ingest-token",
+        },
+        body,
+      }),
+      env,
+    );
+    expect(response.status).toBe(400);
+  }
+
+  let pulled = 0;
+  let cancelled = false;
+  const chunk = new Uint8Array(16_000);
+  const totalChunks = 10;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (pulled >= totalChunks) {
+        controller.close();
+        return;
+      }
+      pulled += 1;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const oversized = new Request(
+    "https://admin.atlasez.org/internal/article-reports",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-atlasez-article-report-token": "test-ingest-token",
+      },
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" },
+  );
+  expect(oversized.headers.get("content-length")).toBeNull();
+  const response = await worker.fetch(oversized, env);
+
+  expect(response.status).toBe(413);
+  expect(cancelled).toBe(true);
+  expect(pulled).toBeLessThan(totalChunks);
+  expect(prepare).not.toHaveBeenCalled();
 });

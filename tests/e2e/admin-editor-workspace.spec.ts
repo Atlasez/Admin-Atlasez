@@ -3004,6 +3004,13 @@ test("既存の未完了依頼を重ねず、画面上部から取り下げら�
     "依頼を取り下げ、記事を下書きに戻しました。",
   );
 
+  // The compact toolbar hides while scrolling down. Scroll back up before
+  // using its next action so the test follows the toolbar's reveal behavior.
+  await page.mouse.wheel(0, -1000);
+  await expect(page.locator(".editor-workspace")).not.toHaveAttribute(
+    "data-toolbar-hidden",
+    "",
+  );
   await page
     .getByRole("button", { name: "追加でフィードバックを依頼" })
     .click();

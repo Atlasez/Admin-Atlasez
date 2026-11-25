@@ -61,6 +61,7 @@ import {
   isProfileImageDataUrl,
   profileImageMaxStoredUrlLength,
 } from "./lib/profile-image";
+import { readRequestTextLimited } from "./lib/request-body-text";
 // ローカルWrangler開発時だけ同一Workerのexportをフォールバックとして使う。
 // Preview/本番は外部の専用Worker bindingを必ず経由する。
 export { EditorialCollaborationRoom } from "./editorial-collaboration-worker";
@@ -1863,6 +1864,8 @@ const isTrustedArticleUrl = (value: string) => {
   }
 };
 
+const articleReportIngestRequestMaxBytes = 64_000;
+
 async function ingestArticleReport(
   request: Request,
   env: Env,
@@ -1874,9 +1877,19 @@ async function ingestArticleReport(
   )
     return json({ error: "JSON形式で送信してください。" }, 415);
 
+  const body = await readRequestTextLimited(
+    request,
+    articleReportIngestRequestMaxBytes,
+  );
+  if (body === null)
+    return json({ error: "送信内容が大きすぎます。" }, 413);
+
   let payload: ArticleReportIngestPayload;
   try {
-    payload = (await request.json()) as ArticleReportIngestPayload;
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return json({ error: "入力内容を読み取れませんでした。" }, 400);
+    payload = parsed as ArticleReportIngestPayload;
   } catch {
     return json({ error: "入力内容を読み取れませんでした。" }, 400);
   }
@@ -20807,6 +20820,10 @@ const hexDigest = (bytes: ArrayBuffer) =>
   [...new Uint8Array(bytes)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+// Webhook payloads contain status metadata only. Keep room for the decoded text
+// and parsed object inside a 128 MB Worker isolate; the scheduled reconciler
+// can recover status updates that exceed this application-level limit.
+const githubWebhookMaxBytes = 2_000_000;
 
 const verifyGithubWebhookSignature = async (
   secret: string,
@@ -20897,7 +20914,9 @@ async function receiveGithubPublicationWebhook(
   const secret = env.GITHUB_WEBHOOK_SECRET?.trim();
   if (!secret)
     return json({ error: "GitHub Webhook Secretが設定されていません。" }, 503);
-  const body = await request.text();
+  const body = await readRequestTextLimited(request, githubWebhookMaxBytes);
+  if (body === null)
+    return json({ error: "GitHub Webhookが大きすぎます。" }, 413);
   if (
     !(await verifyGithubWebhookSignature(
       secret,
@@ -21087,11 +21106,8 @@ async function registerEditorialReleaseCandidate(
   env: Env,
 ): Promise<Response> {
   if (request.method !== "POST") return json({ error: "POSTのみ利用できます。" }, 405);
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > editorialReleaseRequestMaxBytes)
-    return json({ error: "公開候補マニフェストが大きすぎます。" }, 413);
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > editorialReleaseRequestMaxBytes)
+  const body = await readRequestTextLimited(request, editorialReleaseRequestMaxBytes);
+  if (body === null)
     return json({ error: "公開候補マニフェストが大きすぎます。" }, 413);
   const signatureFailure = await verifyEditorialReleaseRequest(request, body, env);
   if (signatureFailure) return signatureFailure;
@@ -21511,11 +21527,8 @@ async function receiveEditorialReleaseEvent(
 ): Promise<Response> {
   if (request.method !== "POST") return json({ error: "POSTのみ利用できます。" }, 405);
   if (event === "candidate") return registerEditorialReleaseCandidate(request, env);
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > editorialReleaseRequestMaxBytes)
-    return json({ error: "公開候補通知が大きすぎます。" }, 413);
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > editorialReleaseRequestMaxBytes)
+  const body = await readRequestTextLimited(request, editorialReleaseRequestMaxBytes);
+  if (body === null)
     return json({ error: "公開候補通知が大きすぎます。" }, 413);
   const signatureFailure = await verifyEditorialReleaseRequest(request, body, env);
   if (signatureFailure) return signatureFailure;
