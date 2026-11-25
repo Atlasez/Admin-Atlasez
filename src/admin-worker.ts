@@ -34,6 +34,7 @@ import {
   SEMINAR_REVIEW_PATH,
 } from "./lib/admin-routes";
 import { getAdminApiAccessPolicy } from "./lib/admin-api-access-policy";
+import { applicationInterviewPath } from "./lib/application-attention";
 import { applicationAcceptanceEmail } from "./lib/application-acceptance-email";
 import {
   canAccess,
@@ -10784,7 +10785,7 @@ async function actionCenterOverview(request: Request, env: Env): Promise<Respons
       kind: "application",
       title: `応募：${APPLICATION_FORM_LABELS[row.project_slug] ?? row.project_slug}`,
       detail: `${row.name}（${row.email}）の応募を確認してください。`,
-      href: `/admin/applications/?project=${encodeURIComponent(row.project_slug)}`,
+      href: applicationInterviewPath(row.project_slug, row.id),
       status: row.status,
       priority: row.status === "new" ? "new" : actionCenterPriority(null, row.updated_at, now),
       updatedAt: row.updated_at || row.created_at,
@@ -10839,7 +10840,7 @@ async function actionCenterOverview(request: Request, env: Env): Promise<Respons
     history.push({ id: `document:${row.id}`, kind: "document", title: row.title, detail: row.archived_at ? "アーカイブ済みの記事です。" : row.published_at ? "公開済みの記事です。" : "承認済みの記事です。", href: `/admin/editor/?document=${encodeURIComponent(row.id)}`, status: row.archived_at ? "archived" : row.published_at ? "published" : "approved", priority: "read", updatedAt: row.updated_at, dueAt: null, project: "アトラス", subject: row.subject, read: true, archived: Boolean(row.archived_at), actions: [] });
   }
   for (const row of applicationHistoryRows.results ?? []) {
-    history.push({ id: `application:${row.id}`, kind: "application", title: `応募：${APPLICATION_FORM_LABELS[row.project_slug] ?? row.project_slug}`, detail: `${row.name}（${row.email}）の応募は${row.status === "accepted" ? "受け入れ済み" : "見送り済み"}です。`, href: `/admin/applications/?project=${encodeURIComponent(row.project_slug)}`, status: row.status, priority: "read", updatedAt: row.updated_at || row.created_at, dueAt: null, project: APPLICATION_FORM_LABELS[row.project_slug] ?? row.project_slug, subject: null, read: true, actions: [] });
+    history.push({ id: `application:${row.id}`, kind: "application", title: `応募：${APPLICATION_FORM_LABELS[row.project_slug] ?? row.project_slug}`, detail: `${row.name}（${row.email}）の応募は${row.status === "accepted" ? "受け入れ済み" : "見送り済み"}です。`, href: applicationInterviewPath(row.project_slug, row.id), status: row.status, priority: "read", updatedAt: row.updated_at || row.created_at, dueAt: null, project: APPLICATION_FORM_LABELS[row.project_slug] ?? row.project_slug, subject: null, read: true, actions: [] });
   }
   for (const row of memberApprovalHistoryRows.results ?? []) {
     history.push({ id: `approval:${row.id}`, kind: "approval", title: `メンバー情報の承認：${row.display_name || row.email}`, detail: `${row.email}のプロフィール変更は${row.status === "approved" ? "承認済み" : "却下済み"}です。`, href: "/admin/profile-requests/", status: row.status, priority: "read", updatedAt: row.submitted_at, dueAt: null, project: "運営事務局", subject: null, read: true, actions: [] });
@@ -18926,6 +18927,35 @@ async function storeArticleBackup(
 
 const WORKER_SYNC_PAGE_SIZE = 8;
 
+type PublishedArticleBackupState = {
+  version: 1;
+  repository: string;
+  treeSha: string;
+  cursor: string | null;
+  complete: boolean;
+};
+
+function parsePublishedArticleBackupState(
+  cursor: string | null,
+): PublishedArticleBackupState | null {
+  if (!cursor) return null;
+  try {
+    const value = JSON.parse(cursor) as Partial<PublishedArticleBackupState>;
+    if (
+      value.version === 1 &&
+      typeof value.repository === "string" &&
+      typeof value.treeSha === "string" &&
+      value.treeSha.length > 0 &&
+      (typeof value.cursor === "string" || value.cursor === null) &&
+      typeof value.complete === "boolean"
+    )
+      return value as PublishedArticleBackupState;
+  } catch {
+    // 旧形式のパスだけを保存したチェックポイントは、新しい形式で再走査する。
+  }
+  return null;
+}
+
 async function readWorkerSyncCursor(env: Env, job: string) {
   const row = await env.REPORTS.prepare(
     "SELECT cursor FROM admin_worker_sync_checkpoints WHERE job = ?",
@@ -18938,14 +18968,16 @@ async function readWorkerSyncCursor(env: Env, job: string) {
 async function writeWorkerSyncCursor(
   env: Env,
   job: string,
+  previousCursor: string | null,
   cursor: string | null,
 ) {
   await env.REPORTS.prepare(
     `INSERT INTO admin_worker_sync_checkpoints (job, cursor, updated_at)
      VALUES (?, ?, ?)
-     ON CONFLICT(job) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at`,
+     ON CONFLICT(job) DO UPDATE SET cursor=excluded.cursor, updated_at=excluded.updated_at
+     WHERE admin_worker_sync_checkpoints.cursor IS ?`,
   )
-    .bind(job, cursor, new Date().toISOString())
+    .bind(job, cursor, new Date().toISOString(), previousCursor)
     .run();
 }
 
@@ -18968,17 +19000,41 @@ async function syncPublishedArticleBackups(env: Env) {
     "user-agent": "atlasez-editorial-backup",
     "x-github-api-version": "2022-11-28",
   };
+  const previousCursor = await readWorkerSyncCursor(env, "published-article-backups");
+  const parsedState = parsePublishedArticleBackupState(previousCursor);
+  const savedState = parsedState?.repository === repository ? parsedState : null;
+  const resume = savedState && !savedState.complete ? savedState : null;
+  let treeSha = resume?.treeSha;
+  if (!treeSha) {
+    const root = await fetch(
+      `https://api.github.com/repos/${repository}/git/trees/main`,
+      { headers },
+    );
+    if (!root.ok)
+      throw new Error("GitHubのバックアップ対象の更新を確認できませんでした。");
+    const { sha } = (await root.json()) as { sha?: string };
+    if (typeof sha !== "string" || !sha)
+      throw new Error("GitHubのバックアップ対象のtree SHAを取得できませんでした。");
+    if (savedState?.treeSha === sha)
+      return { synced: 0, skipped: true, reason: "unchanged" };
+    treeSha = sha;
+  }
+
+  // Finish each scan against the tree it started with before checking main again.
+  const cursor = resume?.cursor ?? null;
   const treeResponse = await fetch(
-    `https://api.github.com/repos/${repository}/git/trees/main?recursive=1`,
+    `https://api.github.com/repos/${repository}/git/trees/${treeSha}?recursive=1`,
     { headers },
   );
   if (!treeResponse.ok)
     throw new Error("GitHubのバックアップ対象を取得できませんでした。");
   const tree = (await treeResponse.json()) as {
     tree?: { path?: string; type?: string; sha?: string }[];
+    truncated?: boolean;
   };
-  const cursor = await readWorkerSyncCursor(env, "published-article-backups");
-  const articles = (tree.tree ?? []).filter(
+  if (tree.truncated || !Array.isArray(tree.tree))
+    throw new Error("GitHubのバックアップ対象一覧が不完全です。checkpointは進めていません。");
+  const articles = tree.tree.filter(
     (entry) =>
       entry.type === "blob" &&
       entry.path?.startsWith("src/content/articles/") &&
@@ -19023,7 +19079,14 @@ async function syncPublishedArticleBackups(env: Env) {
   await writeWorkerSyncCursor(
     env,
     "published-article-backups",
-    hasMore ? page.at(-1)?.path ?? null : null,
+    previousCursor,
+    JSON.stringify({
+      version: 1,
+      repository,
+      treeSha,
+      cursor: hasMore ? page.at(-1)?.path ?? null : null,
+      complete: !hasMore,
+    } satisfies PublishedArticleBackupState),
   );
   console.info(
     JSON.stringify({
@@ -21116,6 +21179,17 @@ type CloudflareWorkerDeployment = {
   versions: Array<{ version_id: string; percentage: number }>;
 };
 
+class EditorialDeploymentLookupFailure extends EditorialPublicationFailure {
+  constructor(readonly upstreamStatus: number) {
+    super(
+      "Cloudflareの公開Deploymentを確認できません。",
+      "cloudflare_deployment_lookup_failed",
+      upstreamStatus >= 500 ? "deployment" : "configuration",
+      upstreamStatus >= 500 || upstreamStatus === 429,
+    );
+  }
+}
+
 async function getCurrentEditorialWorkerDeployment(env: Env): Promise<CloudflareWorkerDeployment | null> {
   const token = env.CLOUDFLARE_WORKERS_READ_TOKEN?.trim();
   if (!token) throw new EditorialPublicationFailure(
@@ -21127,17 +21201,13 @@ async function getCurrentEditorialWorkerDeployment(env: Env): Promise<Cloudflare
     `https://api.cloudflare.com/client/v4/accounts/${editorialReleaseAccountId}/workers/scripts/${editorialReleaseWorkerName}/deployments?per_page=1`,
     { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, cache: "no-store" },
   );
+  if (!response.ok) throw new EditorialDeploymentLookupFailure(response.status);
   const payload = await response.json().catch(() => ({})) as {
     success?: boolean;
     result?: { deployments?: CloudflareWorkerDeployment[] };
   };
-  if (!response.ok || payload.success !== true)
-    throw new EditorialPublicationFailure(
-      "Cloudflareの公開Deploymentを確認できません。",
-      "cloudflare_deployment_lookup_failed",
-      response.status >= 500 ? "deployment" : "configuration",
-      response.status >= 500 || response.status === 429,
-    );
+  if (payload?.success !== true)
+    throw new EditorialDeploymentLookupFailure(response.status);
   return payload.result?.deployments?.[0] ?? null;
 }
 
@@ -21284,8 +21354,18 @@ async function reconcileEditorialReleaseCandidates(env: Env, report?: ScheduledJ
         report?.({ status: "warning", code: "state_unconfirmed" });
     }
   } catch (error) {
-    report?.({ status: "warning", code: "dependency_failed" });
-    console.error("editorial release reconciliation failed", error);
+    const upstreamStatus = error instanceof EditorialDeploymentLookupFailure
+      ? error.upstreamStatus
+      : null;
+    const code = upstreamStatus === 401 || upstreamStatus === 403
+      ? "invalid_configuration"
+      : "dependency_failed";
+    report?.({ status: "warning", code });
+    console.error(JSON.stringify({
+      event: "editorial_release_reconciliation_failed",
+      code,
+      upstreamStatus,
+    }));
   }
 }
 
@@ -24519,7 +24599,7 @@ async function adminNotifications(
       kind: "application",
       title: `新しい応募：${APPLICATION_FORM_LABELS[item.project_slug] ?? item.project_slug}`,
       detail: `${item.name}（${item.email}）の応募を確認してください。`,
-      href: `/admin/applications/?project=${encodeURIComponent(item.project_slug)}`,
+      href: applicationInterviewPath(item.project_slug, item.id),
       updatedAt: item.created_at,
     })),
     ...(taskReminderRows.results ?? [])

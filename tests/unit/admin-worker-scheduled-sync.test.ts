@@ -7,6 +7,7 @@ class SyncStatement {
   constructor(
     readonly query: string,
     readonly onRun: (query: string, values: unknown[]) => void,
+    readonly backupCheckpoint: string | null = null,
   ) {}
 
   bind(...values: unknown[]) {
@@ -33,6 +34,11 @@ class SyncStatement {
   async first<T>() {
     if (this.query.includes("COUNT(*) AS total"))
       return { total: 9, published: 4 } as T;
+    if (
+      this.query.includes("FROM admin_worker_sync_checkpoints") &&
+      this.values[0] === "published-article-backups"
+    )
+      return { cursor: this.backupCheckpoint } as T;
     return null as T | null;
   }
 
@@ -49,6 +55,18 @@ const runScheduled = async (cron: string, env: Record<string, unknown>) => {
   });
   await Promise.all(pending);
 };
+
+const mainTreeUrl = "/git/trees/main";
+const articleTreeUrl = "/git/trees/tree-sha?recursive=1";
+const backupRoot = () => Response.json({ sha: "tree-sha" });
+const checkpoint = (cursor: string | null, complete: boolean) =>
+  JSON.stringify({
+    version: 1,
+    repository: "Atlasez/Atlasez01",
+    treeSha: "tree-sha",
+    cursor,
+    complete,
+  });
 
 describe("admin scheduled GitHub syncs", () => {
   it("fails visibly when article backup GitHub credentials are missing", async () => {
@@ -98,7 +116,8 @@ describe("admin scheduled GitHub syncs", () => {
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = String(input);
       requests.push(url);
-      if (url.includes("/git/trees/main?recursive=1"))
+      if (url.endsWith(mainTreeUrl)) return backupRoot();
+      if (url.endsWith(articleTreeUrl))
         return new Response(
           JSON.stringify({
             tree: Array.from({ length: 9 }, (_, index) => ({
@@ -126,10 +145,9 @@ describe("admin scheduled GitHub syncs", () => {
         },
       });
 
-      expect(requests).toHaveLength(9);
-      expect(
-        requests.filter((url) => url.includes("/git/trees/")),
-      ).toHaveLength(1);
+      expect(requests).toHaveLength(10);
+      expect(requests[0]).toMatch(/\/git\/trees\/main$/);
+      expect(requests[1]).toMatch(/\/git\/trees\/tree-sha\?recursive=1$/);
       expect(requests.some((url) => url.endsWith("/git/blobs/sha-1"))).toBe(
         true,
       );
@@ -148,8 +166,9 @@ describe("admin scheduled GitHub syncs", () => {
         )?.values,
       ).toEqual([
         "published-article-backups",
-        "src/content/articles/ja/math/overview/article-8.md",
+        checkpoint("src/content/articles/ja/math/overview/article-8.md", false),
         expect.any(String),
+        null,
       ]);
     } finally {
       vi.unstubAllGlobals();
@@ -182,7 +201,8 @@ describe("admin scheduled GitHub syncs", () => {
       let contentRequests = 0;
       vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
         const url = String(input);
-        if (url.includes("/git/trees/main?recursive=1"))
+        if (url.endsWith(mainTreeUrl)) return backupRoot();
+        if (url.endsWith(articleTreeUrl))
           return new Response(
             JSON.stringify({
               tree: [
@@ -240,7 +260,8 @@ describe("admin scheduled GitHub syncs", () => {
     const executed: { query: string; values: unknown[] }[] = [];
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes("/git/trees/main?recursive=1"))
+      if (url.endsWith(mainTreeUrl)) return backupRoot();
+      if (url.endsWith(articleTreeUrl))
         return new Response(
           JSON.stringify({
             tree: [
@@ -274,6 +295,98 @@ describe("admin scheduled GitHub syncs", () => {
           )
           ?.values.slice(3, 6),
       ).toEqual(["empty-sha", "", "scheduled"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("checks only the root when the saved tree is complete and unchanged", async () => {
+    const fetcher = vi.fn(async () => backupRoot());
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      await runScheduled("1-59/2 * * * *", {
+        GITHUB_PUBLISH_TOKEN: "test-token",
+        REPORTS: {
+          prepare: (query: string) =>
+            new SyncStatement(query, () => undefined, checkpoint(null, true)),
+        },
+      });
+      expect(fetcher).toHaveBeenCalledExactlyOnceWith(
+        expect.stringMatching(/\/git\/trees\/main$/),
+        expect.any(Object),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("resumes the pinned tree without reading main or backing up earlier paths", async () => {
+    const articlePath = "src/content/articles/ja/math/overview/";
+    const writes: unknown[][] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith(articleTreeUrl)
+        ? Response.json({
+            tree: [1, 2].map((number) => ({
+              type: "blob",
+              path: `${articlePath}article-${number}.md`,
+              sha: `blob-${number}`,
+            })),
+          })
+        : Response.json({ content: btoa("# Article"), encoding: "base64" }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      await runScheduled("1-59/2 * * * *", {
+        GITHUB_PUBLISH_TOKEN: "test-token",
+        REPORTS: {
+          prepare: (query: string) =>
+            new SyncStatement(
+              query,
+              (sql, values) => {
+                if (sql.includes("admin_worker_sync_checkpoints"))
+                  writes.push(values);
+              },
+              checkpoint(`${articlePath}article-1.md`, false),
+            ),
+        },
+      });
+      expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+        expect.stringContaining(articleTreeUrl),
+        expect.stringMatching(/\/git\/blobs\/blob-2$/),
+      ]);
+      expect(writes).toEqual([
+        [
+          "published-article-backups",
+          checkpoint(null, true),
+          expect.any(String),
+          checkpoint(`${articlePath}article-1.md`, false),
+        ],
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not mark a truncated tree as backed up", async () => {
+    const written: string[] = [];
+    const fetcher = vi
+      .fn()
+      .mockImplementationOnce(backupRoot)
+      .mockResolvedValueOnce(Response.json({ tree: [], truncated: true }));
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      await expect(
+        runScheduled("1-59/2 * * * *", {
+          GITHUB_PUBLISH_TOKEN: "test-token",
+          REPORTS: {
+            prepare: (query: string) =>
+              new SyncStatement(query, (sql) => written.push(sql)),
+          },
+        }),
+      ).rejects.toThrow("バックアップ対象一覧が不完全");
+      expect(
+        written.some((sql) => sql.includes("admin_worker_sync_checkpoints")),
+      ).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }

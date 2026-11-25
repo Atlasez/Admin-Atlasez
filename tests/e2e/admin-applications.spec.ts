@@ -542,8 +542,10 @@ test("応募一覧から応募者対応を開き、一覧へ戻っても選択�
   await expect(page.locator("[data-application-select]")).toHaveValue(
     "newest-draft",
   );
+  await page.getByLabel("対応区分").selectOption("new");
   const detailLink = page.getByRole("link", { name: "応募者対応を開く →" });
   await expect(detailLink).toHaveAttribute("href", /application=newest-draft/);
+  await expect(detailLink).toHaveAttribute("href", /attention=new/);
   await detailLink.click();
   await expect(page.getByRole("heading", { name: "応募者対応" })).toBeVisible();
   await expect(page.locator("[data-application-content]")).toContainText(
@@ -554,9 +556,75 @@ test("応募一覧から応募者対応を開き、一覧へ戻っても選択�
   );
   await page.locator("[data-back-link]").click();
   await expect(page).toHaveURL(/application=newest-draft/);
+  await expect(page.getByLabel("対応区分")).toHaveValue("new");
   await expect(page.locator("[data-application-select]")).toHaveValue(
     "newest-draft",
   );
+});
+
+test("要対応フィルターは後続ページの送信失敗を拾い、再試行待ちと区別する", async ({
+  page,
+}) => {
+  let finishNextPage: () => void = () => {};
+  const nextPageReady = new Promise<void>((resolve) => {
+    finishNextPage = resolve;
+  });
+  await page.route("**/api/admin/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname !== "/api/admin/applications") {
+      await route.fulfill({ json: {} });
+      return;
+    }
+    const isNext = url.searchParams.has("cursor");
+    if (isNext) await nextPageReady;
+    await route.fulfill({
+      json: isNext
+        ? {
+            applications: [
+              {
+                id: "failed",
+                name: "送信失敗の応募",
+                status: "accepted",
+                email_deliveries: [{ failed: 1 }],
+              },
+              {
+                id: "decision",
+                name: "結果待ちの応募",
+                status: "reviewing",
+                interview_completed_at: "2026-11-25T00:00:00Z",
+              },
+            ],
+            pagination: { hasMore: false },
+          }
+        : {
+            applications: [
+              {
+                id: "retry",
+                name: "再試行中の応募",
+                status: "accepted",
+                email_deliveries: [{ failed: 0, retry: 1 }],
+              },
+            ],
+            pagination: { hasMore: true, nextCursor: "next-page" },
+          },
+    });
+  });
+  try {
+    await page.goto("admin/applications/?project=atlas&attention=email");
+    await expect(page.getByText("残りの応募を確認しています。")).toBeVisible();
+  } finally {
+    finishNextPage();
+  }
+  const applicant = page.locator("[data-application-select]");
+  await expect(applicant).toHaveValue("failed");
+  await expect(applicant.locator("option")).toHaveCount(1);
+  await expect(page.locator(".application-list")).toContainText(
+    "メール送信失敗",
+  );
+  await page.getByLabel("対応区分").selectOption("decision");
+  await expect(applicant).toHaveValue("decision");
+  await page.getByRole("button", { name: "絞り込みを解除" }).click();
+  await expect(applicant.locator("option")).toHaveCount(3);
 });
 
 test("応募者対応では日程保存の失敗を保ち、保存後の通知失敗を区別する", async ({

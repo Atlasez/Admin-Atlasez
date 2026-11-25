@@ -176,6 +176,44 @@ test("開発者向け診断は状態を一覧表示し、再確認できる", as
   await expect.poll(() => requests).toBe(2);
 });
 
+test("公開処理と応募メールの診断から次の確認へ進める", async ({ page }) => {
+  await mockSession(page);
+  const data = monitoringResponse();
+  data.scheduledJobs.jobs[0] = {
+    ...jobRecord(
+      "editorial-release-reconcile",
+      "公開状態の照合",
+      "warning",
+      "配信情報にアクセスできません",
+    ),
+    lastErrorCode: "invalid_configuration",
+  };
+  await page.route("**/api/admin/developer/diagnostics", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        queues: [
+          { ...data.queues[0], id: "editorial-publication" },
+          {
+            ...data.queues[1],
+            id: "application-email",
+            status: "warning",
+            detail: "メールを送信できませんでした",
+            failedCount: 1,
+          },
+        ],
+      },
+    }),
+  );
+
+  await page.goto("admin/developer/?mode=developer");
+  await expect(page.getByText(/対象Workerの読み取り権限/)).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "公開処理の状況を開く" }),
+  ).toHaveAttribute("href", "/admin/publication-runs/");
+  await expect(page.getByText(/応募一覧で「メール送信失敗」/)).toBeVisible();
+});
+
 test("定期処理の未確認から成功・失敗・設定不足・実行中へ更新し、キューの滞留を区別する", async ({
   page,
 }) => {

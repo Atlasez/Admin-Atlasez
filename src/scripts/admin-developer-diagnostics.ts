@@ -138,6 +138,25 @@ const renderJob = (job: ScheduledJobHealthItem) => {
   );
   addField(fields, "直近の処理時間", formatDuration(job.lastDurationMs));
   if (job.lastErrorCode) addField(fields, "エラーコード", job.lastErrorCode);
+  if (
+    (job.id === "editorial-release-reconcile" ||
+      job.id === "editorial-publication-sync") &&
+    (job.status === "warning" || job.status === "error")
+  ) {
+    if (job.lastErrorCode === "not_configured") {
+      addField(
+        fields,
+        "次の確認",
+        "運営Workerの CLOUDFLARE_WORKERS_READ_TOKEN の登録状況を確認してください。",
+      );
+    } else if (job.lastErrorCode === "invalid_configuration") {
+      addField(
+        fields,
+        "次の確認",
+        "公開Workerの配信情報へのアクセスを拒否されました。トークンの有効性と対象Workerの読み取り権限を確認してください。",
+      );
+    }
+  }
   card.append(fields);
   return card;
 };
@@ -151,6 +170,21 @@ const renderQueue = (queue: ScheduledQueueHealth) => {
   addField(fields, "要対応（24時間）", formatCount(queue.failedCount));
   addField(fields, "最も古い待機日時", timestamp(queue.oldestPendingAt));
   addField(fields, "最長待機時間", formatAge(queue.oldestPendingAgeMs));
+  if (queue.status === "warning" || queue.status === "error") {
+    if (queue.id === "editorial-publication") {
+      const link = node("a", "", "公開処理の状況を開く");
+      link.href = "/admin/publication-runs/";
+      addField(fields, "次の確認", link);
+    } else if (queue.id === "application-email") {
+      addField(
+        fields,
+        "次の確認",
+        (queue.failedCount ?? 0) > 0
+          ? "該当プロジェクトの応募一覧で「メール送信失敗」を選んでください。"
+          : "再試行待ちの件数と最も古い待機日時を確認してください。",
+      );
+    }
+  }
   card.append(fields);
   return card;
 };
