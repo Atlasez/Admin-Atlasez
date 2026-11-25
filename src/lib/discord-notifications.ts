@@ -16,6 +16,7 @@ export type DiscordNotificationEnv = {
   REPORTS: D1Database;
   DISCORD_ATLAS_WEBHOOK_URL?: string;
   DISCORD_PROGRESS_WEBHOOK_URL?: string;
+  DISCORD_ADMIN_HEALTH_WEBHOOK_URL?: string;
   DISCORD_PROGRESS_CHANNEL_ID?: string;
   DISCORD_BOT_TOKEN?: string;
   ATLASEZ_STAGING_MODE?: string;
@@ -129,18 +130,35 @@ const webhookUrl = (env: DiscordNotificationEnv, ref: string) => {
       ? env.DISCORD_ATLAS_WEBHOOK_URL
       : ref === "DISCORD_PROGRESS_WEBHOOK_URL"
         ? env.DISCORD_PROGRESS_WEBHOOK_URL
-        : undefined;
+        : ref === "DISCORD_ADMIN_HEALTH_WEBHOOK_URL"
+          ? env.DISCORD_ADMIN_HEALTH_WEBHOOK_URL
+          : undefined;
   const trimmed = raw?.trim() ?? "";
   if (!trimmed) return { error: "not_configured" as const };
   try {
     const url = new URL(trimmed);
     if (url.protocol !== "https:" || !DISCORD_HOSTS.has(url.hostname))
       return { error: "invalid_destination" as const };
+    if (
+      ref === "DISCORD_ADMIN_HEALTH_WEBHOOK_URL" &&
+      (url.username ||
+        url.password ||
+        url.port ||
+        url.search ||
+        url.hash ||
+        !/^\/api\/(?:v\d+\/)?webhooks\/\d{15,22}\/[A-Za-z0-9._-]+$/.test(
+          url.pathname,
+        ))
+    )
+      return { error: "invalid_destination" as const };
     return { url: url.toString() };
   } catch {
     return { error: "invalid_destination" as const };
   }
 };
+
+export const hasScheduledHealthWebhook = (env: DiscordNotificationEnv) =>
+  "url" in webhookUrl(env, "DISCORD_ADMIN_HEALTH_WEBHOOK_URL");
 
 const progressMessage = (subject: string | null, body: string) => {
   const subjectLabel = subject ? `【${subject}】` : "【全体】";
@@ -293,7 +311,8 @@ const sendDiscordMessage = async (
         content,
         allowed_mentions: { parse: [] },
       }),
-      redirect: "error",
+      // Workers supports manual redirects, keeping the request at its original destination.
+      redirect: "manual",
       signal: controller.signal,
     });
     const raw = await response.text().catch(() => "");
@@ -327,6 +346,12 @@ const claimAndSend = async (
   nowDate: Date,
 ): Promise<"sent" | "failed" | "skipped"> => {
   const logger = options.logger ?? console;
+  if (
+    row.destination_kind === "webhook" &&
+    row.destination_ref === "DISCORD_ADMIN_HEALTH_WEBHOOK_URL" &&
+    !hasScheduledHealthWebhook(env)
+  )
+    return "skipped";
   if (row.status === "sent") return "sent";
   if (row.status === "failed") return "failed";
   const now = nowDate.toISOString();
@@ -488,24 +513,28 @@ export async function dispatchDueDiscordNotifications(
     nowDate.getTime() - CLAIM_LEASE_MS,
   ).toISOString();
   const limit = Math.min(25, Math.max(1, options.limit ?? 25));
+  const healthEnabled = Number(hasScheduledHealthWebhook(env));
   try {
     await env.REPORTS.prepare(
       `UPDATE discord_notifications
           SET status='failed',claim_token=NULL,claimed_at=NULL,last_error='claim_expired_max_attempts',updated_at=?
-        WHERE status='sending' AND attempt_count>=? AND COALESCE(claimed_at,updated_at)<=?`,
+        WHERE status='sending' AND attempt_count>=? AND COALESCE(claimed_at,updated_at)<=?
+          AND (destination_kind<>'webhook' OR destination_ref<>'DISCORD_ADMIN_HEALTH_WEBHOOK_URL' OR ?=1)`,
     )
-      .bind(now, MAX_ATTEMPTS, staleClaimCutoff)
+      .bind(now, MAX_ATTEMPTS, staleClaimCutoff, healthEnabled)
       .run();
     const ready = await env.REPORTS.prepare(
       `SELECT id,dedupe_key,kind,destination_kind,destination_ref,content,status,attempt_count
          FROM discord_notifications
-        WHERE attempt_count<? AND (
+        WHERE attempt_count<?
+          AND (destination_kind<>'webhook' OR destination_ref<>'DISCORD_ADMIN_HEALTH_WEBHOOK_URL' OR ?=1)
+          AND (
           (status IN ('pending','retry') AND next_attempt_at<=?)
           OR (status='sending' AND COALESCE(claimed_at,updated_at)<=?)
         )
         ORDER BY next_attempt_at ASC,created_at ASC LIMIT ?`,
     )
-      .bind(MAX_ATTEMPTS, now, staleClaimCutoff, limit)
+      .bind(MAX_ATTEMPTS, healthEnabled, now, staleClaimCutoff, limit)
       .all<NotificationRow>();
     return deliverRows(env, ready.results ?? [], options, nowDate);
   } catch {
