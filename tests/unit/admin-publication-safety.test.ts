@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/admin-worker";
+import { createAdminTestEnvironment } from "../helpers/admin-test-environment";
 
 const secret = "editorial-release-secret";
 const cloudflareReadToken = "worker-metadata-read-token";
@@ -761,6 +762,53 @@ describe("記事公開候補の永続化と切替復旧", () => {
     expect(database.batches).toHaveLength(0);
     expect(cloudflareFetch).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    [401, "invalid_configuration"],
+    [403, "invalid_configuration"],
+    [429, "dependency_failed"],
+    [503, "dependency_failed"],
+  ])(
+    "classifies a Cloudflare HTTP %i in scheduled publication health",
+    async (status, code) => {
+      const { db, env } = createAdminTestEnvironment();
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      const privateProviderMessage = "provider detail must not be logged";
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() =>
+          Response.json({ errors: [privateProviderMessage] }, { status }),
+        ),
+      );
+
+      const pending: Promise<unknown>[] = [];
+      await worker.scheduled(
+        { cron: "*/1 * * * *" },
+        { ...env, CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken } as never,
+        { waitUntil: (promise: Promise<unknown>) => pending.push(promise) },
+      );
+      await Promise.all(pending);
+
+      expect(
+        db
+          .prepare(
+            "SELECT last_status,last_error_code FROM admin_scheduled_job_health WHERE job_id=?",
+          )
+          .get("editorial-release-reconcile"),
+      ).toEqual({ last_status: "warning", last_error_code: code });
+      expect(log).toHaveBeenCalledWith(
+        JSON.stringify({
+          event: "editorial_release_reconciliation_failed",
+          code,
+          upstreamStatus: status,
+        }),
+      );
+      expect(JSON.stringify(log.mock.calls)).not.toContain(
+        privateProviderMessage,
+      );
+      expect(JSON.stringify(log.mock.calls)).not.toContain(cloudflareReadToken);
+    },
+  );
 
   it("D1の公開履歴書き込みが一時失敗してもCronが現行Versionを照合して補修する", async () => {
     const database = new ReleaseDatabase();

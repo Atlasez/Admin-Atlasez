@@ -21178,6 +21178,17 @@ type CloudflareWorkerDeployment = {
   versions: Array<{ version_id: string; percentage: number }>;
 };
 
+class EditorialDeploymentLookupFailure extends EditorialPublicationFailure {
+  constructor(readonly upstreamStatus: number) {
+    super(
+      "Cloudflareの公開Deploymentを確認できません。",
+      "cloudflare_deployment_lookup_failed",
+      upstreamStatus >= 500 ? "deployment" : "configuration",
+      upstreamStatus >= 500 || upstreamStatus === 429,
+    );
+  }
+}
+
 async function getCurrentEditorialWorkerDeployment(env: Env): Promise<CloudflareWorkerDeployment | null> {
   const token = env.CLOUDFLARE_WORKERS_READ_TOKEN?.trim();
   if (!token) throw new EditorialPublicationFailure(
@@ -21189,17 +21200,13 @@ async function getCurrentEditorialWorkerDeployment(env: Env): Promise<Cloudflare
     `https://api.cloudflare.com/client/v4/accounts/${editorialReleaseAccountId}/workers/scripts/${editorialReleaseWorkerName}/deployments?per_page=1`,
     { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, cache: "no-store" },
   );
+  if (!response.ok) throw new EditorialDeploymentLookupFailure(response.status);
   const payload = await response.json().catch(() => ({})) as {
     success?: boolean;
     result?: { deployments?: CloudflareWorkerDeployment[] };
   };
-  if (!response.ok || payload.success !== true)
-    throw new EditorialPublicationFailure(
-      "Cloudflareの公開Deploymentを確認できません。",
-      "cloudflare_deployment_lookup_failed",
-      response.status >= 500 ? "deployment" : "configuration",
-      response.status >= 500 || response.status === 429,
-    );
+  if (payload?.success !== true)
+    throw new EditorialDeploymentLookupFailure(response.status);
   return payload.result?.deployments?.[0] ?? null;
 }
 
@@ -21346,8 +21353,18 @@ async function reconcileEditorialReleaseCandidates(env: Env, report?: ScheduledJ
         report?.({ status: "warning", code: "state_unconfirmed" });
     }
   } catch (error) {
-    report?.({ status: "warning", code: "dependency_failed" });
-    console.error("editorial release reconciliation failed", error);
+    const upstreamStatus = error instanceof EditorialDeploymentLookupFailure
+      ? error.upstreamStatus
+      : null;
+    const code = upstreamStatus === 401 || upstreamStatus === 403
+      ? "invalid_configuration"
+      : "dependency_failed";
+    report?.({ status: "warning", code });
+    console.error(JSON.stringify({
+      event: "editorial_release_reconciliation_failed",
+      code,
+      upstreamStatus,
+    }));
   }
 }
 
