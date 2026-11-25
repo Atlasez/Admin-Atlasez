@@ -14,7 +14,7 @@ const article = {
   versionId: articleVersionId,
 };
 
-async function signedHeaders(body: string) {
+async function signedHeaders(body: string): Promise<Record<string, string>> {
   const timestamp = String(Date.now());
   const key = await crypto.subtle.importKey(
     "raw",
@@ -38,7 +38,9 @@ async function signedHeaders(body: string) {
   };
 }
 
-async function signedGithubHeaders(body: string) {
+async function signedGithubHeaders(
+  body: string,
+): Promise<Record<string, string>> {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode("github-webhook-secret"),
