@@ -174,44 +174,41 @@ describe("Architecture ESLint guards", () => {
     ).toContain("atlasez/admin-api-policy-fails-closed");
   });
 
-  it("publication document updates compare updated_at and stop on conflicts", () => {
+  it("publication records candidates before moving the version pointer", () => {
     const valid = `
       async function progressEditorialPublicationRun(run) {
         if (run.state === "deploy_pending") {
-          const base = await db.prepare(
-            "UPDATE editorial_documents SET published_at=? WHERE id=? AND updated_at=?",
-          ).bind(now, document.id, document.updated_at).run();
-          const proposal = await db.prepare(
-            "UPDATE editorial_documents SET status=? WHERE id=? AND updated_at=?",
-          ).bind(status, document.id, document.updated_at).run();
-          const canonical = await db.prepare(
-            "UPDATE editorial_documents SET body=? WHERE id=? AND updated_at=?",
-          ).bind(body, document.id, document.updated_at).run();
-          const unpublish = await db.prepare(
-            "UPDATE editorial_documents SET published_at=NULL WHERE id=? AND updated_at=?",
-          ).bind(document.id, document.updated_at).run();
-          if (batchChangeCount([base], 0) !== 1) {
-            const errorCode = "publication_compare_and_set_failed";
-          }
-          if (batchChangeCount([proposal], 0) !== 1) {
-            const errorCode = "publication_compare_and_set_failed";
-          }
-          if (
-            batchChangeCount([canonical], 0) !== 1 ||
-            batchChangeCount([unpublish], 0) !== 1
-          ) {
-            const errorCode = "publication_compare_and_set_failed";
-          }
+          return await waitForEditorialReleaseCandidate(run);
         }
       }
+      async function registerEditorialReleaseCandidate(env) {
+        await env.REPORTS.batch([
+          env.REPORTS.prepare("INSERT INTO editorial_release_candidates VALUES (?)"),
+          env.REPORTS.prepare("INSERT INTO editorial_release_candidate_articles VALUES (?)"),
+        ]);
+      }
+      async function activateEditorialReleaseCandidate(env, versionId) {
+        const deployment = await getCurrentEditorialWorkerDeployment(env);
+        const versions = deployment?.versions ?? [];
+        if (!deployment || versions.length !== 1 || versions[0]?.version_id !== versionId || versions[0]?.percentage !== 100) return;
+        const statements = [
+          env.REPORTS.prepare("INSERT OR IGNORE INTO editorial_publication_history VALUES (?)"),
+          env.REPORTS.prepare("UPDATE editorial_documents SET published_version_id = ?"),
+        ];
+        await env.REPORTS.batch(statements);
+      }
     `;
-    const invalidCompare = valid.replace(
-      "WHERE id=? AND updated_at=?",
-      "WHERE id=?",
+    const invalidVersionCheck = valid.replace(
+      "versions[0]?.percentage !== 100",
+      "versions[0]?.percentage !== 50",
     );
-    const invalidRecovery = valid.replace(
-      /publication_compare_and_set_failed/g,
-      "publication_failed",
+    const invalidCandidateContents = valid.replace(
+      'env.REPORTS.prepare("INSERT INTO editorial_release_candidate_articles VALUES (?)"),',
+      "",
+    );
+    const invalidPointerMutation = valid.replace(
+      'env.REPORTS.prepare("UPDATE editorial_documents SET published_version_id = ?")',
+      'env.REPORTS.prepare("UPDATE editorial_documents SET body = ?")',
     );
 
     expect(
@@ -219,14 +216,21 @@ describe("Architecture ESLint guards", () => {
     ).toHaveLength(0);
     expect(
       lintRule(
-        invalidCompare,
+        invalidVersionCheck,
         "publication-compare-and-set",
         "src/admin-worker.ts",
       ).map((message) => message.ruleId),
     ).toContain("atlasez/publication-compare-and-set");
     expect(
       lintRule(
-        invalidRecovery,
+        invalidCandidateContents,
+        "publication-compare-and-set",
+        "src/admin-worker.ts",
+      ).map((message) => message.ruleId),
+    ).toContain("atlasez/publication-compare-and-set");
+    expect(
+      lintRule(
+        invalidPointerMutation,
         "publication-compare-and-set",
         "src/admin-worker.ts",
       ).map((message) => message.ruleId),

@@ -50,12 +50,10 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
         <h1>編集・フィードバック</h1>
       </div>
     </header>
-    <nav class="workflow-actions" aria-label="記事の表示">
+    <nav class="workflow-actions" aria-label="記事の作業を選ぶ">
       <a href="/admin/editor/?new=1&from=articles"><strong>新規記事作成</strong></a>
-      <button type="button" data-workflow-action="all"><strong>すべて</strong></button>
       <button type="button" data-workflow-action="revise"><strong>加筆・修正</strong></button>
       <button type="button" data-workflow-action="review"><strong>フィードバック</strong></button>
-      <button type="button" data-workflow-action="request"><strong>依頼できる記事</strong></button>
     </nav>
     <section class="filters" id="article-list" aria-label="原稿一覧の絞り込み">
       <div class="filters__primary">
@@ -112,12 +110,15 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
                 <option value="only">テスト原稿のみ</option>
               </select>
             </label>
-            <select data-workflow-filter aria-label="記事の表示条件" hidden tabindex="-1" aria-hidden="true">
-              <option value="all">すべて</option>
-              <option value="revise">加筆・修正</option>
-              <option value="review">フィードバック</option>
-              <option value="request">依頼できる記事</option>
-            </select>
+            <label class="filter-control">
+              <span>記事の表示条件</span>
+              <select data-workflow-filter>
+                <option value="all">すべて</option>
+                <option value="revise">加筆・修正</option>
+                <option value="review">フィードバック</option>
+                <option value="request">依頼できる記事</option>
+              </select>
+            </label>
             <label class="filter-control">
               <span>アーカイブ</span>
               <select data-archive aria-label="アーカイブ表示">
@@ -143,9 +144,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     <section class="list loading-state" data-list data-admin-load-surface aria-busy="true">原稿一覧を取得しています…</section>
     <p class="article-scope-note" data-scope-note data-state="loading" role="status" aria-live="polite">担当範囲を確認しています…</p>
     <AdminRetryNotice />
-    <div class="article-pagination" data-article-pagination hidden>
-      <span data-article-pagination-status aria-live="polite"></span>
-      <button type="button" class="article-action" data-article-load-more>次の原稿を読み込む</button>
+    <div class="article-pagination" data-article-pagination hidden aria-live="polite">
+      <span data-article-pagination-status></span>
     </div>
     <script is:inline type="application/json" data-public-articles set:html={publicArticlesPayload}></script>
   </main>
@@ -193,9 +193,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
   .article-scope-note[data-state="error"] { color: var(--danger); }
   .article-scope-note[data-state="error"]::before { content: none; }
   .article-scope-note::before { color: var(--accent-primary); content: "●"; font-size: .6rem; margin-right: .4rem; vertical-align: .08em; }
-  .article-pagination button { min-height: 2.25rem; }
-  .article-pagination button:disabled { cursor: wait; opacity: .65; }
-  @media (max-width: 640px) { .article-pagination { align-items: stretch; flex-direction: column; } .article-pagination button { width: 100%; } }
+  @media (max-width: 640px) { .article-pagination { align-items: stretch; flex-direction: column; } }
   .header-actions {
     align-items: center;
     display: flex;
@@ -206,7 +204,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
   .workflow-actions {
     display: grid;
     gap: 0.65rem;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     margin: 1.25rem auto;
     max-width: 72rem;
   }
@@ -433,24 +431,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     background: color-mix(in srgb, var(--accent-primary) 14%, var(--background-primary));
     border-color: color-mix(in srgb, var(--accent-primary) 48%, var(--border-default));
     color: var(--accent-primary);
-  }
-  .proposal-action {
-    align-items: center;
-    background: var(--background-secondary);
-    border: 1px solid var(--accent-primary);
-    border-radius: 0.45rem;
-    color: var(--accent-primary);
-    display: inline-flex;
-    font-size: 0.76rem;
-    font-weight: 800;
-    justify-content: center;
-    padding: 0.4rem 0.55rem;
-    text-decoration: none;
-    white-space: nowrap;
-  }
-  .proposal-action:hover {
-    background: var(--accent-primary);
-    color: #fff;
   }
   @media (max-width: 600px) {
     .admin-page {
@@ -999,7 +979,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
   .article-status-group .badge.draft { color: var(--text-secondary); }
   .article-presence { font-size: 0.64rem; grid-column: 2; grid-row: 2; margin: 0.1rem 0 0; }
   .article-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 0.35rem; grid-column: 2; grid-row: 1; justify-content: end; }
-  .article-actions > .proposal-action { font-size: 0.66rem; padding: 0.3rem 0.45rem; }
   .article-actions .article-action { font-size: 0.66rem; padding: 0.28rem 0.4rem; }
   .article-group__more {
     background: transparent;
@@ -1056,7 +1035,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
   import { createAdminLoadRetry } from "../../scripts/admin-load-retry";
   import { readAdminApiJson } from "../../lib/admin-api";
   import { isTestArticleTitle } from "../../lib/article-test-classification";
-  type Article={id:string;source_article_id?:string|null;subject:string;category:string;slug?:string;title:string;status:"draft"|"in-review"|"on-hold"|"approved";updated_at:string;published_at:string|null;scheduled_publish_at?:string|null;archived_at?:string|null;archive_expires_at?:string|null;created_by?:string;updated_by?:string;reviewer_email?:string|null;active_editors?:Array<{sessionId:string;email:string;displayName:string;field:string}>};
+  type Article={id:string;source_article_id?:string|null;subject:string;category:string;slug?:string;title:string;status:"draft"|"in-review"|"on-hold"|"approved";updated_at:string;published_at:string|null;current_version_id?:string|null;published_version_id?:string|null;scheduled_publish_at?:string|null;publication_review_stage?:"subject-coordinator"|"project-leader"|null;archived_at?:string|null;archive_expires_at?:string|null;created_by?:string;updated_by?:string;reviewer_email?:string|null;active_editors?:Array<{sessionId:string;email:string;displayName:string;field:string}>};
   type ArticleFilterState={query:string;subject:string;category:string;status:string;publication:string;test:string;workflow:string;archive:string};
   type ArticleScope={email:string;subjects?:string[];coordinatorSubjects?:string[];allSubjects?:boolean;isManager?:boolean;isProjectLeader?:boolean};
   type ArticlePagination={limit:number;nextCursor:string|null;hasMore:boolean};
@@ -1085,7 +1064,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     const subjectBrowserAll = root.querySelector<HTMLButtonElement>("[data-subject-browser-all]")!;
     const pagination = root.querySelector<HTMLElement>("[data-article-pagination]")!;
     const paginationStatus = root.querySelector<HTMLElement>("[data-article-pagination-status]")!;
-    const loadMoreButton = root.querySelector<HTMLButtonElement>("[data-article-load-more]")!;
     const subjectOptions = [...subject.options].map((option) => ({ value: option.value, label: option.textContent ?? "", subjects: option.dataset.subjects }));
     const subjectNameBySlug = new Map(subjectOptions.filter((option) => option.value !== "all").map((option) => [option.value, option.label]));
     const categoryNameBySlug = new Map([...category.options].filter((option) => option.value !== "all").map((option) => [option.value, option.textContent ?? option.value]));
@@ -1096,11 +1074,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     let items: Article[] = [];
     let subjectBrowserItems: Article[] = [];
     let scopeEmail = "";
-    let nextCursor: string | null = null;
-    let hasMore = false;
     let loadedPageCount = 0;
-    let loadedSubject: string | null = null;
-    let loadingAllSubject = false;
+    let loadingAllDocuments = false;
     let selectionLoadVersion = 0;
     const expandedArticleGroups = new Set<string>();
     const filterStorageKey = "atlasez-admin-article-filters";
@@ -1150,6 +1125,13 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       return `編集中：${labels.join("、")}`;
     };
     const currentWorkflow = () => workflow.value as "all" | "revise" | "review" | "request";
+    const syncWorkflowLocation = () => {
+      const url = new URL(location.href);
+      if (workflow.value === "all") url.searchParams.delete("mode");
+      else url.searchParams.set("mode", workflow.value);
+      url.hash = "article-list";
+      history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    };
     const isArchived = (article: Article) => Boolean(article.archived_at);
     const archiveExpired = (article: Article) => Boolean(article.archive_expires_at && Date.parse(article.archive_expires_at) <= Date.now());
     const updateCategoryOptions = () => {
@@ -1251,11 +1233,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       }
       subjectBrowserAll.hidden = subject.value === "all";
     };
-    const hasUnpublishedPublicationChanges = (article: Pick<Article, "published_at" | "updated_at">) => {
-      if (!article.published_at) return false;
-      const updatedAt = Date.parse(article.updated_at);
-      const publishedAt = Date.parse(article.published_at);
-      return Number.isFinite(updatedAt) && Number.isFinite(publishedAt) && updatedAt > publishedAt;
+    const hasUnpublishedPublicationChanges = (article: Pick<Article, "published_at" | "current_version_id" | "published_version_id">) => {
+      return Boolean(article.published_at && article.current_version_id && article.published_version_id && article.current_version_id !== article.published_version_id);
     };
     const render = () => {
       list.classList.remove("loading-state", "error-state");
@@ -1268,7 +1247,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
         if (archive.value === "active" && isArchived(article)) return false;
         if (archive.value === "archived" && !isArchived(article)) return false;
         if (mode === "review" && article.status === "approved") return false;
-        if (mode === "request" && !([article.created_by, article.updated_by].includes(scopeEmail) && article.status !== "approved" && !article.published_at)) return false;
+        const hasUnpublishedVersion = Boolean(article.published_at && hasUnpublishedPublicationChanges(article));
+        if (mode === "request" && !([article.created_by, article.updated_by].includes(scopeEmail) && article.status !== "approved" && (!article.published_at || hasUnpublishedVersion))) return false;
         if (!ignoreSelectedSubject && subject.value !== "all" && rowSubject(row) !== subject.value) return false;
         if (category.value !== "all" && rowCategory(row) !== category.value) return false;
         if (status.value !== "all" && article.status !== status.value) return false;
@@ -1313,10 +1293,11 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
         const article = row.article;
         const title = rowTitle(row);
         const editedAt = formatDate(rowUpdatedAt(row));
+        const hasUnpublishedVersion = Boolean(article.published_at && hasUnpublishedPublicationChanges(article));
         const publicState = row.publicArticle
-          ? '<span class="badge public-live">公開中</span>'
+          ? `<span class="badge public-live">${hasUnpublishedVersion ? "公開中・未公開の版あり" : "公開中"}</span>`
           : article.published_at
-            ? '<span class="badge public-live">公開中</span>'
+            ? `<span class="badge public-live">${hasUnpublishedVersion ? "公開中・未公開の版あり" : "公開中"}</span>`
             : article.scheduled_publish_at
               ? `<span class="badge public-scheduled">公開予約・${esc(formatSchedule(article.scheduled_publish_at))}</span>`
               : '<span class="badge public-draft">未公開</span>';
@@ -1324,12 +1305,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
         const updatedLabel = "最終更新";
         const archiveBadge = article && isArchived(article) ? '<span class="badge archived">アーカイブ済み</span>' : "";
         const testBadge = isTestArticleTitle(title) ? '<span class="badge">テスト原稿</span>' : "";
-        const updateInProgress = Boolean(article.published_at && hasUnpublishedPublicationChanges(article));
-        const updateActionLabel = updateInProgress ? "更新案作成中" : "更新案を作成";
-        const updateAction = article.published_at
-          ? `<a class="proposal-action" href="/admin/editor/?document=${encodeURIComponent(article.id)}&mode=update&from=articles" aria-label="${esc(title || "無題の記事")}の${updateActionLabel}" data-update-proposal-state="${updateInProgress ? "in-progress" : "available"}">${updateActionLabel}</a>`
-          : "";
-        const archiveAction = article && article.status === "draft" && !article.published_at
+        const canArchiveArticle = article && (article.status === "draft" || article.status === "in-review") && !article.publication_review_stage && !article.published_version_id && !article.published_at && !article.scheduled_publish_at;
+        const archiveAction = canArchiveArticle
           ? isArchived(article)
             ? archiveExpired(article)
               ? '<button type="button" class="article-action" disabled title="アーカイブ期限を過ぎています">期限切れ</button>'
@@ -1345,7 +1322,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
           ? `<span class="article-presence" data-active-editors="${esc(article.id)}"><span class="presence-dot" aria-hidden="true"></span>${esc(editingSummary)}</span>`
           : "";
         const clickAttributes = ` role="link" tabindex="0" data-document-id="${esc(article.id)}" data-href="/admin/editor/?document=${encodeURIComponent(article.id)}"`;
-        return `<article class="article"${clickAttributes} aria-label="${esc(title)}"><div class="article-main"><div class="article-identity"><h2>${esc(title || "無題の原稿")}</h2><p class="article-meta"><span class="article-meta__updated">${updatedLabel} ${editedAt}</span></p></div>${statusMarkup}${presenceMarkup}</div><div class="article-actions">${archiveAction}${updateAction}</div></article>`;
+        return `<article class="article"${clickAttributes} aria-label="${esc(title)}"><div class="article-main"><div class="article-identity"><h2>${esc(title || "無題の原稿")}</h2><p class="article-meta"><span class="article-meta__updated">${updatedLabel} ${editedAt}</span></p></div>${statusMarkup}${presenceMarkup}</div><div class="article-actions">${archiveAction}</div></article>`;
       };
       if (shown.length) {
         const groups = new Map<string, { subject: string; category: string; rows: CatalogRow[] }>();
@@ -1373,12 +1350,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       } else {
         list.innerHTML = `<header class="article-list__heading"><h2>${esc(activeScope)}</h2><span>0件</span><small>0カテゴリ</small></header><div class="article-empty"><strong>条件に一致する原稿はありません。</strong><span>条件をリセットするか、別の分野を選んでください。</span></div>`;
       }
-      pagination.hidden = !hasMore && !loadingAllSubject;
-      paginationStatus.textContent = loadingAllSubject
-        ? `${items.length}件を読み込み中…`
-        : loadedPageCount ? `${items.length}件を読み込み済み${hasMore ? "・続きがあります" : "・すべて読み込み済み"}` : "";
-      loadMoreButton.hidden = loadingAllSubject;
-      loadMoreButton.disabled = loadingAllSubject;
+      pagination.hidden = !loadingAllDocuments;
+      paginationStatus.textContent = loadingAllDocuments ? `${items.length}件を読み込み中…` : "";
       updateWorkflowButtons();
     };
     const normalizeCatalog = (raw: unknown): PublicArticle[] | null => {
@@ -1421,18 +1394,18 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     let activeLoadController: AbortController | null = null;
     let disposed = false;
     let loadingFallbackTimer: number | null = null;
-    type LoadOptions = { silent?: boolean; preserveLoadedPages?: boolean; loadAllForSelectedSubject?: boolean };
-    const load = (append = false, options: LoadOptions = {}) => {
+    type LoadOptions = { silent?: boolean; preserveLoadedPages?: boolean };
+    const load = (options: LoadOptions = {}) => {
       // pageshow and visibility events can arrive together on a cold load.
       // Share the in-flight request so the same list is not fetched twice.
       if (disposed || loadRequest) return loadRequest ?? Promise.resolve();
       const silent = Boolean(options.silent);
-      const preserveLoadedPages = Boolean(options.preserveLoadedPages && silent && !append && (loadedPageCount > 1 || loadedSubject === subject.value));
+      const preserveLoadedPages = Boolean(options.preserveLoadedPages && silent && loadedPageCount > 0);
       const selectedSubject = subject.value === "all" ? null : subject.value;
       let querySubject = selectedSubject;
-      let completeSubject = Boolean(options.loadAllForSelectedSubject && selectedSubject);
-      let pageCursor = append ? nextCursor : null;
+      let pageCursor: string | null = null;
       let pageIndex = 0;
+      let refreshedItems: Article[] = [];
       let scopeResolved = false;
       let catalogPromise: Promise<void> = Promise.resolve();
       const controller = new AbortController();
@@ -1440,29 +1413,30 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       const request = (async () => {
         try {
           if (!silent) retry?.begin();
-          if (!append && !silent) list.classList.add("loading-state");
-          if (!append && !silent) {
+          if (!silent) list.classList.add("loading-state");
+          if (!silent) {
             subject.disabled = true;
             subject.setAttribute("aria-busy", "true");
             scopeNote.dataset.state = "loading";
             scopeNote.textContent = "担当範囲を確認しています…";
           }
           const includeArchived = archive.value !== "active";
-          if (!append && !preserveLoadedPages) {
-            nextCursor = null;
-            hasMore = false;
+          loadingAllDocuments = !silent;
+          if (!preserveLoadedPages) {
             loadedPageCount = 0;
-            loadedSubject = null;
             if (!silent) items = [];
+            if (!querySubject) subjectBrowserItems = [];
           }
-          if (completeSubject) loadingAllSubject = true;
+          if (!silent) {
+            pagination.hidden = false;
+            paginationStatus.textContent = "原稿一覧を読み込んでいます…";
+          }
           while (true) {
             const params = new URLSearchParams();
             if (includeArchived) params.set("includeArchived", "1");
             if (querySubject) params.set("subject", querySubject);
             if (pageCursor) params.set("cursor", pageCursor);
-            if (append) params.set("limit", "50");
-            else if (completeSubject) params.set("limit", "100");
+            params.set("limit", "100");
             const queryString = params.toString();
             const endpoint = queryString ? `/api/admin/editor/documents?${queryString}` : "/api/admin/editor/documents";
             const response = await fetch(endpoint, { credentials: "same-origin", cache: "no-store", signal: controller.signal });
@@ -1478,75 +1452,63 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
               // change. Fall back to the ordinary first page in that case.
               if (querySubject && subject.value !== querySubject) {
                 querySubject = null;
-                completeSubject = false;
                 pageCursor = null;
                 pageIndex = 0;
-                nextCursor = null;
-                hasMore = false;
                 loadedPageCount = 0;
-                loadedSubject = null;
+                refreshedItems = [];
+                subjectBrowserItems = [];
                 items = [];
-                loadingAllSubject = false;
                 continue;
               }
             }
             const pageDocuments = data.documents ?? [];
-            if (!querySubject && !append && !preserveLoadedPages) {
-              subjectBrowserItems = pageDocuments;
-            } else {
-              const knownItems = new Map(subjectBrowserItems.map((article) => [article.id, article]));
-              for (const article of pageDocuments) knownItems.set(article.id, article);
-              subjectBrowserItems = [...knownItems.values()];
-            }
+            const knownDocuments = new Map(refreshedItems.map((article) => [article.id, article]));
+            for (const article of pageDocuments) knownDocuments.set(article.id, article);
+            refreshedItems = [...knownDocuments.values()];
             const pageHasMore = Boolean(data.pagination?.hasMore);
             const nextPageCursor = data.pagination?.nextCursor ?? null;
-            if (append) {
-              items = [...items, ...pageDocuments];
-              nextCursor = nextPageCursor;
-              hasMore = pageHasMore;
-              loadedPageCount += 1;
-            } else if (preserveLoadedPages && pageIndex === 0) {
-              const refreshedIds = new Set(pageDocuments.map((article) => article.id));
-              items = [...pageDocuments, ...items.filter((article) => !refreshedIds.has(article.id))];
-            } else if (pageIndex === 0) {
-              items = pageDocuments;
-              nextCursor = nextPageCursor;
-              hasMore = pageHasMore;
-              loadedPageCount = 1;
-            } else {
-              items = [...items, ...pageDocuments];
-              nextCursor = nextPageCursor;
-              hasMore = pageHasMore;
-              loadedPageCount += 1;
+            if (!preserveLoadedPages) items = refreshedItems;
+            if (!querySubject && !preserveLoadedPages) subjectBrowserItems = refreshedItems;
+            if (querySubject && !preserveLoadedPages) {
+              const knownSubjectItems = new Map(subjectBrowserItems.map((article) => [article.id, article]));
+              for (const article of refreshedItems) knownSubjectItems.set(article.id, article);
+              subjectBrowserItems = [...knownSubjectItems.values()];
             }
             // Render the editorial rows immediately; catalog enrichment must
             // not block the first useful screen or subsequent page requests.
-            render();
-            if (!completeSubject) break;
+            if (!preserveLoadedPages) render();
+            loadingAllDocuments = !silent && pageHasMore;
             if (!pageHasMore) break;
             if (!nextPageCursor || nextPageCursor === pageCursor) throw new Error("続きの原稿を読み込めませんでした。再試行してください。");
             pageCursor = nextPageCursor;
             pageIndex += 1;
           }
-          loadingAllSubject = false;
-          loadedSubject = completeSubject ? querySubject : null;
-          if (completeSubject) {
-            nextCursor = null;
-            hasMore = false;
+          if (preserveLoadedPages) {
+            items = refreshedItems;
+            if (!querySubject) subjectBrowserItems = refreshedItems;
+            else {
+              const knownSubjectItems = new Map(subjectBrowserItems.map((article) => [article.id, article]));
+              for (const article of refreshedItems) knownSubjectItems.set(article.id, article);
+              subjectBrowserItems = [...knownSubjectItems.values()];
+            }
           }
+          loadedPageCount = pageIndex + 1;
+          loadingAllDocuments = false;
           await catalogPromise;
           render();
           if (!silent) retry?.success();
         } catch (error) {
           if (disposed || controller.signal.aborted || silent) return;
-          loadingAllSubject = false;
+          loadingAllDocuments = false;
           list.classList.remove("loading-state");
-          list.classList.add("error-state");
-          list.textContent = error instanceof Error ? error.message : "原稿一覧を取得できませんでした。";
-          pagination.hidden = !hasMore;
-          loadMoreButton.hidden = false;
-          loadMoreButton.disabled = false;
-          if (!append && !scopeResolved) {
+          if (items.length) render();
+          else {
+            list.classList.add("error-state");
+            list.textContent = error instanceof Error ? error.message : "原稿一覧を取得できませんでした。";
+          }
+          pagination.hidden = false;
+          paginationStatus.textContent = "すべての原稿を読み込めませんでした。再試行してください。";
+          if (!scopeResolved) {
             subject.disabled = true;
             subject.removeAttribute("aria-busy");
             scopeNote.dataset.state = "error";
@@ -1565,24 +1527,18 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       const version = ++selectionLoadVersion;
       activeLoadController?.abort();
       const selectedSubject = subject.value;
-      const loadAllForSubject = selectedSubject !== "all";
-      loadingAllSubject = loadAllForSubject;
+      loadingAllDocuments = true;
       items = [];
-      nextCursor = null;
-      hasMore = false;
       loadedPageCount = 0;
-      loadedSubject = null;
       list.classList.remove("error-state");
       list.classList.add("loading-state");
-      list.textContent = loadAllForSubject ? "選択した分野の記事をすべて読み込んでいます…" : "原稿一覧を取得しています…";
-      pagination.hidden = !loadAllForSubject;
-      paginationStatus.textContent = loadAllForSubject ? "0件を読み込み中…" : "";
-      loadMoreButton.hidden = loadAllForSubject;
-      loadMoreButton.disabled = loadAllForSubject;
+      list.textContent = selectedSubject === "all" ? "原稿一覧を取得しています…" : "選択した分野の記事をすべて読み込んでいます…";
+      pagination.hidden = false;
+      paginationStatus.textContent = "原稿一覧を読み込んでいます…";
       const pendingRequest = loadRequest;
       if (pendingRequest) await pendingRequest;
       if (disposed || version !== selectionLoadVersion) return;
-      return load(false, { loadAllForSelectedSubject: subject.value !== "all" });
+      return load();
     };
     retry = createAdminLoadRetry(root, () => reloadForSelection(), "原稿一覧を読み込めませんでした。");
     resetFiltersButton.addEventListener("click", () => {
@@ -1623,9 +1579,9 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     loadingFallbackTimer = window.setTimeout(() => { if (list.textContent?.includes("取得しています")) list.textContent = "原稿一覧を取得できませんでした。ページを再読み込みしてください。"; }, 6_000);
     subject.addEventListener("change", () => { updateCategoryOptions(); saveFilterState(); void reloadForSelection(); });
     query.addEventListener("input", render);
-    [category, status, publication, test, workflow].forEach((element) => element.addEventListener("change", render));
+    [category, status, publication, test].forEach((element) => element.addEventListener("change", render));
+    workflow.addEventListener("change", () => { syncWorkflowLocation(); render(); });
     archive.addEventListener("change", () => { saveFilterState(); void reloadForSelection(); });
-    loadMoreButton.addEventListener("click", () => { if (!hasMore || loadMoreButton.disabled) return; loadMoreButton.disabled = true; paginationStatus.textContent = "次の原稿を読み込んでいます…"; void load(true); });
     list.addEventListener("click", async (event) => {
       const target = event.target as HTMLElement;
       const expandButton = target.closest<HTMLButtonElement>("[data-expand-category]");
@@ -1661,14 +1617,14 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     });
     root.querySelectorAll<HTMLButtonElement>("[data-workflow-action]").forEach((button) => button.addEventListener("click", () => {
       workflow.value = button.dataset.workflowAction ?? "all";
-      history.replaceState({}, "", `${location.pathname}?mode=${encodeURIComponent(workflow.value)}#article-list`);
+      syncWorkflowLocation();
       render();
       root.querySelector("#article-list")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }));
     updateCategoryOptions();
-    void load(false, { loadAllForSelectedSubject: subject.value !== "all" });
-    const handlePageShow = () => { void load(false, { silent: true, preserveLoadedPages: true }); };
-    const refreshPresence = () => { if (document.visibilityState === "visible") void load(false, { silent: true, preserveLoadedPages: true }); };
+    void load();
+    const handlePageShow = () => { void load({ silent: true, preserveLoadedPages: true }); };
+    const refreshPresence = () => { if (document.visibilityState === "visible") void load({ silent: true, preserveLoadedPages: true }); };
     const presenceTimer = window.setInterval(refreshPresence, 15_000);
     window.addEventListener("pageshow", handlePageShow);
     document.addEventListener("visibilitychange", refreshPresence);

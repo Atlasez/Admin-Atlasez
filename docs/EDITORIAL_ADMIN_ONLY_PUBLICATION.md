@@ -6,7 +6,11 @@
 
 ## 自動処理
 
-管理画面で公開確定すると、管理Workerは公開RunをD1へ作成し、公開PRを作成する。GitHub Webhookの`check_run` / `check_suite` / `workflow_run` / `pull_request`を受信すると、対象PRだけを即時確認し、成功した場合だけ公開専用GitHub AppでMergeする。Cloudflareの自動ビルド後、`build-info.json`と記事URLを確認し、成功時にD1を公開済みに更新する。
+管理画面で公開確定すると、管理WorkerはD1に公開Runと対象版IDを固定し、保存済みスナップショットから公開PRを作成する。GitHub Webhookの`check_run` / `check_suite` / `workflow_run` / `pull_request`を受信すると、対象PRだけを確認し、成功した場合だけ公開専用GitHub AppでMergeする。
+
+Cloudflare Workers BuildsはWorker Versionを候補としてアップロードし、記事ID・パス・公開状態・D1版IDの一覧を署名付きでADMIN Workerへ送る。ADMIN Workerは候補Versionと全記事・版IDをD1へ保存し、その保存に成功した後だけWorkers Buildsが候補を100%配信へ切り替える。ADMIN WorkerはCloudflareのDeployment APIで実際のVersion IDと配信率を照合し、公開履歴と記事ごとの`published_version_id`を同じD1 batchで記録する。
+
+候補内容の保存に失敗したときはCloudflareを切り替えない。切替後の履歴書き込みに失敗したときは、候補をD1に残したままにし、1分CronがCloudflareの現在のDeploymentと照合して公開履歴・版ポインターを補修する。公開本文を別のcanonical原稿へコピーする手順はない。
 
 一時的なCI・外部API失敗は最大2回まで再試行する。記事内容、スキーマ、競合、権限エラーは記事を勝手に変更せず、運営サイトへ日本語で表示する。Webhookが届かない場合に備え、1分Cronは同期・復旧用として残す。
 
@@ -21,9 +25,12 @@
    - `GITHUB_APP_INSTALLATION_ID`
    - `GITHUB_APP_PRIVATE_KEY`
    - `GITHUB_REVIEW_TOKEN`（推奨。PR作成者とは別の、レビューを承認できる書き込み権限アカウントのToken）
+   - `EDITORIAL_RELEASE_WEBHOOK_SECRET`（Workers Buildsと共有する署名鍵）
+   - `CLOUDFLARE_WORKERS_READ_TOKEN`（固定Account内のWorker `atlasez01` のDeployment/Versionを読むToken。`atlasez01`だけの`Individual Workers Metadata Read-Only`）
 
 5. `PUBLIC_SITE_ORIGIN=https://atlasez.org`を設定する。
-6. `GITHUB_WEBHOOK_SECRET`を管理WorkerのSecretへ登録し、`Atlasez/Atlasez01`のRepository webhookを次の設定で追加する。
+6. Workers Buildsには`EDITORIAL_RELEASE_ENDPOINT=https://admin.atlasez.org/api/internal/editorial-release`と`EDITORIAL_RELEASE_WEBHOOK_SECRET`を登録する。共有D1のmigration `0139_editorial_release_candidates.sql`を明示手順で適用し、候補APIを含むADMIN Workerを配信してからWorkers Builds側を設定する。
+7. `GITHUB_WEBHOOK_SECRET`を管理WorkerのSecretへ登録し、`Atlasez/Atlasez01`のRepository webhookを次の設定で追加する。
 
    - Payload URL: `https://admin.atlasez.org/api/internal/github-publication-webhook`
    - Content type: `application/json`
@@ -44,8 +51,9 @@ Webhookは署名を検証し、対象PR・ブランチ・Commitに紐づく公�
 ## 変更の安全性
 
 - ブランチ保護を一時的に解除しない。
-- WorkerからCloudflareへ直接デプロイしない。
-- Run、CI結果、Merge SHA、配信確認時刻、失敗理由をD1に保存する。
+- ADMIN WorkerからCloudflareへ書き込まない。候補アップロードとVersion切替は既存のWorkers Builds経路だけが行う。
+- D1候補記録はCloudflare切替前、公開履歴はCloudflare切替後に分け、Run、CI結果、Merge SHA、Candidate Version ID、実Deployment ID、時刻、失敗理由をD1に保存する。
+- 公開済み本文をcanonical原稿へコピーせず、記事ごとの`published_version_id`で公開版を識別する。
 - 同じ記事の自動実行Runは同時に1件だけにする。
 - 自動MergeはCI成功、対象PR、対象ブランチを確認した後だけ実行する。
 - 自動承認はCI成功、対象PRの作成者とのアカウント分離、対象Commit一致を確認した後だけ実行する。
