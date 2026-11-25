@@ -3,6 +3,9 @@ import { readCalendarQuery, calendarEventWhere, calendarEventPage } from "./lib/
 import { deadlineSummarySql, deadlineRangeSql, taskDeadlineEpoch } from "./lib/admin-deadline-summary";
 import { handleTaskWorkspace, type TaskWorkspaceAccess, type WorkspaceTask } from "./lib/admin-task-workspace";
 import type { D1Database, D1PreparedStatement } from "./lib/admin-database";
+import { readScheduledJobHealth, type ScheduledJobReporter } from "./lib/admin-scheduled-job-health";
+import { readScheduledJobQueues } from "./lib/admin-scheduled-job-queues";
+import { executeAdminScheduledJobs, reportScheduledDeliveryResult } from "./lib/admin-scheduled-jobs";
 import { planAtlasManagerRevocation, permissionDerivedAtlasManagerStatements, handleManagerGrants, resolveAtlasManagerDisposition, planDiscordAtlasManagerRevocation } from "./lib/admin-manager-provenance";
 import { readOperationsInsights } from "./lib/admin-operations-insights";
 import { handleNotificationFeatures, loadGlobalNotificationCutoff, loadNotificationPreferences, notificationSourceMetadata, notificationFeatureFilter, importantKinds } from "./lib/admin-notification-features";
@@ -3217,12 +3220,21 @@ async function developerDiagnostics(
     detail:
       "この画面はCloudflare上の実設定を読み取りません。配信中WorkerのPreview URL設定をCloudflareで確認してください。",
   });
+  const observedAt = new Date();
+  const [scheduledJobs, queues] = await Promise.all([
+    readScheduledJobHealth(env.REPORTS, observedAt),
+    readScheduledJobQueues(env.REPORTS, observedAt),
+  ]);
+  const failedJobs = scheduledJobs.jobs.filter((job) => job.status === "error");
+  const uncertainJobs = scheduledJobs.jobs.filter((job) => job.status !== "ok");
+  const queuesNeedingAttention = queues.filter((queue) => queue.status !== "ok");
   checks.push({
     id: "cron",
     label: "定期処理の稼働",
-    status: "warning",
-    detail:
-      "定期処理の実行履歴を記録・確認していないため、最終成功時刻や滞留をこの画面では判定できません。",
+    status: failedJobs.length ? "error" : !scheduledJobs.available || uncertainJobs.length || queuesNeedingAttention.length ? "warning" : "ok",
+    detail: !scheduledJobs.available
+      ? "定期処理の記録を取得できません。監視テーブルの適用状態と接続を確認してください。"
+      : `${scheduledJobs.jobs.length}件の処理を確認しました。正常${scheduledJobs.jobs.length - uncertainJobs.length}件、実行中・未確認・要確認${uncertainJobs.length}件。確認が必要なキュー${queuesNeedingAttention.length}件。詳細は下の実行結果とキューを確認してください。`,
   });
 
   const configured = {
@@ -3258,6 +3270,8 @@ async function developerDiagnostics(
     generatedAt: new Date().toISOString(),
     build: buildInfo,
     checks,
+    scheduledJobs,
+    queues,
   });
 }
 
@@ -10262,7 +10276,9 @@ type DiscordAdminSyncResult = {
  */
 export async function syncDiscordRolesToAdmin(
   env: Env,
+  options: { report?: ScheduledJobReporter } = {},
 ): Promise<DiscordAdminSyncResult> {
+  const report = options.report;
   const result: DiscordAdminSyncResult = {
     accounts: 0,
     synced: 0,
@@ -10271,8 +10287,14 @@ export async function syncDiscordRolesToAdmin(
     assignmentsRevoked: 0,
     warnings: [],
   };
-  if (isStagingDiscordDisabled(env)) return result;
-  if (!env.DISCORD_BOT_TOKEN || !env.DISCORD_GUILD_ID) return result;
+  if (isStagingDiscordDisabled(env)) {
+    report?.({ status: "skipped", code: "not_configured" });
+    return result;
+  }
+  if (!env.DISCORD_BOT_TOKEN || !env.DISCORD_GUILD_ID) {
+    report?.({ status: "skipped", code: "not_configured" });
+    return result;
+  }
 
   try {
     const [
@@ -10401,6 +10423,7 @@ export async function syncDiscordRolesToAdmin(
       } catch {
         result.skipped += 1;
         result.warnings.push(`${email}: Discordのメンバー情報を取得できませんでした。`);
+        report?.({ status: "warning", code: "dependency_failed" });
         console.error("discord to admin member lookup failed", {
           category: "network_error",
         });
@@ -10409,6 +10432,7 @@ export async function syncDiscordRolesToAdmin(
       if (!memberResponse.ok) {
         result.skipped += 1;
         result.warnings.push(`${email}: Discordのメンバー情報を確認できないため、権限を変更しませんでした。`);
+        report?.({ status: "warning", code: "dependency_failed" });
         continue;
       }
 
@@ -10418,6 +10442,7 @@ export async function syncDiscordRolesToAdmin(
       } catch {
         result.skipped += 1;
         result.warnings.push(`${email}: Discordのメンバー情報が不正なため、権限を変更しませんでした。`);
+        report?.({ status: "warning", code: "dependency_failed" });
         continue;
       }
       result.synced += 1;
@@ -10446,6 +10471,7 @@ export async function syncDiscordRolesToAdmin(
       if (legacyRevocation.reviewRequired) {
         nextPermissions.add("*");
         result.warnings.push(`${email}: 管理者の付与元が未確認のため全分野権限の自動解除を保留しました。権限設定で独立任命の維持または解除を選択してください。`);
+        report?.({ status: "warning", code: "state_unconfirmed" });
       }
       const permissionsChanged =
         currentPermissions.size !== nextPermissions.size ||
@@ -10480,6 +10506,7 @@ export async function syncDiscordRolesToAdmin(
       ) => {
         if (selected.size > 1) {
           result.warnings.push(`${email}: ${label}に対応するDiscord役職が複数あるため、変更しませんでした。`);
+          report?.({ status: "warning", code: "state_unconfirmed" });
           return current;
         }
         const value = [...selected][0];
@@ -10580,6 +10607,7 @@ export async function syncDiscordRolesToAdmin(
     }
   } catch (error) {
     result.warnings.push("Discordから運営サイトへの同期処理でエラーが発生しました。");
+    report?.({ status: "warning", code: "execution_failed" });
     console.error("discord to admin sync failed", error);
   }
   return result;
@@ -10611,6 +10639,7 @@ const discordProvisionRetryDelay = (attempt: number) => {
 async function provisionAcceptedApplication(
   env: Env,
   applicationId: string,
+  report?: ScheduledJobReporter,
 ): Promise<DiscordProvisioningResult & { attempt: number; nextAttemptAt: string | null }> {
   const application = await env.REPORTS.prepare(
     `SELECT id,email,status,project_slug,form_language,institution,grade,affiliation_type,
@@ -10699,6 +10728,7 @@ async function provisionAcceptedApplication(
         result.warnings.join(" "),
       );
     } catch {
+      report?.({ status: "warning", code: "dependency_failed" });
       console.error("application Discord status email queue failed");
     }
   }
@@ -10714,7 +10744,9 @@ async function provisionAcceptedApplicationsForEmail(env: Env, email: string) {
   return Promise.all((rows.results ?? []).map((row) => provisionAcceptedApplication(env, row.id)));
 }
 
-async function dispatchPendingDiscordProvisioning(env: Env) {
+async function dispatchPendingDiscordProvisioning(env: Env, report?: ScheduledJobReporter) {
+  if (!env.DISCORD_BOT_TOKEN || !env.DISCORD_GUILD_ID)
+    report?.({ status: "skipped", code: "not_configured" });
   const now = new Date().toISOString();
   const rows = await env.REPORTS.prepare(
     `SELECT id FROM atlasez_member_applications
@@ -10737,7 +10769,11 @@ async function dispatchPendingDiscordProvisioning(env: Env) {
       .run()) as { meta?: { changes?: number } };
     if (claim.meta?.changes !== 1) continue;
     claimed += 1;
-    await provisionAcceptedApplication(env, row.id);
+    const result = await provisionAcceptedApplication(env, row.id, report);
+    if (result.status === "failed")
+      report?.({ status: "warning", code: "partial_failure" });
+    else if (result.status === "skipped")
+      report?.({ status: "skipped", code: "state_unconfirmed" });
   }
   return { claimed };
 }
@@ -20602,8 +20638,8 @@ async function syncPublishedArticleBackups(env: Env) {
 }
 
 /** Cloudflareの現行Versionを照合し、D1の公開版IDから状態を返す。 */
-async function syncEditorialPublicationStatus(env: Env, documentId?: string) {
-  await reconcileEditorialReleaseCandidates(env);
+async function syncEditorialPublicationStatus(env: Env, documentId?: string, report?: ScheduledJobReporter) {
+  await reconcileEditorialReleaseCandidates(env, report);
   const normalizedDocumentId = documentId?.trim() || null;
   const summary = await env.REPORTS.prepare(
     `SELECT COUNT(*) AS total,
@@ -22862,17 +22898,28 @@ async function receiveEditorialReleaseEvent(
   }
 }
 
-async function reconcileEditorialReleaseCandidates(env: Env) {
-  if (!env.CLOUDFLARE_WORKERS_READ_TOKEN?.trim()) return;
+async function reconcileEditorialReleaseCandidates(env: Env, report?: ScheduledJobReporter) {
+  if (!env.CLOUDFLARE_WORKERS_READ_TOKEN?.trim()) {
+    report?.({ status: "skipped", code: "not_configured" });
+    return;
+  }
   try {
     const deployment = await getCurrentEditorialWorkerDeployment(env);
     const versions = deployment?.versions ?? [];
-    if (!deployment || versions.length !== 1 || versions[0]?.percentage !== 100) return;
+    if (!deployment || versions.length !== 1 || versions[0]?.percentage !== 100) {
+      report?.({ status: "warning", code: "state_unconfirmed" });
+      return;
+    }
     const activeCandidate = await env.REPORTS.prepare(
       `SELECT version_id FROM editorial_release_candidates WHERE version_id = ? AND state = 'registered'`,
     ).bind(versions[0].version_id).first<{ version_id: string }>();
-    if (activeCandidate) await activateEditorialReleaseCandidate(env, activeCandidate.version_id);
+    if (activeCandidate) {
+      const result = await activateEditorialReleaseCandidate(env, activeCandidate.version_id);
+      if (result.response)
+        report?.({ status: "warning", code: "state_unconfirmed" });
+    }
   } catch (error) {
+    report?.({ status: "warning", code: "dependency_failed" });
     const failure = publicationFailureDetails(error);
     console.error(
       JSON.stringify({
@@ -22886,7 +22933,7 @@ async function reconcileEditorialReleaseCandidates(env: Env) {
   }
 }
 
-async function progressEditorialPublicationRun(env: Env, run: EditorialPublicationRun) {
+async function progressEditorialPublicationRun(env: Env, run: EditorialPublicationRun, report?: ScheduledJobReporter) {
   const document = await env.REPORTS.prepare(
     `${editorialDocumentSelect} WHERE id = ?`,
   )
@@ -22899,6 +22946,7 @@ async function progressEditorialPublicationRun(env: Env, run: EditorialPublicati
       error_code: "document_missing",
       error_message: "対象原稿が削除されています。",
     });
+    report?.({ status: "warning", code: "partial_failure" });
     return;
   }
   const targetVersionId = run.snapshot_version_id ?? document.current_version_id;
@@ -22915,6 +22963,7 @@ async function progressEditorialPublicationRun(env: Env, run: EditorialPublicati
       next_attempt_at: null,
       lease_until: null,
     });
+    report?.({ status: "warning", code: "state_unconfirmed" });
     return;
   }
   if (
@@ -22951,11 +23000,14 @@ async function progressEditorialPublicationRun(env: Env, run: EditorialPublicati
               : "Merge済みです。Workers Buildsが候補を登録するのを待っています。",
           }),
     });
+    if (age > 60 * 60 * 1_000)
+      report?.({ status: "warning", code: "state_unconfirmed" });
     return;
   }
   if (run.state === "queued" || run.state === "retry_wait") {
     if (run.state === "retry_wait" && run.attempt >= publicationMaxAttempts) {
       await updateEditorialPublicationRun(env, run.id, { state: "failed", error_code: "retry_exhausted", error_message: "自動再試行の上限に達しました。記事内容またはCIの失敗内容を確認してください。" });
+      report?.({ status: "warning", code: "partial_failure" });
       return;
     }
     await startEditorialPublicationRun(env, publicationDocument, {
@@ -22967,11 +23019,13 @@ async function progressEditorialPublicationRun(env: Env, run: EditorialPublicati
   const pullRequestNumber = run.pull_request_number ?? document.publication_pr_number;
   if (!pullRequestNumber) {
     await updateEditorialPublicationRun(env, run.id, { state: "failed", failure_kind: "validation", error_code: "pull_request_missing", error_message: "公開処理の識別情報が見つかりません。運営サイトから再試行してください。" });
+    report?.({ status: "warning", code: "state_unconfirmed" });
     return;
   }
   const pullRequest = await getEditorialPublicationPullRequest(env, pullRequestNumber);
   if (!pullRequest) {
     await updateEditorialPublicationRun(env, run.id, { state: "needs_operator", failure_kind: "github_api", error_code: "pull_request_unavailable", error_message: "公開用PRの状態を取得できません。GitHub Appの権限を確認してください。", diagnostic_url: run.pull_request_url });
+    report?.({ status: "warning", code: "dependency_failed" });
     return;
   }
   await updateEditorialPublicationRun(env, run.id, {
@@ -22990,10 +23044,12 @@ async function progressEditorialPublicationRun(env: Env, run: EditorialPublicati
   }
   if (pullRequest.state !== "open") {
     await updateEditorialPublicationRun(env, run.id, { state: "needs_operator", failure_kind: "github_conflict", error_code: "pull_request_closed", error_message: "公開用PRがMergeされずに終了しました。運営サイトから再試行してください。", diagnostic_url: pullRequest.html_url });
+    report?.({ status: "warning", code: "state_unconfirmed" });
     return;
   }
   if (pullRequest.draft || pullRequest.mergeable_state === "dirty") {
     await updateEditorialPublicationRun(env, run.id, { state: "needs_operator", failure_kind: "github_conflict", error_code: pullRequest.draft ? "pull_request_draft" : "merge_conflict", error_message: pullRequest.draft ? "公開用PRがDraftのため自動公開できません。" : "公開用PRに競合があります。記事を再確認してください。", diagnostic_url: pullRequest.html_url });
+    report?.({ status: "warning", code: "state_unconfirmed" });
     return;
   }
   if (!pullRequest.head_sha) {
@@ -23046,6 +23102,7 @@ async function progressEditorialPublicationRun(env: Env, run: EditorialPublicati
           error_code: "ci_failed",
           error_message: `CIが失敗しました（${checks.failed.name ?? "verify"}）。記事内容または検証結果を運営サイトで確認してください。`,
         });
+    report?.({ status: "warning", code: "dependency_failed" });
     const diagnostic = await diagnosticPromise;
     if (diagnostic)
       await updateEditorialPublicationRun(env, run.id, {
@@ -23081,8 +23138,9 @@ async function progressEditorialPublicationRun(env: Env, run: EditorialPublicati
 
 async function progressEditorialPublicationRuns(
   env: Env,
-  target?: PublicationRunProgressTarget,
+  target?: PublicationRunProgressTarget & { report?: ScheduledJobReporter },
 ) {
+  const report = target?.report;
   const now = new Date().toISOString();
   const filters: string[] = [];
   const bindings: unknown[] = [];
@@ -23109,7 +23167,7 @@ async function progressEditorialPublicationRuns(
   for (const run of runs.results ?? []) {
     if (!(await claimEditorialPublicationRunLease(env, run))) continue;
     try {
-      await progressEditorialPublicationRun(env, run);
+      await progressEditorialPublicationRun(env, run, report);
     } catch (error) {
       const failure = publicationFailureDetails(error);
       const nextAttempt = run.attempt + 1;
@@ -23127,6 +23185,7 @@ async function progressEditorialPublicationRuns(
         lease_until: null,
       });
       console.error("editorial publication run failed", { runId: run.id, error });
+      report?.({ status: "warning", code: "partial_failure" });
     } finally {
       await updateEditorialPublicationRun(env, run.id, { lease_until: null });
     }
@@ -23844,7 +23903,7 @@ const updateScheduledPublicationClaim = (
     .run();
 };
 
-export async function dispatchScheduledEditorialPublications(env: Env) {
+export async function dispatchScheduledEditorialPublications(env: Env, report?: ScheduledJobReporter) {
   const nowDate = new Date();
   const now = nowDate.toISOString();
   const recovery = await recoverStaleScheduledEditorialPublicationClaims(
@@ -23878,6 +23937,7 @@ export async function dispatchScheduledEditorialPublications(env: Env) {
     try {
       runClaim = await claimEditorialPublicationRun(env, document.id, "publish", "scheduled-publisher", document);
       if (!runClaim.run) {
+        report?.({ status: "warning", code: "state_unconfirmed" });
         await updateScheduledPublicationClaim(env, document, now, false);
         continue;
       }
@@ -23892,6 +23952,7 @@ export async function dispatchScheduledEditorialPublications(env: Env) {
       requested += 1;
     } catch (error) {
       console.error("scheduled editorial publication failed", { documentId: document.id, error });
+      report?.({ status: "warning", code: "partial_failure" });
       if (runClaim?.run) {
         const failure = publicationFailureDetails(error);
         const nextAttempt = runClaim.run.attempt + 1;
@@ -27514,7 +27575,7 @@ const TASK_ARCHIVE_RETENTION_DAYS = 90;
 const AUDIT_LOG_RETENTION_DAYS = 730;
 
 /** 完了から一定期間経ったタスクを監査可能なアーカイブへ退避する。 */
-async function archiveStaleCompletedTasks(env: Env) {
+async function archiveStaleCompletedTasks(env: Env, report?: ScheduledJobReporter) {
   const now = new Date();
   const cutoff = new Date(
     now.getTime() - COMPLETED_TASK_ARCHIVE_AFTER_DAYS * 24 * 60 * 60 * 1000,
@@ -27533,12 +27594,13 @@ async function archiveStaleCompletedTasks(env: Env) {
       .run();
   } catch (error) {
     // 移行前の環境でも他の定期処理を止めない。
+    report?.({ status: "warning", code: "execution_failed" });
     console.warn("task archive sweep skipped", error);
   }
 }
 
 /** 監査ログは保持期限を過ぎても削除せず、アーカイブとして残す。 */
-async function archiveStaleAuditLogs(env: Env) {
+async function archiveStaleAuditLogs(env: Env, report?: ScheduledJobReporter) {
   const now = new Date();
   const cutoff = new Date(
     now.getTime() - AUDIT_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000,
@@ -27557,6 +27619,7 @@ async function archiveStaleAuditLogs(env: Env) {
     ]);
   } catch (error) {
     // 移行前の環境でも他の定期処理を止めない。
+    report?.({ status: "warning", code: "execution_failed" });
     console.warn("audit archive sweep skipped", error);
   }
 }
@@ -27692,78 +27755,50 @@ export default {
       );
       return;
     }
-    if (cron === "*/1 * * * *") {
-      ctx.waitUntil(Promise.all([
-        progressEditorialPublicationRuns(env),
-        reconcileEditorialReleaseCandidates(env),
-      ]));
-      return;
-    }
-    if (cron === "*/2 * * * *") {
-      ctx.waitUntil(syncEditorialPublicationStatus(env));
-      return;
-    }
-    if (cron === "1-59/2 * * * *") {
-      ctx.waitUntil(syncPublishedArticleBackups(env));
-      return;
-    }
-    if (cron === "*/5 * * * *") {
-      // 一つの定期処理が失敗しても、Discord再送を含む残りの処理は完了させる。
-      ctx.waitUntil(
-        Promise.allSettled([
-          progressEditorialPublicationRuns(env),
-          reconcileEditorialReleaseCandidates(env),
-          dispatchDueTaskReminders(env),
-          dispatchTaskTemplates(env.REPORTS,primaryAdminEmail(env)),
-          applyDueMemberProcedures(env.REPORTS),
-          archiveStaleCompletedTasks(env),
-          reconcilePendingApplicationIntakes(env),
-          dispatchApplicationEmails(env),
-          dispatchApplicationEmails(env, { channel: "seminar" }),
-          dispatchPendingDiscordProvisioning(env),
-          syncDiscordRolesToAdmin(env),
-          dispatchScheduledEditorialPublications(env),
-          archiveStaleAuditLogs(env),
-          dispatchDueDiscordNotifications(env),
-        ]).then((results) => {
-          const rejected = results.filter((result) => result.status === "rejected").length;
-          if (rejected)
-            console.error(
-              JSON.stringify({
-                event: "admin_cron_job_failed",
-                cron: "*/5 * * * *",
-                rejected,
-              }),
-            );
-        }),
-      );
-      return;
-    }
-    const personalDataRetentionEnabled =
-      env.ADMIN_PERSONAL_DATA_RETENTION_ENABLED?.trim().toLowerCase() ===
-      "true";
-    // Terminal-application deletion requires an approved retention policy and
-    // a reviewed code release. Ignore preserved dashboard variables here so
-    // a later merge cannot resume deletion implicitly.
-    const applicationRetentionEnabled = false;
     ctx.waitUntil(
-      Promise.all([
-        progressEditorialPublicationRuns(env),
-        reconcileEditorialReleaseCandidates(env),
-        runPersonalDataRetention(env.REPORTS, new Date(), {
-          clearArticleReportData: personalDataRetentionEnabled,
-          deleteTerminalApplications: applicationRetentionEnabled,
+      executeAdminScheduledJobs(env.REPORTS, cron, {
+        "editorial-publication-progress": (report) => progressEditorialPublicationRuns(env, { report }),
+        "editorial-release-reconcile": (report) => reconcileEditorialReleaseCandidates(env, report),
+        "editorial-publication-sync": (report) => syncEditorialPublicationStatus(env, undefined, report),
+        "published-article-backup": () => syncPublishedArticleBackups(env),
+        "task-reminders": async (report) => {
+          const result = await dispatchDueTaskReminders(env);
+          reportScheduledDeliveryResult(report, result);
+          return result;
+        },
+        "task-templates": async (report) => {
+          const result = await dispatchTaskTemplates(env.REPORTS, primaryAdminEmail(env));
+          reportScheduledDeliveryResult(report, result);
+          return result;
+        },
+        "member-procedures": () => applyDueMemberProcedures(env.REPORTS),
+        "task-archive": (report) => archiveStaleCompletedTasks(env, report),
+        "application-email": async (report) => {
+          const result = await dispatchApplicationEmails(env);
+          reportScheduledDeliveryResult(report, result);
+          return result;
+        },
+        "seminar-application-email": async (report) => {
+          const result = await dispatchApplicationEmails(env, { channel: "seminar" });
+          reportScheduledDeliveryResult(report, result);
+          return result;
+        },
+        "discord-provisioning": (report) => dispatchPendingDiscordProvisioning(env, report),
+        "discord-role-sync": (report) => syncDiscordRolesToAdmin(env, { report }),
+        "scheduled-editorial-publications": (report) => dispatchScheduledEditorialPublications(env, report),
+        "audit-archive": (report) => archiveStaleAuditLogs(env, report),
+        "discord-notifications": async (report) => {
+          const result = await dispatchDueDiscordNotifications(env, { report });
+          reportScheduledDeliveryResult(report, { failed: result.failed });
+          return result;
+        },
+        "personal-data-retention": () => runPersonalDataRetention(env.REPORTS, new Date(), {
+          clearArticleReportData:
+            env.ADMIN_PERSONAL_DATA_RETENTION_ENABLED?.trim().toLowerCase() ===
+            "true",
+          deleteTerminalApplications: false,
         }),
-        applyDueMemberProcedures(env.REPORTS),
-        dispatchDueTaskReminders(env),
-        dispatchTaskTemplates(env.REPORTS,primaryAdminEmail(env)),
-        archiveStaleCompletedTasks(env),
-        reconcilePendingApplicationIntakes(env),
-        dispatchApplicationEmails(env),
-        dispatchPendingDiscordProvisioning(env),
-        dispatchScheduledEditorialPublications(env),
-        archiveStaleAuditLogs(env),
-      ]),
+      }, () => reconcilePendingApplicationIntakes(env)),
     );
   },
 };
