@@ -23,10 +23,28 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
         <div><h2 id="diagnostic-heading">確認できる診断情報</h2><p data-diagnostic-generated>未確認</p></div>
         <button type="button" data-diagnostic-retry>再確認</button>
       </div>
-      <p class="diagnostic-scope-note">Cloudflareの配信Version、定期処理の実行履歴、メール・Discordの実到達はこの画面だけでは確認できません。表示された設定値と実際の稼働状態を区別してください。</p>
+      <p class="diagnostic-scope-note">接続・設定の診断です。Cloudflareの配信Versionは、別途デプロイ記録と照合してください。</p>
       <AdminRetryNotice message="診断情報を取得できませんでした。" />
       <div class="diagnostic-state" data-diagnostic-state role="status" aria-live="polite">確認しています…</div>
       <div class="diagnostic-list" data-diagnostic-list hidden></div>
+    </section>
+
+    <section class="monitoring-panel" aria-labelledby="scheduled-jobs-heading">
+      <div class="panel-heading">
+        <div><h2 id="scheduled-jobs-heading">定期処理</h2><p data-scheduled-generated>監視データ未取得</p></div>
+      </div>
+      <p class="diagnostic-scope-note">定期実行の結果とキューの状態を表示します。メール・Discordなど、外部サービスでの到達は別途確認してください。</p>
+      <p class="diagnostic-scope-note" data-monitoring-timezone>時刻は端末のタイムゾーンで表示します。</p>
+      <div class="monitoring-state" data-scheduled-state data-state="unknown" role="status" aria-live="polite">確認しています…</div>
+      <div class="monitoring-grid" data-scheduled-jobs hidden></div>
+    </section>
+
+    <section class="monitoring-panel" aria-labelledby="scheduled-queues-heading">
+      <div class="panel-heading">
+        <div><h2 id="scheduled-queues-heading">処理待ちのキュー</h2><p>再試行待ちは未完了の内数です。待機時間は取得時点の値です。</p></div>
+      </div>
+      <div class="monitoring-state" data-queue-state data-state="unknown" role="status" aria-live="polite">確認しています…</div>
+      <div class="monitoring-grid" data-scheduled-queues hidden></div>
     </section>
 
     <section class="tool-panel" aria-labelledby="tool-heading">
@@ -76,7 +94,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
   .developer-mode-details > summary::before { color: var(--text-muted); content: "＋"; display: inline-block; margin-right: .35rem; }
   .developer-mode-details[open] > summary::before { content: "−"; }
   .developer-mode-content { padding-top: .1rem; }
-  .diagnostic-panel, .tool-panel, .notes-panel { background: var(--background-secondary); border: 1px solid var(--border-default); margin-top: 1rem; padding: 1rem; }
+  .diagnostic-panel, .monitoring-panel, .tool-panel, .notes-panel { background: var(--background-secondary); border: 1px solid var(--border-default); margin-top: 1rem; min-width: 0; padding: 1rem; }
   .diagnostic-scope-note { color: var(--text-secondary); font-size: .74rem; line-height: 1.6; margin: .65rem 0; }
   .panel-heading { align-items: start; display: flex; gap: 1rem; justify-content: space-between; }
   .panel-heading h2, .notes-panel h2 { font-size: 1rem; margin: 0; }
@@ -92,8 +110,22 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
   .diagnostic-status[data-status="ok"] { color: var(--success); }
   .diagnostic-status[data-status="warning"] { color: var(--warning); }
   .diagnostic-status[data-status="error"] { color: var(--danger); }
+  .diagnostic-status[data-status="unknown"] { color: var(--text-secondary); }
+  .diagnostic-status[data-status="running"] { color: var(--accent-primary); }
   .diagnostic-detail { color: var(--text-secondary); font-size: .74rem; overflow-wrap: anywhere; }
   .diagnostic-duration { color: var(--text-muted); font-size: .68rem; font-variant-numeric: tabular-nums; }
+  .monitoring-grid { display: grid; gap: .75rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: .8rem; }
+  .monitoring-grid[hidden], .diagnostic-list[hidden], .monitoring-state[hidden], .diagnostic-state[hidden] { display: none; }
+  .monitoring-state { color: var(--text-secondary); font-size: .78rem; line-height: 1.6; padding: .8rem 0; }
+  .monitoring-card { border: 1px solid var(--border-default); border-radius: 6px; min-width: 0; overflow-wrap: anywhere; padding: .8rem; }
+  .monitoring-card-heading { align-items: start; display: flex; flex-wrap: wrap; gap: .45rem .8rem; justify-content: space-between; }
+  .monitoring-card h3 { font-size: .84rem; line-height: 1.5; margin: 0; min-width: 0; }
+  .monitoring-card .diagnostic-status { flex-shrink: 0; line-height: 1.8; }
+  .monitoring-card-detail { color: var(--text-secondary); font-size: .76rem; line-height: 1.6; margin: .55rem 0; }
+  .monitoring-card-meta { color: var(--text-secondary); display: grid; gap: .45rem .65rem; grid-template-columns: minmax(0, .9fr) minmax(0, 1.3fr); margin: .7rem 0 0; }
+  .monitoring-card-meta dt { font-size: .69rem; line-height: 1.5; }
+  .monitoring-card-meta dd { color: var(--text-primary); font-size: .72rem; font-variant-numeric: tabular-nums; line-height: 1.5; margin: 0; min-width: 0; }
+  .monitoring-card-meta time { overflow-wrap: anywhere; }
   .tool-links { display: grid; gap: .5rem; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: .8rem; }
   .tool-links a { border: 1px solid var(--border-default); color: var(--text-primary); font-size: .78rem; text-decoration: none; }
   .tool-link { display: grid; gap: .25rem; min-height: 4.4rem; padding: .65rem .7rem; }
@@ -102,46 +134,10 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
   .tool-link span { color: var(--accent-primary); font-size: .75rem; font-weight: 800; margin-top: auto; }
   .tool-links a:hover { border-color: var(--accent-primary); }
   .notes-panel ul { color: var(--text-secondary); font-size: .76rem; line-height: 1.7; margin: .7rem 0 0; padding-left: 1.2rem; }
-  @media (max-width: 680px) { .developer-page { padding: 0 .8rem 3rem; } .developer-heading { align-items: start; display: grid; } .diagnostic-row { grid-template-columns: 1fr auto; } .diagnostic-status { grid-column: 2; grid-row: 1; } .diagnostic-detail { grid-column: 1 / -1; } .diagnostic-duration { grid-column: 2; grid-row: 2; } .tool-links { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 680px) { .developer-page { padding: 0 .8rem 3rem; } .developer-heading { align-items: start; display: grid; } .diagnostic-row { grid-template-columns: minmax(0, 1fr) auto; } .diagnostic-status { grid-column: 2; grid-row: 1; } .diagnostic-detail { grid-column: 1 / -1; } .diagnostic-duration { grid-column: 2; grid-row: 3; } .monitoring-grid { grid-template-columns: minmax(0, 1fr); } .tool-links { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 420px) { .tool-links { grid-template-columns: 1fr; } }
 </style>
 
 <script>
-  import { createAdminLoadRetry } from "../../scripts/admin-load-retry";
-  const initializeDeveloperPage = () => {
-    const root = document.querySelector<HTMLElement>('[data-developer-page]');
-    if (!root || root.dataset.initialized === 'true') return;
-    root.dataset.initialized = 'true';
-    const state = root.querySelector<HTMLElement>('[data-diagnostic-state]')!;
-    const list = root.querySelector<HTMLElement>('[data-diagnostic-list]')!;
-    const generated = root.querySelector<HTMLElement>('[data-diagnostic-generated]')!;
-    const retry = root.querySelector<HTMLButtonElement>('[data-diagnostic-retry]')!;
-    let retryController: ReturnType<typeof createAdminLoadRetry> | null = null;
-    let loading = false;
-    const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] ?? character));
-    const load = async () => {
-      if (loading) return;
-      loading = true;
-      retryController?.begin();
-      state.dataset.state = 'loading'; state.textContent = '確認しています…'; state.hidden = false; list.hidden = true; retry.disabled = true;
-      try {
-        const response = await fetch('/api/admin/developer/diagnostics', { credentials: 'same-origin', cache: 'no-store' });
-        const data = await response.json() as { error?: string; generatedAt?: string; prototypeAccess?: boolean; checks?: Array<{ id: string; label: string; status: string; detail: string; durationMs?: number }>; build?: Record<string, unknown> | null };
-        if (!response.ok) throw new Error(data.error || '診断情報を取得できませんでした。');
-        root.querySelectorAll<HTMLElement>('[data-prototype-link]').forEach((link) => {
-          link.hidden = data.prototypeAccess !== true;
-        });
-        const checks = Array.isArray(data.checks) ? data.checks : [];
-        list.innerHTML = checks.map((check) => `<div class="diagnostic-row"><span class="diagnostic-label">${escape(check.label)}</span><span class="diagnostic-status" data-status="${escape(check.status)}">${check.status === 'ok' ? '正常' : check.status === 'warning' ? '確認が必要' : 'エラー'}</span><span class="diagnostic-detail">${escape(check.detail)}</span>${check.durationMs !== undefined ? `<span class="diagnostic-duration">${escape(check.durationMs)}ms</span>` : ''}</div>`).join('');
-        generated.textContent = data.generatedAt ? `最終確認：${new Intl.DateTimeFormat('ja-JP', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(data.generatedAt))}` : '確認済み';
-        state.hidden = true; list.hidden = false; retryController?.success();
-      } catch (error) { state.hidden = true; generated.textContent = '確認に失敗'; retryController?.fail(error); }
-      finally { loading = false; retry.disabled = false; }
-    };
-    retryController = createAdminLoadRetry(root, () => load(), '診断情報を取得できませんでした。');
-    retry.addEventListener('click', () => void load());
-    void load();
-  };
-  document.addEventListener('astro:page-load', initializeDeveloperPage);
-  initializeDeveloperPage();
+  import "../../scripts/admin-developer-diagnostics";
 </script>

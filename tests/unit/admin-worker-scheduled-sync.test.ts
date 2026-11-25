@@ -52,18 +52,23 @@ const runScheduled = async (cron: string, env: Record<string, unknown>) => {
 
 describe("admin scheduled GitHub syncs", () => {
   it("fails visibly when article backup GitHub credentials are missing", async () => {
-    let databaseCalls = 0;
+    const databaseCalls: string[] = [];
     await expect(
       runScheduled("1-59/2 * * * *", {
         REPORTS: {
-          prepare: () => {
-            databaseCalls += 1;
-            return new SyncStatement("unused", () => undefined);
+          prepare: (query: string) => {
+            databaseCalls.push(query);
+            return new SyncStatement(query, () => undefined);
           },
         },
       }),
     ).rejects.toThrow("記事バックアップのGitHub認証が設定されていません。");
-    expect(databaseCalls).toBe(0);
+    expect(databaseCalls).toHaveLength(2);
+    expect(
+      databaseCalls.every((query) =>
+        query.includes("admin_scheduled_job_health"),
+      ),
+    ).toBe(true);
   });
 
   it("uses D1 version pointers for publication status without rewriting them from GitHub", async () => {
