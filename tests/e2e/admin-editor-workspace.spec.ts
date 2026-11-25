@@ -2748,9 +2748,11 @@ test("V-2: フィードバック担当者と依頼内容を選んで保存でき
     "Bob",
   ]);
   await expect(dialog.locator("option", { hasText: "Carol" })).toHaveCount(0);
-  await dialog
-    .locator("[data-review-request-assignee]")
-    .selectOption("bob@example.com");
+  const search = dialog.getByRole("combobox", { name: "依頼先を検索" });
+  await search.fill("この分野");
+  await dialog.getByRole("option", { name: "この分野の担当者全員" }).click();
+  await search.fill("Bob");
+  await dialog.getByRole("option", { name: "Bob" }).click();
   await dialog
     .locator("[data-review-request-note]")
     .fill("定義と例を重点確認してください");

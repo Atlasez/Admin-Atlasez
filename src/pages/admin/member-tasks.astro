@@ -3,10 +3,12 @@ import AdminLayout from "../../layouts/AdminLayout.astro";
 import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
 import TaskCreateFields from "../../components/admin/TaskCreateFields.astro";
 import { getTimeZoneOptions } from "../../lib/timezones";
+import { getCollection } from "astro:content";
 const timezones = getTimeZoneOptions(new Date());
+const subjects = (await getCollection("subjects")).sort((a, b) => a.data.order - b.data.order).map((subject) => ({ slug: subject.data.slug, name: subject.data.name.ja }));
 ---
 <AdminLayout title="自分の担当タスク" description="参加中のプロジェクトの担当タスクを確認します">
-  <main class="member-tasks" data-member-tasks data-admin-load-surface data-admin-load-state="loading" aria-busy="true">
+  <main class="member-tasks" data-member-tasks data-assignee-subjects={JSON.stringify(subjects)} data-admin-load-surface data-admin-load-state="loading" aria-busy="true">
     <header class="task-page-header">
       <div><h1>自分の担当タスク</h1><a href="/admin/task-templates/">テンプレート・定期作成 →</a></div>
       <div class="task-header-actions">
