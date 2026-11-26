@@ -764,21 +764,27 @@ describe("記事公開候補の永続化と切替復旧", () => {
   });
 
   it.each([
+    [null, "execution_failed"],
+    [200, "state_unconfirmed"],
     [401, "invalid_configuration"],
     [403, "invalid_configuration"],
     [429, "dependency_failed"],
     [503, "dependency_failed"],
   ])(
-    "classifies a Cloudflare HTTP %i in scheduled publication health",
+    "classifies Cloudflare lookup failures with HTTP status %s in scheduled publication health",
     async (status, code) => {
       const { db, env } = createAdminTestEnvironment();
       const log = vi.spyOn(console, "error").mockImplementation(() => {});
       const privateProviderMessage = "provider detail must not be logged";
       vi.stubGlobal(
         "fetch",
-        vi.fn(() =>
-          Response.json({ errors: [privateProviderMessage] }, { status }),
-        ),
+        vi.fn(async () => {
+          if (status === null) throw new TypeError(privateProviderMessage);
+          return Response.json(
+            { errors: [privateProviderMessage] },
+            { status },
+          );
+        }),
       );
 
       const pending: Promise<unknown>[] = [];
@@ -847,6 +853,21 @@ describe("記事公開候補の永続化と切替復旧", () => {
     expect(database.historyRecorded).toBe(false);
 
     const pending: Promise<unknown>[] = [];
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    database.failNextBatch = true;
+    await worker.scheduled({ cron: "*/1 * * * *" }, env, {
+      waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+    });
+    await Promise.all(pending);
+    expect(database.historyRecorded).toBe(false);
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify({
+        event: "editorial_release_reconciliation_failed",
+        code: "partial_failure",
+        upstreamStatus: null,
+      }),
+    );
+
     await worker.scheduled({ cron: "*/1 * * * *" }, env, {
       waitUntil: (promise: Promise<unknown>) => pending.push(promise),
     });

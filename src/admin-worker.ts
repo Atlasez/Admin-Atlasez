@@ -21180,12 +21180,12 @@ type CloudflareWorkerDeployment = {
 };
 
 class EditorialDeploymentLookupFailure extends EditorialPublicationFailure {
-  constructor(readonly upstreamStatus: number) {
+  constructor(readonly upstreamStatus: number | null) {
     super(
       "Cloudflareの公開Deploymentを確認できません。",
       "cloudflare_deployment_lookup_failed",
-      upstreamStatus >= 500 ? "deployment" : "configuration",
-      upstreamStatus >= 500 || upstreamStatus === 429,
+      upstreamStatus === null || upstreamStatus >= 500 ? "deployment" : "configuration",
+      upstreamStatus === null || upstreamStatus >= 500 || upstreamStatus === 429,
     );
   }
 }
@@ -21197,18 +21197,23 @@ async function getCurrentEditorialWorkerDeployment(env: Env): Promise<Cloudflare
     "cloudflare_read_token_missing",
     "configuration",
   );
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${editorialReleaseAccountId}/workers/scripts/${editorialReleaseWorkerName}/deployments?per_page=1`,
-    { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, cache: "no-store" },
-  );
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${editorialReleaseAccountId}/workers/scripts/${editorialReleaseWorkerName}/deployments?per_page=1`,
+      { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, cache: "no-store" },
+    );
+  } catch {
+    throw new EditorialDeploymentLookupFailure(null);
+  }
   if (!response.ok) throw new EditorialDeploymentLookupFailure(response.status);
   const payload = await response.json().catch(() => ({})) as {
     success?: boolean;
     result?: { deployments?: CloudflareWorkerDeployment[] };
   };
-  if (payload?.success !== true)
+  if (payload?.success !== true || !Array.isArray(payload.result?.deployments))
     throw new EditorialDeploymentLookupFailure(response.status);
-  return payload.result?.deployments?.[0] ?? null;
+  return payload.result.deployments[0] ?? null;
 }
 
 async function activateEditorialReleaseCandidate(env: Env, versionId: string) {
@@ -21354,12 +21359,15 @@ async function reconcileEditorialReleaseCandidates(env: Env, report?: ScheduledJ
         report?.({ status: "warning", code: "state_unconfirmed" });
     }
   } catch (error) {
-    const upstreamStatus = error instanceof EditorialDeploymentLookupFailure
-      ? error.upstreamStatus
-      : null;
-    const code = upstreamStatus === 401 || upstreamStatus === 403
-      ? "invalid_configuration"
-      : "dependency_failed";
+    const lookupFailure = error instanceof EditorialDeploymentLookupFailure ? error : null;
+    const upstreamStatus = lookupFailure?.upstreamStatus ?? null;
+    let code: NonNullable<Parameters<ScheduledJobReporter>[0]["code"]> = "partial_failure";
+    if (lookupFailure) {
+      if (upstreamStatus === null) code = "execution_failed";
+      else if (upstreamStatus === 401 || upstreamStatus === 403) code = "invalid_configuration";
+      else if (upstreamStatus >= 200 && upstreamStatus < 300) code = "state_unconfirmed";
+      else code = "dependency_failed";
+    }
     report?.({ status: "warning", code });
     console.error(JSON.stringify({
       event: "editorial_release_reconciliation_failed",
