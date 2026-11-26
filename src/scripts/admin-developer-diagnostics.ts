@@ -3,6 +3,7 @@ import type {
   ScheduledJobHealthSnapshot,
 } from "../lib/admin-scheduled-job-health";
 import type { ScheduledQueueHealth } from "../lib/admin-scheduled-job-queues";
+import type { EditorialDeploymentHttpError } from "../lib/editorial-deployment-http-error";
 import { createAdminLoadRetry } from "./admin-load-retry";
 
 type DiagnosticCheck = {
@@ -20,6 +21,7 @@ type DeveloperDiagnosticsResponse = {
   checks?: DiagnosticCheck[];
   scheduledJobs?: ScheduledJobHealthSnapshot;
   queues?: ScheduledQueueHealth[];
+  editorialDeploymentHttpError?: EditorialDeploymentHttpError | null;
 };
 
 const statusLabels = {
@@ -122,7 +124,10 @@ const monitoringCard = (
   return card;
 };
 
-const renderJob = (job: ScheduledJobHealthItem) => {
+const renderJob = (
+  job: ScheduledJobHealthItem,
+  httpError?: EditorialDeploymentHttpError | null,
+) => {
   const card = monitoringCard(job, "job");
   const fields = node("dl", "monitoring-card-meta");
   addField(fields, "確認先（役割）", job.ownerRole);
@@ -138,24 +143,42 @@ const renderJob = (job: ScheduledJobHealthItem) => {
   );
   addField(fields, "直近の処理時間", formatDuration(job.lastDurationMs));
   if (job.lastErrorCode) addField(fields, "エラーコード", job.lastErrorCode);
+  if (job.id === "editorial-release-reconcile" && httpError) {
+    addField(
+      fields,
+      "記録されたCloudflare HTTPエラー",
+      `HTTP ${httpError.status}`,
+    );
+    if (httpError.providerCode !== null)
+      addField(
+        fields,
+        "Cloudflareのエラー番号",
+        String(httpError.providerCode),
+      );
+    addField(fields, "HTTPエラーの記録日時", timestamp(httpError.observedAt));
+  }
   if (
     (job.id === "editorial-release-reconcile" ||
       job.id === "editorial-publication-sync") &&
     (job.status === "warning" || job.status === "error")
   ) {
-    if (job.lastErrorCode === "not_configured") {
-      addField(
-        fields,
-        "次の確認",
+    const nextChecks = {
+      not_configured:
         "運営Workerの CLOUDFLARE_WORKERS_READ_TOKEN の登録状況を確認してください。",
-      );
-    } else if (job.lastErrorCode === "invalid_configuration") {
-      addField(
-        fields,
-        "次の確認",
+      invalid_configuration:
         "公開Workerの配信情報へのアクセスを拒否されました。トークンの有効性と対象Workerの読み取り権限を確認してください。",
-      );
-    }
+      execution_failed:
+        "Cloudflare APIの応答を取得できませんでした。運営WorkerからCloudflare APIへの接続を確認してください。",
+      dependency_failed:
+        "Cloudflare APIがエラーを返しました。公開WorkerのDeployment APIの応答を確認してください。",
+      state_unconfirmed:
+        "配信情報を確認できませんでした。公開WorkerのDeploymentと100%配信先を確認してください。",
+      partial_failure:
+        "記事の公開候補または履歴を処理できませんでした。運営D1の公開候補と公開履歴を確認してください。",
+      queue_unavailable: null,
+    };
+    const nextCheck = job.lastErrorCode && nextChecks[job.lastErrorCode];
+    if (nextCheck) addField(fields, "次の確認", nextCheck);
   }
   card.append(fields);
   return card;
@@ -282,7 +305,11 @@ const initializeDeveloperPage = () => {
         Array.isArray(snapshot.jobs) &&
         snapshot.jobs.length
       ) {
-        jobs.replaceChildren(...snapshot.jobs.map(renderJob));
+        jobs.replaceChildren(
+          ...snapshot.jobs.map((job) =>
+            renderJob(job, data.editorialDeploymentHttpError),
+          ),
+        );
         jobs.hidden = false;
         jobState.hidden = true;
         jobGenerated.textContent = `記録の取得時刻：${formatDate(snapshot.generatedAt)}（端末時刻）`;

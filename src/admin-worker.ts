@@ -4,6 +4,7 @@ import { deadlineSummarySql, deadlineRangeSql, taskDeadlineEpoch } from "./lib/a
 import { handleTaskWorkspace, type TaskWorkspaceAccess, type WorkspaceTask } from "./lib/admin-task-workspace";
 import type { D1Database, D1PreparedStatement } from "./lib/admin-database";
 import { readScheduledJobHealth, type ScheduledJobReporter } from "./lib/admin-scheduled-job-health";
+import { readCloudflareDeploymentErrorCode, readEditorialDeploymentHttpError, recordEditorialDeploymentHttpError } from "./lib/editorial-deployment-http-error";
 import { readScheduledJobQueues } from "./lib/admin-scheduled-job-queues";
 import { executeAdminScheduledJobs, reportScheduledDeliveryResult } from "./lib/admin-scheduled-jobs";
 import { dispatchScheduledHealthAlerts } from "./lib/admin-scheduled-health-alerts";
@@ -3203,9 +3204,10 @@ async function developerDiagnostics(
       "この画面はCloudflare上の実設定を読み取りません。配信中WorkerのPreview URL設定をCloudflareで確認してください。",
   });
   const observedAt = new Date();
-  const [scheduledJobs, queues] = await Promise.all([
+  const [scheduledJobs, queues, editorialDeploymentHttpError] = await Promise.all([
     readScheduledJobHealth(env.REPORTS, observedAt),
     readScheduledJobQueues(env.REPORTS, observedAt),
+    readEditorialDeploymentHttpError(env.REPORTS),
   ]);
   const failedJobs = scheduledJobs.jobs.filter((job) => job.status === "error");
   const uncertainJobs = scheduledJobs.jobs.filter((job) => job.status !== "ok");
@@ -3254,6 +3256,7 @@ async function developerDiagnostics(
     checks,
     scheduledJobs,
     queues,
+    editorialDeploymentHttpError,
   });
 }
 
@@ -21180,12 +21183,12 @@ type CloudflareWorkerDeployment = {
 };
 
 class EditorialDeploymentLookupFailure extends EditorialPublicationFailure {
-  constructor(readonly upstreamStatus: number) {
+  constructor(readonly upstreamStatus: number | null, readonly upstreamResponse?: Response) {
     super(
       "Cloudflareの公開Deploymentを確認できません。",
       "cloudflare_deployment_lookup_failed",
-      upstreamStatus >= 500 ? "deployment" : "configuration",
-      upstreamStatus >= 500 || upstreamStatus === 429,
+      upstreamStatus === null || upstreamStatus >= 500 ? "deployment" : "configuration",
+      upstreamStatus === null || upstreamStatus >= 500 || upstreamStatus === 429,
     );
   }
 }
@@ -21197,18 +21200,23 @@ async function getCurrentEditorialWorkerDeployment(env: Env): Promise<Cloudflare
     "cloudflare_read_token_missing",
     "configuration",
   );
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${editorialReleaseAccountId}/workers/scripts/${editorialReleaseWorkerName}/deployments?per_page=1`,
-    { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, cache: "no-store" },
-  );
-  if (!response.ok) throw new EditorialDeploymentLookupFailure(response.status);
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${editorialReleaseAccountId}/workers/scripts/${editorialReleaseWorkerName}/deployments?per_page=1`,
+      { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, cache: "no-store" },
+    );
+  } catch {
+    throw new EditorialDeploymentLookupFailure(null);
+  }
+  if (!response.ok) throw new EditorialDeploymentLookupFailure(response.status, response);
   const payload = await response.json().catch(() => ({})) as {
     success?: boolean;
     result?: { deployments?: CloudflareWorkerDeployment[] };
   };
-  if (payload?.success !== true)
+  if (payload?.success !== true || !Array.isArray(payload.result?.deployments))
     throw new EditorialDeploymentLookupFailure(response.status);
-  return payload.result?.deployments?.[0] ?? null;
+  return payload.result.deployments[0] ?? null;
 }
 
 async function activateEditorialReleaseCandidate(env: Env, versionId: string) {
@@ -21333,7 +21341,11 @@ async function receiveEditorialReleaseEvent(
   }
 }
 
-async function reconcileEditorialReleaseCandidates(env: Env, report?: ScheduledJobReporter) {
+async function reconcileEditorialReleaseCandidates(
+  env: Env,
+  report?: ScheduledJobReporter,
+  options: { recordHttpError?: boolean } = {},
+) {
   if (!env.CLOUDFLARE_WORKERS_READ_TOKEN?.trim()) {
     report?.({ status: "skipped", code: "not_configured" });
     return;
@@ -21354,13 +21366,24 @@ async function reconcileEditorialReleaseCandidates(env: Env, report?: ScheduledJ
         report?.({ status: "warning", code: "state_unconfirmed" });
     }
   } catch (error) {
-    const upstreamStatus = error instanceof EditorialDeploymentLookupFailure
-      ? error.upstreamStatus
-      : null;
-    const code = upstreamStatus === 401 || upstreamStatus === 403
-      ? "invalid_configuration"
-      : "dependency_failed";
+    const lookupFailure = error instanceof EditorialDeploymentLookupFailure ? error : null;
+    const upstreamStatus = lookupFailure?.upstreamStatus ?? null;
+    let code: NonNullable<Parameters<ScheduledJobReporter>[0]["code"]> = "partial_failure";
+    if (lookupFailure) {
+      if (upstreamStatus === null) code = "execution_failed";
+      else if (upstreamStatus === 401 || upstreamStatus === 403) code = "invalid_configuration";
+      else if (upstreamStatus >= 200 && upstreamStatus < 300) code = "state_unconfirmed";
+      else code = "dependency_failed";
+    }
     report?.({ status: "warning", code });
+    if (lookupFailure && options.recordHttpError) {
+      const providerCode = lookupFailure.upstreamResponse
+        ? await readCloudflareDeploymentErrorCode(lookupFailure.upstreamResponse)
+        : null;
+      await recordEditorialDeploymentHttpError(env.REPORTS, upstreamStatus, providerCode).catch(() => {
+        console.error(JSON.stringify({ event: "editorial_release_http_error_record_failed" }));
+      });
+    }
     console.error(JSON.stringify({
       event: "editorial_release_reconciliation_failed",
       code,
@@ -26018,7 +26041,7 @@ export default {
     ctx.waitUntil(
       executeAdminScheduledJobs(env.REPORTS, cron, {
         "editorial-publication-progress": (report) => progressEditorialPublicationRuns(env, { report }),
-        "editorial-release-reconcile": (report) => reconcileEditorialReleaseCandidates(env, report),
+        "editorial-release-reconcile": (report) => reconcileEditorialReleaseCandidates(env, report, { recordHttpError: true }),
         "editorial-publication-sync": (report) => syncEditorialPublicationStatus(env, undefined, report),
         "published-article-backup": () => syncPublishedArticleBackups(env),
         "task-reminders": async (report) => {
