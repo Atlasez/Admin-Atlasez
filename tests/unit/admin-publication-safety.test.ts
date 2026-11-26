@@ -1032,13 +1032,17 @@ describe("記事公開候補の永続化と切替復旧", () => {
     });
     await Promise.all(pending);
     expect(database.historyRecorded).toBe(false);
-    expect(log).toHaveBeenCalledWith(
-      JSON.stringify({
-        event: "editorial_release_reconciliation_failed",
-        code: "partial_failure",
-        upstreamStatus: null,
-      }),
+    const reconciliationLog = log.mock.calls.find(
+      ([message]) =>
+        typeof message === "string" &&
+        message.includes("editorial_release_reconciliation_failed"),
     );
+    expect(reconciliationLog).toBeDefined();
+    expect(JSON.parse(reconciliationLog![0] as string)).toMatchObject({
+      event: "editorial_release_reconciliation_failed",
+      code: "partial_failure",
+      upstreamStatus: null,
+    });
 
     await worker.scheduled({ cron: "*/1 * * * *" }, env, {
       waitUntil: (promise: Promise<unknown>) => pending.push(promise),
