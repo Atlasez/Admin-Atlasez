@@ -1657,7 +1657,21 @@ describe("admin worker editor APIs", () => {
           return { results: [{ project_id: "secretariat" }] as T[] };
         if (query.includes("FROM atlasez_member_applications")) {
           applicationQueries.push({ sql: query, bindings: this.boundValues });
-          return { results: [] as T[] };
+          return {
+            results: (query.includes("SELECT id,name,email,project_slug")
+              ? [
+                  {
+                    id: "application-1",
+                    name: "応募者",
+                    email: "applicant@example.test",
+                    project_slug: "secretariat",
+                    status: "new",
+                    created_at: "2026-11-25T00:00:00.000Z",
+                    updated_at: "2026-11-25T00:00:00.000Z",
+                  },
+                ]
+              : []) as T[],
+          };
         }
         return { results: [] as T[] };
       }
@@ -1687,6 +1701,15 @@ describe("admin worker editor APIs", () => {
     );
 
     expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      items: { id: string; href: string }[];
+    };
+    expect(payload.items).toContainEqual(
+      expect.objectContaining({
+        id: "application:application-1",
+        href: "/admin/application-interview/?application=application-1&project=secretariat",
+      }),
+    );
     expect(applicationQueries.length).toBeGreaterThanOrEqual(1);
     for (const query of applicationQueries) {
       expect(query.sql).toContain("project_slug IN (?)");
