@@ -143,19 +143,23 @@ const renderJob = (job: ScheduledJobHealthItem) => {
       job.id === "editorial-publication-sync") &&
     (job.status === "warning" || job.status === "error")
   ) {
-    if (job.lastErrorCode === "not_configured") {
-      addField(
-        fields,
-        "次の確認",
+    const nextChecks = {
+      not_configured:
         "運営Workerの CLOUDFLARE_WORKERS_READ_TOKEN の登録状況を確認してください。",
-      );
-    } else if (job.lastErrorCode === "invalid_configuration") {
-      addField(
-        fields,
-        "次の確認",
+      invalid_configuration:
         "公開Workerの配信情報へのアクセスを拒否されました。トークンの有効性と対象Workerの読み取り権限を確認してください。",
-      );
-    }
+      execution_failed:
+        "Cloudflare APIの応答を取得できませんでした。運営WorkerからCloudflare APIへの接続を確認してください。",
+      dependency_failed:
+        "Cloudflare APIがエラーを返しました。公開WorkerのDeployment APIの応答を確認してください。",
+      state_unconfirmed:
+        "配信情報を確認できませんでした。公開WorkerのDeploymentと100%配信先を確認してください。",
+      partial_failure:
+        "記事の公開候補または履歴を処理できませんでした。運営D1の公開候補と公開履歴を確認してください。",
+      queue_unavailable: null,
+    };
+    const nextCheck = job.lastErrorCode && nextChecks[job.lastErrorCode];
+    if (nextCheck) addField(fields, "次の確認", nextCheck);
   }
   card.append(fields);
   return card;
