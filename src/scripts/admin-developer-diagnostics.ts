@@ -3,6 +3,7 @@ import type {
   ScheduledJobHealthSnapshot,
 } from "../lib/admin-scheduled-job-health";
 import type { ScheduledQueueHealth } from "../lib/admin-scheduled-job-queues";
+import type { EditorialDeploymentHttpError } from "../lib/editorial-deployment-http-error";
 import { createAdminLoadRetry } from "./admin-load-retry";
 
 type DiagnosticCheck = {
@@ -20,6 +21,7 @@ type DeveloperDiagnosticsResponse = {
   checks?: DiagnosticCheck[];
   scheduledJobs?: ScheduledJobHealthSnapshot;
   queues?: ScheduledQueueHealth[];
+  editorialDeploymentHttpError?: EditorialDeploymentHttpError | null;
 };
 
 const statusLabels = {
@@ -122,7 +124,10 @@ const monitoringCard = (
   return card;
 };
 
-const renderJob = (job: ScheduledJobHealthItem) => {
+const renderJob = (
+  job: ScheduledJobHealthItem,
+  httpError?: EditorialDeploymentHttpError | null,
+) => {
   const card = monitoringCard(job, "job");
   const fields = node("dl", "monitoring-card-meta");
   addField(fields, "確認先（役割）", job.ownerRole);
@@ -138,6 +143,20 @@ const renderJob = (job: ScheduledJobHealthItem) => {
   );
   addField(fields, "直近の処理時間", formatDuration(job.lastDurationMs));
   if (job.lastErrorCode) addField(fields, "エラーコード", job.lastErrorCode);
+  if (job.id === "editorial-release-reconcile" && httpError) {
+    addField(
+      fields,
+      "記録されたCloudflare HTTPエラー",
+      `HTTP ${httpError.status}`,
+    );
+    if (httpError.providerCode !== null)
+      addField(
+        fields,
+        "Cloudflareのエラー番号",
+        String(httpError.providerCode),
+      );
+    addField(fields, "HTTPエラーの記録日時", timestamp(httpError.observedAt));
+  }
   if (
     (job.id === "editorial-release-reconcile" ||
       job.id === "editorial-publication-sync") &&
@@ -286,7 +305,11 @@ const initializeDeveloperPage = () => {
         Array.isArray(snapshot.jobs) &&
         snapshot.jobs.length
       ) {
-        jobs.replaceChildren(...snapshot.jobs.map(renderJob));
+        jobs.replaceChildren(
+          ...snapshot.jobs.map((job) =>
+            renderJob(job, data.editorialDeploymentHttpError),
+          ),
+        );
         jobs.hidden = false;
         jobState.hidden = true;
         jobGenerated.textContent = `記録の取得時刻：${formatDate(snapshot.generatedAt)}（端末時刻）`;

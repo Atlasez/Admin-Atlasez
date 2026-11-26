@@ -1,5 +1,5 @@
 export async function readRequestTextLimited(
-  request: Request,
+  request: Pick<Request, "body" | "headers">,
   maxBytes: number,
 ): Promise<string | null> {
   const contentLength = request.headers.get("content-length");
