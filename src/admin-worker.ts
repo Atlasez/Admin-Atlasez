@@ -4,6 +4,7 @@ import { deadlineSummarySql, deadlineRangeSql, taskDeadlineEpoch } from "./lib/a
 import { handleTaskWorkspace, type TaskWorkspaceAccess, type WorkspaceTask } from "./lib/admin-task-workspace";
 import type { D1Database, D1PreparedStatement } from "./lib/admin-database";
 import { readScheduledJobHealth, type ScheduledJobReporter } from "./lib/admin-scheduled-job-health";
+import { readCloudflareDeploymentErrorCode, readEditorialDeploymentHttpError, recordEditorialDeploymentHttpError } from "./lib/editorial-deployment-http-error";
 import { readScheduledJobQueues } from "./lib/admin-scheduled-job-queues";
 import { executeAdminScheduledJobs, reportScheduledDeliveryResult } from "./lib/admin-scheduled-jobs";
 import { dispatchScheduledHealthAlerts } from "./lib/admin-scheduled-health-alerts";
@@ -3225,9 +3226,10 @@ async function developerDiagnostics(
       "この画面はCloudflare上の実設定を読み取りません。配信中WorkerのPreview URL設定をCloudflareで確認してください。",
   });
   const observedAt = new Date();
-  const [scheduledJobs, queues] = await Promise.all([
+  const [scheduledJobs, queues, editorialDeploymentHttpError] = await Promise.all([
     readScheduledJobHealth(env.REPORTS, observedAt),
     readScheduledJobQueues(env.REPORTS, observedAt),
+    readEditorialDeploymentHttpError(env.REPORTS),
   ]);
   const failedJobs = scheduledJobs.jobs.filter((job) => job.status === "error");
   const uncertainJobs = scheduledJobs.jobs.filter((job) => job.status !== "ok");
@@ -3276,6 +3278,7 @@ async function developerDiagnostics(
     checks,
     scheduledJobs,
     queues,
+    editorialDeploymentHttpError,
   });
 }
 
@@ -22818,7 +22821,7 @@ type CloudflareWorkerDeployment = {
 };
 
 class EditorialDeploymentLookupFailure extends EditorialPublicationFailure {
-  constructor(readonly upstreamStatus: number | null) {
+  constructor(readonly upstreamStatus: number | null, readonly upstreamResponse?: Response) {
     super(
       "Cloudflareの公開Deploymentを確認できません。",
       "cloudflare_deployment_lookup_failed",
@@ -22844,7 +22847,7 @@ async function getCurrentEditorialWorkerDeployment(env: Env): Promise<Cloudflare
   } catch {
     throw new EditorialDeploymentLookupFailure(null);
   }
-  if (!response.ok) throw new EditorialDeploymentLookupFailure(response.status);
+  if (!response.ok) throw new EditorialDeploymentLookupFailure(response.status, response);
   const payload = await response.json().catch(() => ({})) as {
     success?: boolean;
     result?: { deployments?: CloudflareWorkerDeployment[] };
@@ -22976,7 +22979,11 @@ async function receiveEditorialReleaseEvent(
   }
 }
 
-async function reconcileEditorialReleaseCandidates(env: Env, report?: ScheduledJobReporter) {
+async function reconcileEditorialReleaseCandidates(
+  env: Env,
+  report?: ScheduledJobReporter,
+  options: { recordHttpError?: boolean } = {},
+) {
   if (!env.CLOUDFLARE_WORKERS_READ_TOKEN?.trim()) {
     report?.({ status: "skipped", code: "not_configured" });
     return;
@@ -23007,6 +23014,14 @@ async function reconcileEditorialReleaseCandidates(env: Env, report?: ScheduledJ
       else code = "dependency_failed";
     }
     report?.({ status: "warning", code });
+    if (lookupFailure && options.recordHttpError) {
+      const providerCode = lookupFailure.upstreamResponse
+        ? await readCloudflareDeploymentErrorCode(lookupFailure.upstreamResponse)
+        : null;
+      await recordEditorialDeploymentHttpError(env.REPORTS, upstreamStatus, providerCode).catch(() => {
+        console.error(JSON.stringify({ event: "editorial_release_http_error_record_failed" }));
+      });
+    }
     const failure = publicationFailureDetails(error);
     console.error(JSON.stringify({
       event: "editorial_release_reconciliation_failed",
@@ -27845,7 +27860,7 @@ export default {
     ctx.waitUntil(
       executeAdminScheduledJobs(env.REPORTS, cron, {
         "editorial-publication-progress": (report) => progressEditorialPublicationRuns(env, { report }),
-        "editorial-release-reconcile": (report) => reconcileEditorialReleaseCandidates(env, report),
+        "editorial-release-reconcile": (report) => reconcileEditorialReleaseCandidates(env, report, { recordHttpError: true }),
         "editorial-publication-sync": (report) => syncEditorialPublicationStatus(env, undefined, report),
         "published-article-backup": () => syncPublishedArticleBackups(env),
         "task-reminders": async (report) => {

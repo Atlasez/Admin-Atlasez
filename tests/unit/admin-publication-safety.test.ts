@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/admin-worker";
+import {
+  readCloudflareDeploymentErrorCode,
+  readEditorialDeploymentHttpError,
+  recordEditorialDeploymentHttpError,
+} from "../../src/lib/editorial-deployment-http-error";
 import { createAdminTestEnvironment } from "../helpers/admin-test-environment";
 
 const secret = "editorial-release-secret";
@@ -949,7 +954,7 @@ describe("記事公開候補の永続化と切替復旧", () => {
         vi.fn(async () => {
           if (status === null) throw new TypeError(privateProviderMessage);
           return Response.json(
-            { errors: [privateProviderMessage] },
+            { errors: [{ code: 10001, message: privateProviderMessage }] },
             { status },
           );
         }),
@@ -970,6 +975,21 @@ describe("記事公開候補の永続化と切替復旧", () => {
           )
           .get("editorial-release-reconcile"),
       ).toEqual({ last_status: "warning", last_error_code: code });
+      const evidence = db
+        .prepare(
+          "SELECT cursor FROM admin_worker_sync_checkpoints WHERE job = ?",
+        )
+        .get("editorial-release-deployment-http-error") as
+        { cursor: string } | undefined;
+      if (status !== null && status >= 400) {
+        expect(JSON.parse(evidence!.cursor)).toEqual({
+          status,
+          providerCode: 10001,
+        });
+        expect(evidence!.cursor).not.toContain(privateProviderMessage);
+      } else {
+        expect(evidence).toBeUndefined();
+      }
       const reconciliationLog = log.mock.calls.find(
         ([message]) =>
           typeof message === "string" &&
@@ -987,6 +1007,52 @@ describe("記事公開候補の永続化と切替復旧", () => {
       expect(JSON.stringify(log.mock.calls)).not.toContain(cloudflareReadToken);
     },
   );
+
+  it("replaces the HTTP evidence when it changes and ignores older or repeated observations", async () => {
+    const { env } = createAdminTestEnvironment();
+    const reportAt = (status: number, time: string) =>
+      recordEditorialDeploymentHttpError(
+        env.REPORTS,
+        status,
+        null,
+        new Date(time),
+      );
+    await reportAt(503, "2026-11-26T01:00:00.000Z");
+    await reportAt(503, "2026-11-26T01:05:00.000Z");
+    expect(await readEditorialDeploymentHttpError(env.REPORTS)).toEqual({
+      status: 503,
+      providerCode: null,
+      observedAt: "2026-11-26T01:00:00.000Z",
+    });
+    await reportAt(503, "2026-11-26T01:15:00.000Z");
+    expect(
+      (await readEditorialDeploymentHttpError(env.REPORTS))?.observedAt,
+    ).toBe("2026-11-26T01:15:00.000Z");
+    await reportAt(400, "2026-11-26T01:16:00.000Z");
+    await reportAt(404, "2026-11-26T01:14:00.000Z");
+    expect(await readEditorialDeploymentHttpError(env.REPORTS)).toEqual({
+      status: 400,
+      providerCode: null,
+      observedAt: "2026-11-26T01:16:00.000Z",
+    });
+  });
+
+  it("ignores oversized and non-numeric Cloudflare error details", async () => {
+    expect(
+      await readCloudflareDeploymentErrorCode(
+        Response.json({
+          errors: [{ code: 10001, message: "x".repeat(9000) }],
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      await readCloudflareDeploymentErrorCode(
+        Response.json({
+          errors: [{ code: "10001" }],
+        }),
+      ),
+    ).toBeNull();
+  });
 
   it("D1の公開履歴書き込みが一時失敗してもCronが現行Versionを照合して補修する", async () => {
     const database = new ReleaseDatabase();

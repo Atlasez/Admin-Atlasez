@@ -192,6 +192,11 @@ test("公開処理と応募メールの診断から次の確認へ進める", as
     route.fulfill({
       json: {
         ...data,
+        editorialDeploymentHttpError: {
+          status: 403,
+          providerCode: 10001,
+          observedAt: "2026-11-25T01:00:02.000Z",
+        },
         queues: [
           { ...data.queues[0], id: "editorial-publication" },
           {
@@ -208,6 +213,11 @@ test("公開処理と応募メールの診断から次の確認へ進める", as
 
   await page.goto("admin/developer/?mode=developer");
   await expect(page.getByText(/対象Workerの読み取り権限/)).toBeVisible();
+  const releaseJob = page.locator(
+    '[data-monitoring-id="editorial-release-reconcile"]',
+  );
+  await expect(releaseJob.getByText("HTTP 403", { exact: true })).toBeVisible();
+  await expect(releaseJob.getByText("10001", { exact: true })).toBeVisible();
   await expect(
     page.getByRole("link", { name: "公開処理の状況を開く" }),
   ).toHaveAttribute("href", "/admin/publication-runs/");
