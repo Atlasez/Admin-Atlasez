@@ -34,7 +34,7 @@ export async function purgeExpiredPersonalData(
   let reconciliationMarkerAvailable = false;
   if (options.deleteTerminalApplications) {
     try {
-      // A pre-0134 database must fail closed rather than delete records that
+      // A pre-0141 database must fail closed rather than delete records that
       // cannot be checked for pending intake repair. LIMIT 0 validates the
       // column without reading application data.
       await db
