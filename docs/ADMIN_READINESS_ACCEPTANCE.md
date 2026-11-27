@@ -7,7 +7,7 @@
 - mainには記事アーカイブの承認フローが含まれる。メンバー受入候補は別系統の記事削除フローと分離している。
 - main基準の受入候補はPR [#649](https://github.com/Atlasez/Admin-Atlasez/pull/649)。main baseは `2b407b4374620cebd1e76f8eaa93355ae5e75ce8`。独立レビュー待ち。
 - コードを含むhead `164b35af1a68eec2bfac0715e6aa17916571c5ac` のCI run [46014583220](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46014583220) はsuccess。最新PR headのCI状況とレビュー状態はPR #649とIssue #647に記録する。
-- Cloudflareの読み取り専用確認で、staging WorkerはPRの作業ブランチではなく `codex/release-staging-647` に接続していた。現在のBuild settingsのSHAガードは `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718`、確認した失敗Build画面のコマンドは `f7a3d4edf70d4a0f8736f4d1b4b12d9f8011ef4d` を要求していた。Buildログはコマンド失敗までで、cloneされた実SHAは確認できない。PR headとの一致も未確認。staging配信を止め、この設定差をレビュー後に解消する。
+- Cloudflareの読み取り専用確認で、staging WorkerはPRの作業ブランチではなく `codex/release-staging-647` に接続していた。Build settingsのSHA pin `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718` はGitHub上の同branch先端と一致する。一方、PR head `555babc2fbd006fabc84cab7a2a2f35b503c2075` とのcompareはdiverged（staging branchが20 commit先行、139 commit遅れ）。確認した過去の失敗Build画面は旧SHA `f7a3d4edf70d4a0f8736f4d1b4b12d9f8011ef4d` を要求していたが、ログは一般的なcommand failureだけで、実clone SHAや失敗原因は確認できない。既存branchを直接更新・resetせず、独立レビュー後にレビュー済みPR headから専用staging refを用意して、設定・dry-run・read-backを照合してから配信する。
 - 同Workerの設定ではstaging用OAuth secretが登録済み。synthetic test-user allowlistは未設定。メール/Discord deliveryはdisabled、Resend/Discord credentialsは未設定、Cron triggerは未設定。画面上のD1 bindingはstaging reports専用。secret値は記録しない。
 - 以前のread-only migration ledger確認では専用D1が0140〜0143、mainの0144は未適用。本番・stagingともmigration前に適用時点のledgerを再取得する。
 - 個人情報保持のOPSD-03は未承認。180日は候補で本番方針ではない。定期処理も `deleteTerminalApplications: false` で終端応募の自動削除を停止している。保持方針・公開説明・backup上の削除時期が合うまで有効化しない。
