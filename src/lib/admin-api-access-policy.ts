@@ -3,6 +3,9 @@ export type AdminApiAccessPolicy =
 
 const methods = (...values: string[]) => new Set(values);
 
+export const adminOperationTaskPath =
+  /^\/api\/admin\/operations\/tasks\/((?:[0-9a-f-]{36}|application-(?:response|recovery)(?::|%3a)[0-9a-f-]{36}))$/i;
+
 // These handlers select a project or reviewer scope from the request and
 // enforce it themselves. Replacing that decision with the generic member
 // stage check rejects valid project managers and weakens reviewer boundaries.
@@ -76,6 +79,10 @@ const memberScopedDynamicApiMethods: ReadonlyArray<{
   },
   {
     path: /^\/api\/admin\/operations\/tasks\/[0-9a-f-]{36}$/i,
+    methods: methods("PATCH"),
+  },
+  {
+    path: adminOperationTaskPath,
     methods: methods("PATCH"),
   },
   {

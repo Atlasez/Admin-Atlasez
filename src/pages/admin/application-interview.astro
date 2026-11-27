@@ -115,7 +115,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       discord_oauth_connected_at?: string; email_deliveries?: Array<Record<string, unknown>>;
     };
     type Interview = { scheduledAt?: string | null; mode?: string | null; zoomUrl?: string | null; location?: string | null; completedAt?: string | null; completed_at?: string | null; notifiedAt?: string | null; notified_at?: string | null; status?: string };
-    type Review = { note?: string | null; assignedSubjects?: string[] | null; decision?: string | null; finalizedAt?: string | null };
+    type Review = { note?: string | null; assignedSubjects?: string[] | null; decision?: string | null; finalizedAt?: string | null; finalized_at?: string | null };
     type InterviewResponse = { application?: Application; interview?: Interview | null; review?: Review | null; subjectLabels?: Record<string, string>; error?: string };
     type IntakeEntry = { email?: string; application_id?: string | null; is_member?: number; responsible_email?: string | null; consultation_email?: string | null; contact_status?: string | null; contact_note?: string | null; first_task_id?: string | null; first_task_title?: string | null; first_task_type?: string | null; follow_up_at?: string | null; follow_up_completed_at?: string | null; revision?: number | null };
     type IntakeResponse = { entries?: IntakeEntry[]; responsibleCandidates?: Array<{ email: string; displayName: string }>; error?: string };
@@ -153,6 +153,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
     let intakeRevision = 0;
     let responsibleCandidates: Array<{ email: string; displayName: string }> = [];
     let interviewCompleted = false;
+    let reviewFinalized = false;
     let interviewBusy = false;
     let intakeBusy = false;
     let reviewBusy = false;
@@ -264,6 +265,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       interview = data.interview ? { ...data.interview, completedAt: data.interview.completedAt ?? data.interview.completed_at, notifiedAt: data.interview.notifiedAt ?? data.interview.notified_at } : null;
       review = data.review ?? {};
       interviewCompleted = Boolean(interview?.completedAt) || interview?.status === "completed";
+      reviewFinalized = interviewCompleted || Boolean(review.finalizedAt ?? review.finalized_at);
       get<HTMLElement>("[data-applicant-name]").textContent = application.name || "応募者";
       get<HTMLElement>("[data-applicant-email]").textContent = application.email || "";
       const status = get<HTMLElement>("[data-applicant-status]");
@@ -280,9 +282,9 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
         : interview?.scheduledAt ? `日程設定済み${interview.notifiedAt ? `・通知済み ${formatDate(interview.notifiedAt)}` : "・未通知"}` : "日程未設定";
       get<HTMLButtonElement>("[data-interview-save]").textContent = "面談日程を保存";
       get<HTMLButtonElement>("[data-interview-notify]").textContent = interview?.notifiedAt ? "面談情報を再通知" : "応募者へ通知";
-      root.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-interview-fields] input, [data-interview-fields] select").forEach((input) => { input.disabled = interviewCompleted; });
-      get<HTMLButtonElement>("[data-interview-save]").disabled = interviewCompleted;
-      get<HTMLButtonElement>("[data-interview-notify]").disabled = interviewCompleted || !interview?.scheduledAt;
+      root.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-interview-fields] input, [data-interview-fields] select").forEach((input) => { input.disabled = reviewFinalized; });
+      get<HTMLButtonElement>("[data-interview-save]").disabled = reviewFinalized;
+      get<HTMLButtonElement>("[data-interview-notify]").disabled = reviewFinalized || !interview?.scheduledAt;
       get<HTMLTextAreaElement>("[data-notes]").value = review.note ?? "";
       decision.value = ["pending", "hold", "accepted", "rejected"].includes(review.decision ?? "") ? review.decision! : "pending";
       const selected = new Set(review.assignedSubjects ?? []);
@@ -302,8 +304,10 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
         options.append(item);
       }
       if (!Object.keys(labels).length) options.textContent = "担当分野の候補がありません。";
+      reviewForm.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement>("input,select,textarea,button[type=submit]").forEach((input) => { input.disabled = reviewFinalized; });
       get<HTMLElement>("[data-no-interview-help]").hidden = Boolean(interview);
-      get<HTMLButtonElement>("[data-save]").textContent = review.finalizedAt ? "審査記録を保存" : "審査メモを保存";
+      get<HTMLButtonElement>("[data-save]").textContent = reviewFinalized ? "審査記録を保存" : "審査メモを保存";
+      if (reviewFinalized) setNotice("採否は確定済みです。面談メモは変更できません。");
       renderWorkflow();
     };
 
@@ -407,7 +411,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
     });
 
     const saveInterview = async (notifyApplicant: boolean) => {
-      if (interviewBusy || interviewCompleted) return;
+      if (interviewBusy || reviewFinalized) return;
       const dateValue = get<HTMLInputElement>("[data-interview-date]").value;
       const mode = get<HTMLSelectElement>("[data-interview-format]").value;
       const zoomUrl = get<HTMLInputElement>("[data-interview-zoom]").value.trim();
@@ -428,11 +432,26 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       setNotice(notifyApplicant ? "面談日程を保存して応募者へ通知しています…" : "面談日程を保存しています…");
       let saved = false;
       try {
-        await requestJson(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview?project=${encodeURIComponent(project)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(values) }, "面談日程を保存できませんでした。");
+        const interviewResponse = await fetch(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview?project=${encodeURIComponent(project)}`, { credentials: "same-origin", cache: "no-store", method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(values) });
+        const interviewResponseData = await interviewResponse.json().catch(() => ({})) as { error?: string; interviewSaved?: boolean };
+        if (!interviewResponse.ok) {
+          saved = interviewResponseData.interviewSaved === true;
+          throw new Error(interviewResponseData.error ?? "面談日程を保存できませんでした。");
+        }
         saved = true;
         interviewDirty = false;
-        if (notifyApplicant) await requestJson(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview/notify?project=${encodeURIComponent(project)}`, { method: "POST" }, "面談通知を準備できませんでした。");
-        setNotice(notifyApplicant ? "面談日程を保存し、応募者へ通知しました。" : "面談日程を保存しました。");
+        let notification: { alreadyQueued?: boolean; deliveryStatus?: string; notificationQueued?: boolean } | null = null;
+        if (notifyApplicant) notification = await requestJson<{ alreadyQueued?: boolean; deliveryStatus?: string; notificationQueued?: boolean }>(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview/notify?project=${encodeURIComponent(project)}`, { method: "POST" }, "面談通知を準備できませんでした。");
+        const noticeMessage = !notifyApplicant
+          ? "面談日程を保存しました。"
+          : notification?.alreadyQueued
+            ? notification.deliveryStatus === "sent"
+              ? "面談日程を保存しました。通知は送信済みです。重複送信しませんでした。"
+              : "面談日程を保存しました。通知はすでにキューへ登録されています。重複登録しませんでした。"
+            : notification?.notificationQueued
+              ? "面談日程を保存しました。通知キューに登録しました。配送完了は配信履歴で確認してください。"
+              : "面談日程を保存しました。通知状態を配信履歴で確認してください。";
+        setNotice(noticeMessage);
         await load();
       } catch (error) {
         const message = error instanceof Error ? error.message : "面談日程を保存できませんでした。";
@@ -441,8 +460,8 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       } finally {
         interviewBusy = false;
         saveButton.removeAttribute("aria-busy"); notifyButton.removeAttribute("aria-busy");
-        root.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-interview-fields] input, [data-interview-fields] select").forEach((input) => { input.disabled = interviewCompleted; });
-        saveButton.disabled = interviewCompleted; notifyButton.disabled = interviewCompleted || !interview?.scheduledAt;
+        root.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-interview-fields] input, [data-interview-fields] select").forEach((input) => { input.disabled = reviewFinalized; });
+        saveButton.disabled = reviewFinalized; notifyButton.disabled = reviewFinalized || !interview?.scheduledAt;
       }
     };
     get<HTMLButtonElement>("[data-interview-save]").addEventListener("click", () => { void saveInterview(false); });
@@ -469,6 +488,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
     reviewForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (reviewBusy) return;
+      if (reviewFinalized) { setNotice("採否確定済みの面談メモは変更できません。", true); return; }
       if (decision.value === "accepted" && !confirm.checked) { setNotice("受け入れを確定する場合は確認欄にチェックしてください。", true); confirm.focus(); return; }
       const subjects = [...root.querySelectorAll<HTMLInputElement>("[data-subject-options] input:checked")].map((input) => input.value);
       const note = get<HTMLTextAreaElement>("[data-notes]").value;
@@ -477,7 +497,12 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       setNotice("審査記録を保存しています…");
       let reviewSaved = false;
       try {
-        await requestJson(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview-review?project=${encodeURIComponent(project)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ note, assignedSubjects: subjects, decision: decision.value }) }, "審査記録を保存できませんでした。");
+        const reviewResponse = await fetch(`/api/admin/applications/${encodeURIComponent(applicationId)}/interview-review?project=${encodeURIComponent(project)}`, { credentials: "same-origin", cache: "no-store", method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ note, assignedSubjects: subjects, decision: decision.value }) });
+        const reviewResponseData = await reviewResponse.json().catch(() => ({})) as { error?: string; reviewSaved?: boolean };
+        if (!reviewResponse.ok) {
+          reviewSaved = reviewResponseData.reviewSaved === true;
+          throw new Error(reviewResponseData.error ?? "審査記録を保存できませんでした。");
+        }
         reviewSaved = true;
         reviewDirty = false;
         if (!interviewCompleted && (decision.value === "accepted" || decision.value === "rejected")) {
