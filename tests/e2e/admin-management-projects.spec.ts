@@ -53,6 +53,12 @@ for (const [project, label, site] of projects) {
       );
     }
     const approvals = main.locator('a[href*="project-profile-requests"]');
+    const articleTrash = main.locator('a[href="/admin/articles/?trash=1"]');
+    if (project === "atlas") {
+      await expect(articleTrash).toBeVisible();
+    } else {
+      await expect(articleTrash).toHaveCount(0);
+    }
     await expect(approvals).toHaveCount(project === "atlas" ? 0 : 1);
     if (project !== "atlas") {
       await expect(approvals).toBeVisible();
@@ -65,7 +71,7 @@ for (const [project, label, site] of projects) {
       document.dispatchEvent(new Event("astro:page-load")),
     );
     await expect(main.locator('[data-management-project="atlas"]')).toHaveCount(
-      project === "atlas" ? 6 : 0,
+      project === "atlas" ? 7 : 0,
     );
   });
   if (project === "atlas") continue;
@@ -127,6 +133,18 @@ test("管理トップは所属プロジェクト責任者にだけそのプロ�
   await expect(
     page.locator("main [data-project-manager-only]:visible"),
   ).toHaveCount(0);
+});
+
+test("運営内運営の管理トップから記事のゴミ箱を開ける", async ({ page }) => {
+  await page.route("**/api/admin/auth-status", (route) =>
+    route.fulfill({
+      json: { isManager: false, managerProjects: ["atlas"] },
+    }),
+  );
+  await page.goto("admin/manage/?project=atlas");
+  await expect(
+    page.getByRole("link", { name: /記事のゴミ箱/ }),
+  ).toHaveAttribute("href", "/admin/articles/?trash=1");
 });
 
 test("管理トップの未知プロジェクトはatlasへ一貫してフォールバックする", async ({
