@@ -15,10 +15,9 @@ const MIGRATIONS_BEFORE_INTAKE = [
   "0142_admin_scheduled_job_health.sql",
   "0143_admin_scheduled_health_alerts.sql",
 ];
-const MIGRATIONS_AFTER_INTAKE = [
-  "0144_editorial_archive_approval_requests.sql",
-];
+const ARCHIVE_MIGRATION = "0144_editorial_archive_approval_requests.sql";
 const SYNTHETIC_APPLICATION_ID = "staging-migration-fixture-0141";
+const SYNTHETIC_ARCHIVE_ID = "staging-migration-fixture-0144";
 const NOW = "2026-11-03T00:00:00.000Z";
 
 function columnNames(db) {
@@ -44,6 +43,7 @@ function assertDatabaseIntegrity(db) {
 
 export function runAdminStagingMigrationDrill({
   migrationDirectory = resolve("migrations"),
+  archiveAlreadyApplied = false,
 } = {}) {
   const files = readdirSync(migrationDirectory)
     .filter((name) => name.endsWith(".sql"))
@@ -51,15 +51,12 @@ export function runAdminStagingMigrationDrill({
   for (const file of [
     ...MIGRATIONS_BEFORE_INTAKE,
     TARGET_MIGRATION,
-    ...MIGRATIONS_AFTER_INTAKE,
+    ARCHIVE_MIGRATION,
   ]) {
     assert.ok(files.includes(file), `release migration ${file} is missing`);
   }
-  // Match the latest recorded production ledger: 0142/0143 were already
-  // applied while 0141 was pending. The current main's 0144 archive approval
-  // migration follows the intake migration in this drill; 0140 deletion is
-  // deliberately excluded because the current release candidate does not
-  // include PR #630.
+  // Production already has 0144. A staging database can still apply it after
+  // 0141. Both orders leave the candidate's unrelated 0140 migration out.
   const preMigrationFiles = [
     ...files.filter(
       (file) =>
@@ -67,6 +64,7 @@ export function runAdminStagingMigrationDrill({
         file !== "0140_editorial_document_deletion_requests.sql",
     ),
     ...MIGRATIONS_BEFORE_INTAKE,
+    ...(archiveAlreadyApplied ? [ARCHIVE_MIGRATION] : []),
   ];
   const directory = mkdtempSync(
     join(tmpdir(), "atlasez-admin-staging-migration-"),
@@ -91,6 +89,19 @@ export function runAdminStagingMigrationDrill({
       "INSERT INTO d1_migrations(name) VALUES(?)",
     );
     for (const file of preMigrationFiles) recordMigration.run(file);
+    if (archiveAlreadyApplied) {
+      db.prepare(
+        `INSERT INTO editorial_document_archive_requests
+         (id,document_id,requested_by,requested_at,requested_updated_at)
+         VALUES (?,?,?, ?,?)`,
+      ).run(
+        SYNTHETIC_ARCHIVE_ID,
+        "synthetic-draft",
+        "staging-editor@atlasez.test",
+        NOW,
+        NOW,
+      );
+    }
 
     // A fresh D1 receives hard-coded production operator/editor identities from
     // older migrations. A staging database must clear those bootstrap grants
@@ -233,17 +244,22 @@ export function runAdminStagingMigrationDrill({
         .prepare("SELECT 1 FROM d1_migrations WHERE name=?")
         .get(TARGET_MIGRATION),
     );
-    for (const file of MIGRATIONS_AFTER_INTAKE) {
-      db.exec(readFileSync(join(migrationDirectory, file), "utf8"));
-      db.prepare("INSERT INTO d1_migrations(name) VALUES(?)").run(file);
+    if (!archiveAlreadyApplied) {
+      db.exec(
+        readFileSync(join(migrationDirectory, ARCHIVE_MIGRATION), "utf8"),
+      );
+      db.prepare("INSERT INTO d1_migrations(name) VALUES(?)").run(
+        ARCHIVE_MIGRATION,
+      );
     }
-    assert.ok(
-      db
-        .prepare(
-          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='editorial_document_archive_requests'",
-        )
-        .get(),
-    );
+    const countArchiveRequests = (database) =>
+      count(
+        database,
+        "SELECT COUNT(*) AS count FROM editorial_document_archive_requests WHERE id=?",
+        SYNTHETIC_ARCHIVE_ID,
+      );
+    const preservedArchiveRequests = countArchiveRequests(db);
+    assert.equal(preservedArchiveRequests, Number(archiveAlreadyApplied));
 
     // An older Worker that inserts only its pre-0141 columns remains compatible:
     // the two added columns are nullable/defaulted and do not become required inputs.
@@ -295,12 +311,14 @@ export function runAdminStagingMigrationDrill({
       .all()
       .map((row) => row.name);
     assert.deepEqual(restoredMigrationFiles, preMigrationFiles);
+    if (archiveAlreadyApplied) assert.equal(countArchiveRequests(db), 1);
     assertDatabaseIntegrity(db);
     return {
       preMigrationFiles: preMigrationFiles.length,
       restoredMigrationTail: restoredMigrationFiles.slice(-3),
       migration: TARGET_MIGRATION,
-      archiveApprovalMigration: MIGRATIONS_AFTER_INTAKE[0],
+      archiveApprovalMigration: ARCHIVE_MIGRATION,
+      preservedArchiveRequests,
       preservedApplicationRows: 1,
       preservedEmailQueueRows: 2,
       stagingBootstrapRolesSanitized: true,

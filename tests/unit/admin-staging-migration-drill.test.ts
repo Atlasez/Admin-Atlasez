@@ -20,3 +20,19 @@ it("runs migration 0141, verifies backfill and old-column compatibility, then re
     restoredIntegrityCheck: "ok",
   });
 });
+
+it("applies 0141 after the production archive migration and preserves an archive request through recovery", () => {
+  expect(
+    runAdminStagingMigrationDrill({ archiveAlreadyApplied: true }),
+  ).toMatchObject({
+    restoredMigrationTail: [
+      "0142_admin_scheduled_job_health.sql",
+      "0143_admin_scheduled_health_alerts.sql",
+      "0144_editorial_archive_approval_requests.sql",
+    ],
+    preservedArchiveRequests: 1,
+    legacyInsertCompatible: true,
+    isolatedBackupRestore: true,
+    foreignKeyViolations: 0,
+  });
+});

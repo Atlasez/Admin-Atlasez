@@ -202,6 +202,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
             <div class="archive-request-copy">
               <h3>記事のアーカイブ</h3>
               <p data-archive-request-status aria-live="polite">申請状態を読み込んでいます。</p>
+              <a href="/admin/articles/?trash=1">記事のゴミ箱</a>
             </div>
             <label class="archive-request-note-field" data-archive-request-note-field hidden>
               申請理由（任意）
@@ -2263,7 +2264,7 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       } else if (request?.status === "withdrawn") {
         archiveRequestStatus.textContent = "前回の申請は取り下げられました。";
       } else if (archiveState.archived) {
-        archiveRequestStatus.textContent = "この記事はアーカイブ済みです。復元は記事一覧から行えます。";
+        archiveRequestStatus.textContent = "この記事はゴミ箱にあります。復元は記事のゴミ箱から行えます。";
       } else if (!archiveState.eligible) {
         archiveRequestStatus.textContent = "アーカイブできるのは公開前の下書き・フィードバック中の記事です。公開審査中・公開済み・公開予約中の記事は申請できません。";
       } else {

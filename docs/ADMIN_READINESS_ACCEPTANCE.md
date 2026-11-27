@@ -1,6 +1,6 @@
 # 実運用受入基準
 
-更新日: 2026-11-27
+更新日: 2026-11-28
 
 ## 現在の状況
 
@@ -9,7 +9,7 @@
 - コードを含むhead `164b35af1a68eec2bfac0715e6aa17916571c5ac` のCI run [46014583220](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46014583220) はsuccess。最新PR headのCI状況とレビュー状態はPR #649とIssue #647に記録する。
 - Cloudflareの読み取り専用確認で、staging WorkerはPRの作業ブランチではなく `codex/release-staging-647` に接続していた。Build settingsのSHA pin `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718` はGitHub上の同branch先端と一致する。一方、PR head `555babc2fbd006fabc84cab7a2a2f35b503c2075` とのcompareはdiverged（staging branchが20 commit先行、139 commit遅れ）。確認した過去の失敗Build画面は旧SHA `f7a3d4edf70d4a0f8736f4d1b4b12d9f8011ef4d` を要求していたが、ログは一般的なcommand failureだけで、実clone SHAや失敗原因は確認できない。既存branchを直接更新・resetせず、独立レビュー後にレビュー済みPR headから専用staging refを用意して、設定・dry-run・read-backを照合してから配信する。
 - 同Workerの設定ではstaging用OAuth secretが登録済み。synthetic test-user allowlistは未設定。メール/Discord deliveryはdisabled、Resend/Discord credentialsは未設定、Cron triggerは未設定。画面上のD1 bindingはstaging reports専用。secret値は記録しない。
-- 以前のread-only migration ledger確認では専用D1が0140〜0143、mainの0144は未適用。本番・stagingともmigration前に適用時点のledgerを再取得する。
+- 本番D1は記事アーカイブ用の0144を適用済み。受入用の0141は未適用。隔離SQLiteでは0144の後に0141を適用して既存のアーカイブ申請が残ることと、適用前の復元点に戻せることを検証した。staging専用D1の0144は適用前にledgerを再確認する。
 - 個人情報保持のOPSD-03は未承認。180日は候補で本番方針ではない。定期処理も `deleteTerminalApplications: false` で終端応募の自動削除を停止している。保持方針・公開説明・backup上の削除時期が合うまで有効化しない。
 - 実stagingのrole別操作、通知到達、backup復元、本番D1 ledger再確認、本番migration/deploy、実利用者受入は未完了。
 
