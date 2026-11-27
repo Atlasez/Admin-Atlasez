@@ -889,6 +889,60 @@ it("全migration適用済みの隔離D1でポータルと通知APIの全SQLを�
   });
 });
 
+it("0144未適用時はポータル通知を部分停止し記事アーカイブAPIを503にする", async () => {
+  const { db, request } = environment();
+  db.exec("DROP TABLE editorial_document_archive_requests");
+
+  const portalResponse = await request(
+    "/api/admin/portal",
+    "global@atlasez.test",
+  );
+  expect(portalResponse.status, await portalResponse.clone().text()).toBe(200);
+  await expect(portalResponse.json()).resolves.toMatchObject({
+    notificationsUnavailable: true,
+    projects: expect.any(Array),
+    calendar: { events: expect.any(Array) },
+  });
+
+  const notificationsResponse = await request(
+    "/api/admin/notifications",
+    "global@atlasez.test",
+  );
+  expect(
+    notificationsResponse.status,
+    await notificationsResponse.clone().text(),
+  ).toBe(200);
+  await expect(notificationsResponse.json()).resolves.toMatchObject({
+    notifications: expect.any(Array),
+    notificationsUnavailable: true,
+  });
+
+  const archiveRequestPath =
+    "/api/admin/editor/documents/55555555-5555-4555-8555-555555555555/archive-request";
+  for (const method of ["GET", "POST", "PATCH", "DELETE"]) {
+    const response = await request(
+      archiveRequestPath,
+      "global@atlasez.test",
+      method === "GET" ? undefined : {},
+      "https://admin.atlasez.test",
+      method,
+    );
+    expect(response.status, `${method}: ${await response.clone().text()}`).toBe(
+      503,
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      code: "archive_request_storage_unavailable",
+    });
+  }
+  expect(
+    db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM admin_audit_log WHERE action LIKE 'article_archive_%'",
+      )
+      .get(),
+  ).toEqual({ count: 0 });
+});
+
 it("全migrationを適用した隔離D1で認証・全体管理・別プロジェクト・退会後の境界を確認する", async () => {
   const { db, request, env } = environment();
   const anonymous = await worker.fetch(

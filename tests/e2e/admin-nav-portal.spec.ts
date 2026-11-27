@@ -2,6 +2,7 @@ import { expect, test, type Page } from "../helpers/verification-test";
 
 type MockOptions = {
   notificationStatus?: number;
+  notificationsUnavailable?: boolean;
   unreadNotificationsCount?: number;
   pendingApprovals?: number;
   taskSummary?: { openCount?: number; dueToday?: number; dueSoon?: number };
@@ -100,6 +101,8 @@ async function mockAdminShell(page: Page, options: MockOptions = {}) {
                 notificationsTruncated:
                   (options.unreadNotificationsCount ?? 0) > 20,
                 unreadNotificationsCount: options.unreadNotificationsCount,
+                notificationsUnavailable:
+                  options.notificationsUnavailable === true,
               }
             : { error: "SQL: no such table: internal_notifications" },
         ),
@@ -162,6 +165,7 @@ async function mockAdminShell(page: Page, options: MockOptions = {}) {
           ],
           notificationsTruncated: (options.unreadNotificationsCount ?? 0) > 20,
           unreadNotificationsCount: options.unreadNotificationsCount ?? 0,
+          notificationsUnavailable: options.notificationsUnavailable === true,
           calendar: { events: options.calendarEvents ?? [] },
         }),
       });
@@ -195,6 +199,31 @@ test("ブランド・通知・プロフィールの各アイコンを表示す�
   expect(
     await avatar.evaluate((image) => (image as HTMLImageElement).naturalWidth),
   ).toBeGreaterThan(0);
+});
+
+test("通知ソースの一部が利用できない場合は警告し一括既読を無効にする", async ({
+  page,
+}) => {
+  await mockAdminShell(page, {
+    notificationsUnavailable: true,
+    unreadNotificationsCount: 1,
+  });
+  await page.goto("admin/portal/");
+
+  const notificationButton = page.locator("[data-admin-notifications]");
+  await expect(notificationButton).toHaveAttribute(
+    "aria-label",
+    /一部の通知を取得できませんでした/,
+  );
+  await expect(page.locator("[data-admin-notification-count]")).toBeHidden();
+
+  await notificationButton.click();
+  const notificationList = page.locator("[data-admin-notification-list]");
+  await expect(notificationList).toContainText(
+    "一部の通知を取得できませんでした。運営管理者へ連絡してください。",
+  );
+  await expect(notificationList).toContainText("原稿へのコメント");
+  await expect(page.locator("[data-mark-all-notifications-read]")).toBeHidden();
 });
 
 test("ポータルのAtlasez運営アプリにテスト機能であることを表示する", async ({

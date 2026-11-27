@@ -7238,6 +7238,25 @@ type EditorialArchiveRequest = {
   decision_note: string;
 };
 
+const editorialArchiveRequestStorageUnavailable = () =>
+  json(
+    {
+      error:
+        "記事アーカイブ申請は現在利用できません。運営管理者へ連絡してください。",
+      code: "archive_request_storage_unavailable",
+    },
+    503,
+  );
+
+const editorialArchiveRequestTableExists = async (env: Env) => {
+  const result = await env.REPORTS.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+  )
+    .bind("editorial_document_archive_requests")
+    .first<{ present: number }>();
+  return Boolean(result?.present);
+};
+
 type EditorialArchiveEligibility = Pick<
   EditorialArchiveDocument,
   | "status" | "archived_at" | "publication_review_stage" | "published_version_id"
@@ -7266,6 +7285,7 @@ const canReviewPendingEditorialArchiveRequest = async (
   document: Pick<EditorialArchiveDocument, "id" | "subject">,
 ) => {
   if (!canDecideEditorialArchive(scope, document.subject)) return false;
+  if (!(await editorialArchiveRequestTableExists(env))) return false;
   const pendingRequest = await env.REPORTS.prepare(
     "SELECT requested_by FROM editorial_document_archive_requests WHERE document_id=? AND status='pending' LIMIT 1",
   )
@@ -7292,6 +7312,8 @@ async function getEditorialArchiveRequestState(
 ): Promise<Response> {
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
+  if (!(await editorialArchiveRequestTableExists(env)))
+    return editorialArchiveRequestStorageUnavailable();
   const document = await env.REPORTS.prepare(
     `SELECT id,title,subject,status,created_by,updated_at,published_at,published_version_id,
             publication_review_stage,scheduled_publish_at,archived_at,archive_expires_at
@@ -7328,6 +7350,8 @@ async function createEditorialArchiveRequest(
     return json({ error: "この送信元からは受け付けられません。" }, 403);
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
+  if (!(await editorialArchiveRequestTableExists(env)))
+    return editorialArchiveRequestStorageUnavailable();
   const payload = await request.json().catch(() => null) as { note?: unknown; expectedUpdatedAt?: unknown } | null;
   const document = await env.REPORTS.prepare(
     `SELECT id,title,subject,status,created_by,updated_at,published_at,published_version_id,
@@ -7387,6 +7411,8 @@ async function decideEditorialArchiveRequest(
     return json({ error: "この送信元からは受け付けられません。" }, 403);
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
+  if (!(await editorialArchiveRequestTableExists(env)))
+    return editorialArchiveRequestStorageUnavailable();
   const payload = await request.json().catch(() => null) as { requestId?: unknown; decision?: unknown; note?: unknown } | null;
   const decision = payload?.decision === "approved" || payload?.decision === "rejected" ? payload.decision : null;
   if (!decision) return json({ error: "承認または却下を指定してください。" }, 400);
@@ -7466,6 +7492,8 @@ async function withdrawEditorialArchiveRequest(
     return json({ error: "この送信元からは受け付けられません。" }, 403);
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
+  if (!(await editorialArchiveRequestTableExists(env)))
+    return editorialArchiveRequestStorageUnavailable();
   const payload = await request.json().catch(() => null) as { requestId?: unknown } | null;
   const requestId = typeof payload?.requestId === "string" ? payload.requestId.trim() : "";
   const archiveRequest = await env.REPORTS.prepare(
@@ -26181,19 +26209,30 @@ async function adminNotifications(
       ? `EXISTS (SELECT 1 FROM editorial_workflow_roles wr WHERE wr.role='subject-coordinator'
            AND lower(wr.email)=lower(?) AND (wr.subject=d.subject OR wr.subject='*'))`
       : "0=1";
-  const archiveRequestRows = await queryNotificationSource<{
+  type ArchiveNotification = {
     id: string; document_id: string; title: string; status: "pending" | "approved" | "rejected" | "withdrawn";
     requested_by: string; request_note: string; decision_note: string; updated_at: string;
-  }>(
-    `SELECT r.id,r.document_id,d.title,r.status,r.requested_by,r.request_note,r.decision_note,
-            COALESCE(r.decided_at,r.requested_at) AS updated_at
-       FROM editorial_document_archive_requests r
-       JOIN editorial_documents d ON d.id=r.document_id
-      WHERE (r.status='pending' AND ${archiveCoordinatorPredicate})
-         OR (lower(r.requested_by)=lower(?) AND r.status IN ('pending','approved','rejected','withdrawn'))
-      ORDER BY COALESCE(r.decided_at,r.requested_at) DESC`,
-    [...(!broadArchiveApprover && scope.coordinatorSubjects?.length ? [scope.email] : []), scope.email],
-  );
+  };
+  const archiveRequestStorageAvailable =
+    await editorialArchiveRequestTableExists(env);
+  const archiveRequestRows: { results: ArchiveNotification[] } =
+    archiveRequestStorageAvailable
+      ? await queryNotificationSource<ArchiveNotification>(
+          `SELECT r.id,r.document_id,d.title,r.status,r.requested_by,r.request_note,r.decision_note,
+                  COALESCE(r.decided_at,r.requested_at) AS updated_at
+             FROM editorial_document_archive_requests r
+             JOIN editorial_documents d ON d.id=r.document_id
+            WHERE (r.status='pending' AND ${archiveCoordinatorPredicate})
+               OR (lower(r.requested_by)=lower(?) AND r.status IN ('pending','approved','rejected','withdrawn'))
+            ORDER BY COALESCE(r.decided_at,r.requested_at) DESC`,
+          [
+            ...(!broadArchiveApprover && scope.coordinatorSubjects?.length
+              ? [scope.email]
+              : []),
+            scope.email,
+          ],
+        )
+      : { results: [] };
   const sortedNotifications = [
     ...(commentRows.results ?? []).map((item) => ({
       id: `comment-${item.id}`,
@@ -26337,6 +26376,7 @@ async function adminNotifications(
       importance: importantKinds.has(item.kind) ? "important" : "normal",
     })),
     preferences,
+    notificationsUnavailable: !archiveRequestStorageAvailable,
     notificationsTruncated,
     ...(!notificationsTruncated
       ? {
