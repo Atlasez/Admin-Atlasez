@@ -180,6 +180,8 @@ describe("ADMIN staging isolation preflight", () => {
       ATLASEZ_STAGING_MODE: "true",
       ATLASEZ_STAGING_DISCORD_MODE: "test-guild",
       ATLASEZ_STAGING_DISCORD_POLICY_APPROVED: "true",
+      ATLASEZ_PRODUCTION_DISCORD_GUILD_ID: "987654321098765432",
+      ATLASEZ_PRODUCTION_DISCORD_CLIENT_ID: "987654321098765433",
       DISCORD_GUILD_ID: "123456789012345678",
       DISCORD_GUILD_NAME: "Atlasez Staging Test Guild",
       DISCORD_BOT_TOKEN: "synthetic-bot-token",
@@ -206,7 +208,26 @@ describe("ADMIN staging isolation preflight", () => {
     expect(
       isStagingDiscordDisabled({
         ...enabledProfile,
-        DISCORD_GUILD_ID: "1359062450028282017",
+        DISCORD_GUILD_ID: enabledProfile.ATLASEZ_PRODUCTION_DISCORD_GUILD_ID,
+      }),
+    ).toBe(true);
+    expect(
+      isStagingDiscordDisabled({
+        ...enabledProfile,
+        ATLASEZ_PRODUCTION_DISCORD_GUILD_ID: undefined,
+      }),
+    ).toBe(true);
+    expect(
+      isStagingDiscordDisabled({
+        ...enabledProfile,
+        DISCORD_OAUTH_CLIENT_ID:
+          enabledProfile.ATLASEZ_PRODUCTION_DISCORD_CLIENT_ID,
+      }),
+    ).toBe(true);
+    expect(
+      isStagingDiscordDisabled({
+        ...enabledProfile,
+        DISCORD_GUILD_ID: enabledProfile.ATLASEZ_PRODUCTION_DISCORD_CLIENT_ID,
       }),
     ).toBe(true);
     expect(isStagingDiscordDisabled({})).toBe(false);
