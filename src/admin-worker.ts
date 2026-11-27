@@ -65,7 +65,6 @@ import {
   isStagingDiscordDisabled,
 } from "./lib/admin-staging-discord-policy";
 import {
-  isAdminReleaseStagingOrigin,
   isAdminStagingOrigin,
 } from "./lib/admin-staging-origin.mjs";
 import { purgeExpiredPersonalData } from "./lib/personal-data-retention";
@@ -1080,7 +1079,7 @@ async function googleIdentityByEmail(
 }
 
 function isGoogleEmailAllowed(env: Env, email: string) {
-  if (!isAdminReleaseStagingOrigin(env.ADMIN_PUBLIC_ORIGIN)) return true;
+  if (!isAdminStagingOrigin(env.ADMIN_PUBLIC_ORIGIN)) return true;
   const normalized = email.trim().toLowerCase();
   const allowlist = env.ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST ?? "";
   return normalized !== "" && allowlist.toLowerCase().split(/[\s,]+/).includes(normalized);

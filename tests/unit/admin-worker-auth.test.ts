@@ -643,16 +643,26 @@ describe("admin logout contract", () => {
 });
 
 describe("Google OAuth login callback", () => {
+  const legacyOrigin =
+    "https://atlasez-admin-staging.synthetic-account.workers.dev";
   const releaseOrigin =
     "https://atlasez-admin-release-staging.synthetic-account.workers.dev";
+  const stagingOrigins = [legacyOrigin, releaseOrigin];
 
-  it.each([undefined, "different@example.com"])(
-    "rejects an unapproved release staging user before any D1 lookup (%s)",
-    async (allowlist) => {
+  it.each(
+    stagingOrigins.flatMap((origin) =>
+      [undefined, "different@example.com"].map((allowlist) => ({
+        origin,
+        allowlist,
+      })),
+    ),
+  )(
+    "rejects an unapproved staging user before any D1 lookup on $origin ($allowlist)",
+    async ({ origin, allowlist }) => {
       const prepare = vi.fn();
       const oauthEnv = {
         ...env("google-oauth"),
-        ADMIN_PUBLIC_ORIGIN: releaseOrigin,
+        ADMIN_PUBLIC_ORIGIN: origin,
         GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
         GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
         ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST: allowlist,
@@ -673,7 +683,7 @@ describe("Google OAuth login callback", () => {
       );
       try {
         const start = await worker.fetch(
-          new Request(`${releaseOrigin}/auth/google/login`),
+          new Request(`${origin}/auth/google/login`),
           oauthEnv as never,
         );
         const state = new URL(start.headers.get("location")!).searchParams.get(
@@ -681,7 +691,7 @@ describe("Google OAuth login callback", () => {
         )!;
         const callback = await worker.fetch(
           new Request(
-            `${releaseOrigin}/auth/google/callback?code=test-code&state=${state}`,
+            `${origin}/auth/google/callback?code=test-code&state=${state}`,
             {
               headers: {
                 cookie: start.headers.getSetCookie()[0].split(";", 1)[0],
@@ -821,7 +831,7 @@ describe("Google OAuth login callback", () => {
     }
   });
 
-  it.each(["https://admin.example", releaseOrigin])(
+  it.each(["https://admin.example", ...stagingOrigins])(
     "returns to the requested admin page with a valid hashed session on %s",
     async (origin) => {
       const writes: Array<{ query: string; values: unknown[] }> = [];
@@ -832,10 +842,9 @@ describe("Google OAuth login callback", () => {
         ADMIN_AUTH_MODE: "google-oauth",
         ADMIN_PRIMARY_EMAIL: "admin@example.com",
         ADMIN_PUBLIC_ORIGIN: origin,
-        ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST:
-          origin === releaseOrigin
-            ? " reviewer@example.com, ADMIN@example.COM "
-            : undefined,
+        ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST: stagingOrigins.includes(origin)
+          ? " reviewer@example.com, ADMIN@example.COM "
+          : undefined,
         GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
         GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
         REPORTS: {
@@ -1031,7 +1040,7 @@ describe("Google OAuth login callback", () => {
         );
         expect(signedInPage.status).toBe(200);
         expect(await signedInPage.text()).toBe("protected admin page");
-        if (origin === releaseOrigin) {
+        if (stagingOrigins.includes(origin)) {
           const revokedSession = await worker.fetch(
             new Request(`${origin}/api/admin/portal`, {
               headers: { cookie: sessionCookie!.split(";", 1)[0] },
