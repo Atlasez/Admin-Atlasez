@@ -148,7 +148,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
 
         <form class="document-form" data-document-form hidden>
           <input type="hidden" name="documentId" />
-          <div class="document-toolbar-sentinel" data-toolbar-sticky-sentinel aria-hidden="true"></div>
           <section class="document-toolbar" data-document-toolbar>
             <div>
               <div class="document-statuses" aria-label="原稿と公開の状態">
@@ -196,6 +195,27 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
                 <button type="button" class="quiet-action" data-reload-conflicted-document>最新内容を読み込む</button>
               </div>
               <p class="document-version-note" data-document-version-label hidden aria-live="polite"></p>
+            </div>
+          </section>
+
+          <section class="archive-request-panel" data-archive-request-panel aria-label="記事のアーカイブ申請" hidden>
+            <div class="archive-request-copy">
+              <h3>記事のアーカイブ</h3>
+              <p data-archive-request-status aria-live="polite">申請状態を読み込んでいます。</p>
+            </div>
+            <label class="archive-request-note-field" data-archive-request-note-field hidden>
+              申請理由（任意）
+              <textarea data-archive-request-note maxlength="1000" rows="2" placeholder="アーカイブする理由を統括と運営内運営へ伝えます"></textarea>
+            </label>
+            <label class="archive-request-note-field" data-archive-decision-note-field hidden>
+              確認メモ（任意）
+              <textarea data-archive-decision-note maxlength="1000" rows="2" placeholder="承認・却下の理由を申請者へ伝えます"></textarea>
+            </label>
+            <div class="archive-request-actions">
+              <button type="button" class="quiet-action" data-request-archive hidden>アーカイブを申請</button>
+              <button type="button" class="primary-action" data-archive-request-approve hidden>承認してアーカイブ</button>
+              <button type="button" class="quiet-action" data-archive-request-reject hidden>却下</button>
+              <button type="button" class="quiet-action" data-archive-request-withdraw hidden>申請を取り下げる</button>
             </div>
           </section>
 
@@ -1341,6 +1361,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   type CustomMathPreset = { id: string; label: string; group?: string; macros: Record<string, string> };
   type ArticleReference = { id: string; title: string; authors?: string; year?: string; publisher?: string; url?: string; note?: string };
   type PublicationRun = { id: string; state: string; action: "publish" | "unpublish"; attempt: number; pull_request_number?: number | null; pull_request_url?: string | null; branch?: string | null; head_sha?: string | null; merge_sha?: string | null; last_check_at?: string | null; next_attempt_at?: string | null; error_code?: string | null; error_message?: string | null; failure_kind?: string | null; check_name?: string | null; check_url?: string | null; diagnostic_url?: string | null; snapshot_version_id?: string | null; failure_detail?: string | null; failure_step?: string | null; failure_file?: string | null; failure_line?: number | null; failure_column?: number | null; failure_suggestion?: string | null; failure_history?: string; updated_at?: string };
+  type ArchiveRequestRecord = { id: string; status: "pending" | "approved" | "rejected" | "withdrawn"; requested_by: string; requested_at: string; request_note: string; decided_by: string | null; decided_at: string | null; decision_note: string };
+  type ArchiveRequestState = { request: ArchiveRequestRecord | null; canRequest: boolean; canDecide: boolean; canWithdraw: boolean; eligible: boolean; archived: boolean; error?: string };
   type Document = { id: string; current_version_id?: string | null; published_version_id?: string | null; source_article_id: string | null; subject: string; category: string; locale: string; slug: string; title: string; summary: string; concept_id: string; concept_name: string | null; concept_name_en: string | null; concept_is_new: number | boolean; body: string; writing_memo?: string; references?: string | ArticleReference[]; latex_engine: "uplatex" | "pdflatex" | "xelatex" | "lualatex" | "mathjax" | "katex"; status: "draft" | "in-review" | "on-hold" | "approved"; creator_kind?: "person" | "organization"; created_by: string; updated_by: string; created_at: string; updated_at: string; reviewed_at: string | null; published_at: string | null; archived_at?: string | null; scheduled_publish_at?: string | null; publication_review_stage?: "subject-coordinator" | "project-leader" | null; publication_review_round?: number; publication_pr_number?: number | null; publication_pr_url?: string | null; publication_branch?: string | null; publication_action?: "publish" | "unpublish" | null; publication_requested_at?: string | null; publication_run?: PublicationRun | null; locked_ranges?: string | LockedRange[]; created_by_display_name?: string; updated_by_display_name?: string; created_by_avatar_url?: string; updated_by_avatar_url?: string };
   type SelectedRange = { start: number | null; end: number | null; text: string; source: "本文" | "プレビュー" | "記事" };
   type CommentSelection = { id?: string; position?: number; selection_start: number | null; selection_end: number | null; selection_text: string };
@@ -1385,38 +1407,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     let publicCatalogReady: Promise<void> = Promise.resolve();
     const externalStatementIds = [...new Set(articles.flatMap((article) => [...article.body.matchAll(/\{#([A-Za-z][A-Za-z0-9_-]*)\}/g)].map((match) => match[1].toLowerCase())))];
     const form = root.querySelector<HTMLFormElement>("[data-document-form]")!;
-    const documentToolbar = form.querySelector<HTMLElement>("[data-document-toolbar]");
-    const toolbarStickySentinel = form.querySelector<HTMLElement>("[data-toolbar-sticky-sentinel]");
-    if (documentToolbar && toolbarStickySentinel && "IntersectionObserver" in window) {
-      const toolbarCompactObserver = new IntersectionObserver(([entry]) => {
-        const compact = !entry.isIntersecting;
-        if (documentToolbar.hasAttribute("data-compact") === compact) return;
-        const expandedHeight = compact
-          ? documentToolbar.getBoundingClientRect().height
-          : 0;
-        documentToolbar.toggleAttribute("data-compact", compact);
-        if (!compact) {
-          toolbarStickySentinel.style.height = "0px";
-          return;
-        }
-        const compactHeight = documentToolbar.getBoundingClientRect().height;
-        toolbarStickySentinel.style.height = `${Math.max(0, expandedHeight - compactHeight)}px`;
-      });
-      toolbarCompactObserver.observe(toolbarStickySentinel);
-    }
-    documentToolbar?.addEventListener("focusin", () => root.removeAttribute("data-toolbar-hidden"));
-    let previousToolbarScrollY = window.scrollY;
-    window.addEventListener("scroll", () => {
-      const currentScrollY = window.scrollY;
-      const scrollDelta = currentScrollY - previousToolbarScrollY;
-      previousToolbarScrollY = currentScrollY;
-      if (!root.hasAttribute("data-sticky-toolbar")) return;
-      if (currentScrollY <= 8 || scrollDelta < -2) {
-        root.removeAttribute("data-toolbar-hidden");
-      } else if (scrollDelta > 2 && !documentToolbar?.contains(document.activeElement)) {
-        root.setAttribute("data-toolbar-hidden", "");
-      }
-    }, { passive: true });
     const articleReportCount = root.querySelector<HTMLElement>("[data-article-report-count]")!;
     const articleReportFeedback = root.querySelector<HTMLElement>("[data-article-report-feedback]")!;
     const articleReportList = root.querySelector<HTMLElement>("[data-article-report-list]")!;
@@ -1517,6 +1507,17 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const selectionActionText = root.querySelector<HTMLElement>("[data-selection-action-text]")!;
     const selectedRanges = root.querySelector<HTMLElement>("[data-selected-ranges]")!;
     const saveMessage = root.querySelector<HTMLOutputElement>("[data-save-message]")!;
+    const archiveRequestPanel = root.querySelector<HTMLElement>("[data-archive-request-panel]")!;
+    const archiveRequestStatus = root.querySelector<HTMLElement>("[data-archive-request-status]")!;
+    const archiveRequestNoteField = root.querySelector<HTMLElement>("[data-archive-request-note-field]")!;
+    const archiveRequestNote = root.querySelector<HTMLTextAreaElement>("[data-archive-request-note]")!;
+    const archiveDecisionNoteField = root.querySelector<HTMLElement>("[data-archive-decision-note-field]")!;
+    const archiveDecisionNote = root.querySelector<HTMLTextAreaElement>("[data-archive-decision-note]")!;
+    const requestArchiveButton = root.querySelector<HTMLButtonElement>("[data-request-archive]")!;
+    const approveArchiveRequestButton = root.querySelector<HTMLButtonElement>("[data-archive-request-approve]")!;
+    const rejectArchiveRequestButton = root.querySelector<HTMLButtonElement>("[data-archive-request-reject]")!;
+    const withdrawArchiveRequestButton = root.querySelector<HTMLButtonElement>("[data-archive-request-withdraw]")!;
+    let currentArchiveRequest: ArchiveRequestRecord | null = null;
     const documentConflict = root.querySelector<HTMLElement>("[data-document-conflict]")!;
     const documentConflictMessage = root.querySelector<HTMLElement>("[data-document-conflict-message]")!;
     const reloadConflictedDocumentButton = root.querySelector<HTMLButtonElement>("[data-reload-conflicted-document]")!;
@@ -2226,6 +2227,67 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     const setUnsavedChanges = (dirty: boolean) => {
       hasUnsavedChanges = dirty;
       root.dataset.unsavedChanges = String(dirty);
+      requestArchiveButton.disabled = dirty;
+    };
+    const renderArchiveRequestState = (archiveState: ArchiveRequestState) => {
+      const request = archiveState.request;
+      currentArchiveRequest = request;
+      const isPending = request?.status === "pending";
+      archiveRequestPanel.hidden = false;
+      archiveRequestNoteField.hidden = !archiveState.canRequest;
+      archiveDecisionNoteField.hidden = !(isPending && archiveState.canDecide);
+      requestArchiveButton.hidden = !archiveState.canRequest;
+      requestArchiveButton.disabled = hasUnsavedChanges;
+      approveArchiveRequestButton.hidden = !(isPending && archiveState.canDecide);
+      approveArchiveRequestButton.disabled = false;
+      rejectArchiveRequestButton.hidden = !(isPending && archiveState.canDecide);
+      rejectArchiveRequestButton.disabled = false;
+      withdrawArchiveRequestButton.hidden = !(isPending && archiveState.canWithdraw);
+      withdrawArchiveRequestButton.disabled = false;
+      if (archiveState.error) {
+        archiveRequestStatus.textContent = archiveState.error;
+        return;
+      }
+      if (isPending) {
+        const requestedAt = request.requested_at
+          ? new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" }).format(new Date(request.requested_at))
+          : "日時不明";
+        archiveRequestStatus.textContent = `承認待ち（申請者：${request.requested_by}・${requestedAt}）${request.request_note ? `　理由：${request.request_note}` : ""}`;
+      } else if (request?.status === "approved") {
+        archiveRequestStatus.textContent = "アーカイブが承認されました。記事はアーカイブ済みです。";
+      } else if (request?.status === "rejected") {
+        archiveRequestStatus.textContent = `前回の申請は却下されました。${request.decision_note ? `理由：${request.decision_note}` : "再申請できます。"}`;
+      } else if (request?.status === "withdrawn") {
+        archiveRequestStatus.textContent = "前回の申請は取り下げられました。";
+      } else if (archiveState.archived) {
+        archiveRequestStatus.textContent = "この記事はアーカイブ済みです。復元は記事一覧から行えます。";
+      } else if (!archiveState.eligible) {
+        archiveRequestStatus.textContent = "アーカイブできるのは公開前の下書き・フィードバック中の記事です。公開審査中・公開済み・公開予約中の記事は申請できません。";
+      } else {
+        archiveRequestStatus.textContent = "申請すると、統括と運営内運営へ通知されます。承認後も30日間は記事一覧から復元できます。";
+      }
+    };
+    const loadArchiveRequest = async (documentId: string) => {
+      archiveRequestNote.value = "";
+      archiveDecisionNote.value = "";
+      if (!documentId) {
+        currentArchiveRequest = null;
+        archiveRequestPanel.hidden = true;
+        return;
+      }
+      currentArchiveRequest = null;
+      archiveRequestPanel.hidden = false;
+      archiveRequestStatus.textContent = "アーカイブ申請状態を読み込んでいます。";
+      try {
+        const response = await fetch(`/api/admin/editor/documents/${encodeURIComponent(documentId)}/archive-request`, { credentials: "same-origin", cache: "no-store" });
+        const data = await read<ArchiveRequestState>(response);
+        if (!response.ok) throw new Error(data.error ?? "アーカイブ申請状態を読み込めませんでした。");
+        if ((form.elements.namedItem("documentId") as HTMLInputElement).value !== documentId) return;
+        renderArchiveRequestState(data);
+      } catch (error) {
+        if ((form.elements.namedItem("documentId") as HTMLInputElement).value !== documentId) return;
+        renderArchiveRequestState({ request: null, canRequest: false, canDecide: false, canWithdraw: false, eligible: false, archived: false, error: error instanceof Error ? error.message : "アーカイブ申請状態を読み込めませんでした。" });
+      }
     };
     writingMemo.addEventListener("input", () => {
       persistedWritingMemo = writingMemo.value;
@@ -4544,12 +4606,12 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
       documentConflict.hidden = true;
       documentConflict.dataset.documentId = item.id;
       renderDocumentProvenance(item);
-      const reviewOnly = false;
-      form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input, select, textarea").forEach((field) => { if (field.name !== "documentId" && field.name !== "status") field.disabled = reviewOnly; });
+      const reviewOnly = !isManager && !assignedSubjects.includes(item.subject);
+      form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input, select, textarea").forEach((field) => { if (field.name !== "documentId") field.disabled = reviewOnly && !field.matches("[data-archive-request-note], [data-archive-decision-note]"); });
       syncMetadataSummary(); metadata.open = !item.id || metadataMissingCount() > 0;
       setDocumentVersionLabel(item);
       syncPublishedVersionControls();
-      heading.textContent = item.title || "新規原稿"; state.textContent = statusLabel[item.status]; setPublicationState(item); monitorPublicationRun(item); updateWorkflow(item.status, Boolean(item.published_at), item.publication_review_stage, hasUnpublishedPublicationChanges(item)); currentComments = commentsForDocument; renderComments(); renderHeadingOutline(); void renderPreview(); void loadMediaAssets(item.id); updatePublicationActions(item); completeWritingButton.hidden = true; publicationReviewButton.hidden = true; saveMessage.value = item.id ? "保存済み" : "未保存の新規原稿"; setUnsavedChanges(false); connectCollaboration(item.id); if (item.id) void loadPublicationReview(item.id, item).catch((error: unknown) => { saveMessage.value = error instanceof Error ? error.message : "公開審査状態を読み込めませんでした。"; });
+      heading.textContent = item.title || "新規原稿"; state.textContent = statusLabel[item.status]; setPublicationState(item); monitorPublicationRun(item); updateWorkflow(item.status, Boolean(item.published_at), item.publication_review_stage, hasUnpublishedPublicationChanges(item)); currentComments = commentsForDocument; renderComments(); renderHeadingOutline(); void renderPreview(); void loadMediaAssets(item.id); updatePublicationActions(item); completeWritingButton.hidden = true; publicationReviewButton.hidden = true; saveMessage.value = item.id ? "保存済み" : "未保存の新規原稿"; setUnsavedChanges(false); connectCollaboration(item.id); if (item.id) { void loadArchiveRequest(item.id); void loadPublicationReview(item.id, item).catch((error: unknown) => { saveMessage.value = error instanceof Error ? error.message : "公開審査状態を読み込めませんでした。"; }); } else { void loadArchiveRequest(""); }
     };
     const emptyDocument = (seed?: DraftSeed) => {
       activeDocumentId = "";
@@ -5358,6 +5420,38 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     publicationReviewButton.addEventListener("click", () => { publicationReviewNote.value = ""; publicationReviewMessage.textContent = ""; if (!publicationReviewDialog.open) publicationReviewDialog.showModal(); });
     publicationReviewCancel.addEventListener("click", () => publicationReviewDialog.close());
     publicationReviewForm.addEventListener("submit", async (event) => { event.preventDefault(); const submitter = (event.submitter as HTMLButtonElement | null)?.value; if (submitter !== "approve" && submitter !== "reject") return; const id = (form.elements.namedItem("documentId") as HTMLInputElement).value; const button = event.submitter as HTMLButtonElement; button.disabled = true; publicationReviewMessage.textContent = ""; try { const response = await fetch(`/api/admin/editor/documents/${id}/publication-review`, { method: "PATCH", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ decision: submitter === "approve" ? "approved" : "rejected", note: publicationReviewNote.value }) }); const data = await read<{ error?: string; status?: string }>(response); if (!response.ok) throw new Error(data.error ?? "公開審査を処理できませんでした。"); publicationReviewDialog.close(); await openDocument(id); saveMessage.value = submitter === "approve" ? (data.status === "approved" ? "公開審査が完了しました。公開または公開予約へ進めます。" : "承認しました。次の審査担当へ通知しました。") : "差し戻しました。フィードバック中へ戻しました。"; } catch (error) { const message = error instanceof Error ? error.message : "公開審査を処理できませんでした。"; if (publicationReviewDialog.open) publicationReviewMessage.textContent = message; else saveMessage.value = message; } finally { button.disabled = false; } });
+    const archiveRequestButtons = [requestArchiveButton, approveArchiveRequestButton, rejectArchiveRequestButton, withdrawArchiveRequestButton];
+    const submitArchiveRequestAction = async (method: "POST" | "PATCH" | "DELETE", payload: Record<string, unknown>, successMessage: string) => {
+      const id = (form.elements.namedItem("documentId") as HTMLInputElement).value;
+      if (!id || archiveRequestButtons.some((button) => button.disabled)) return;
+      archiveRequestButtons.forEach((button) => { button.disabled = true; });
+      try {
+        const response = await fetch(`/api/admin/editor/documents/${encodeURIComponent(id)}/archive-request`, { method, credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+        const data = await read<{ error?: string }>(response);
+        if (!response.ok) throw new Error(data.error ?? "アーカイブ申請を処理できませんでした。");
+        await openDocument(id);
+        saveMessage.value = successMessage;
+      } catch (error) {
+        saveMessage.value = error instanceof Error ? error.message : "アーカイブ申請を処理できませんでした。";
+        archiveRequestButtons.forEach((button) => { button.disabled = false; });
+      }
+    };
+    requestArchiveButton.addEventListener("click", () => {
+      if (hasPendingDocumentChanges()) { saveMessage.value = "先に変更を保存してください。"; return; }
+      if (!window.confirm("この記事のアーカイブを統括と運営内運営へ申請しますか？承認後30日間は復元できます。")) return;
+      void submitArchiveRequestAction("POST", { note: archiveRequestNote.value, expectedUpdatedAt: persistedDocumentUpdatedAt }, "アーカイブを申請しました。統括と運営内運営へ通知しました。");
+    });
+    approveArchiveRequestButton.addEventListener("click", () => {
+      if (!window.confirm("この記事をアーカイブしますか？承認後30日間は記事一覧から復元できます。")) return;
+      void submitArchiveRequestAction("PATCH", { requestId: currentArchiveRequest?.id, decision: "approved", note: archiveDecisionNote.value }, "アーカイブ申請を承認しました。記事は30日間復元できます。");
+    });
+    rejectArchiveRequestButton.addEventListener("click", () => {
+      void submitArchiveRequestAction("PATCH", { requestId: currentArchiveRequest?.id, decision: "rejected", note: archiveDecisionNote.value }, "アーカイブ申請を却下しました。申請者へ通知しました。");
+    });
+    withdrawArchiveRequestButton.addEventListener("click", () => {
+      if (!window.confirm("このアーカイブ申請を取り下げますか？")) return;
+      void submitArchiveRequestAction("DELETE", { requestId: currentArchiveRequest?.id }, "アーカイブ申請を取り下げました。");
+    });
     const hasPendingDocumentChanges = () => hasUnsavedChanges || (
       Boolean(persistedDocumentPayloadFingerprint) &&
       documentSaveFingerprint(documentPayload()) !== persistedDocumentPayloadFingerprint
@@ -5613,9 +5707,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .collaboration-status[hidden] { display:none; }
   .collaboration-status > span:not(.collaboration-indicator) { color:var(--muted); font-size:.66rem; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .collaboration-indicator { background:#6ba6ff; border-radius:50%; flex:0 0 .45rem; height:.45rem; width:.45rem; }
-  .collaboration-status[data-state="connecting"] .collaboration-indicator,
-  .collaboration-status[data-state="syncing"] .collaboration-indicator,
-  .collaboration-status[data-state="reconnecting"] .collaboration-indicator { animation:collaboration-pulse 1s ease-in-out infinite alternate; }
   .collaboration-status[data-state="syncing"] .collaboration-indicator { background:#ac8cf4; }
   .collaboration-status[data-state="disconnected"] .collaboration-indicator,
   .collaboration-status[data-state="save-error"] .collaboration-indicator { background:#e27676; }
@@ -5629,8 +5720,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .collaboration-retry { background:transparent; border:1px solid var(--border); border-radius:.3rem; color:var(--text); cursor:pointer; font-size:.6rem; font-weight:800; line-height:1.2; padding:.16rem .34rem; white-space:nowrap; }
   .collaboration-retry:hover { background:var(--surface-alt); border-color:var(--accent); }
   .collaboration-retry:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
-  @keyframes collaboration-pulse { from { opacity:.35; transform:scale(.78); } to { opacity:1; transform:scale(1); } }
-  @media (prefers-reduced-motion:reduce) { .collaboration-status .collaboration-indicator { animation:none!important; } }
   .editor-workspace .writing-area .locked-range-markup mark.locked-range-mark { background-color:#fee2e2 !important; border-left:3px solid #ef4444 !important; border-radius:.16em; box-shadow:inset 0 0 0 1px rgb(239 68 68 / .2); color:inherit; padding:.03em .1em; }
   .editor-workspace .writing-area .body-editor-surface .body-codemirror .cm-selectionBackground,
   .editor-workspace .writing-area .body-editor-surface .body-codemirror .cm-line::selection,
@@ -5677,6 +5766,16 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   .revision-workspace h3 { margin: 0; }
   .revision-workspace > p { color: var(--muted); margin: .35rem 0 .75rem; }
   .feedback-request-history { border-top: 1px solid var(--border); margin-top: 1rem; padding-top: 1rem; }
+  .archive-request-panel { align-items: start; background: var(--surface-alt); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: .45rem; display: grid; gap: .65rem 1rem; grid-template-columns: minmax(0, 1fr) auto; margin-top: .75rem; padding: .7rem .8rem; }
+  .archive-request-panel[hidden] { display: none; }
+  .archive-request-copy h3 { font-size: .85rem; margin: 0; }
+  .archive-request-copy p { color: var(--muted); font-size: .75rem; line-height: 1.5; margin: .25rem 0 0; overflow-wrap: anywhere; }
+  .archive-request-note-field { color: var(--muted); display: grid; font-size: .72rem; font-weight: 800; gap: .25rem; grid-column: 1 / -1; }
+  .archive-request-note-field[hidden] { display: none; }
+  .archive-request-note-field textarea { box-sizing: border-box; font: inherit; font-size: .75rem; min-height: 3rem; padding: .45rem .55rem; resize: vertical; width: 100%; }
+  .archive-request-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .4rem; justify-content: end; }
+  .archive-request-actions button { font-size: .72rem; min-height: 2rem; padding: .3rem .55rem; width: auto; }
+  .archive-request-actions button[hidden] { display: none; }
   .feedback-request-history > summary { cursor: pointer; font-size: .85rem; font-weight: 800; list-style: none; }
   .feedback-request-history > summary::-webkit-details-marker { display: none; }
   .feedback-request-history > summary::before { color: var(--accent); content: "▶"; display: inline-block; font-size: .7em; margin-right: .45rem; transition: transform .15s ease; }
@@ -6075,12 +6174,6 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     gap: .3rem .75rem;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
     padding: .32rem .55rem;
-    transition: transform .16s ease;
-  }
-
-  .editor-workspace[data-toolbar-hidden] .document-toolbar[data-compact]:not(:has([data-publication-run][data-state="failed"], [data-publication-run][data-state="needs_operator"], .document-conflict:not([hidden]))) {
-    pointer-events: none;
-    transform: translateY(calc(-100% + .18rem));
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -6354,6 +6447,8 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
   }
 
   @media (max-width: 700px) {
+    .archive-request-panel { grid-template-columns: minmax(0, 1fr); }
+    .archive-request-actions { justify-content: start; }
     .editor-workspace .document-statuses > .document-status-pill {
       flex: 1 1 auto;
     }

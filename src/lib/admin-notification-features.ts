@@ -5,6 +5,7 @@ export const notificationKinds = [
   "application",
   "publication-review-returned",
   "publication-review",
+  "article-archive-request",
   "publication-ready",
   "review",
   "feedback-request",
@@ -18,6 +19,7 @@ export const importantKinds = new Set<string>([
   "application",
   "publication-review-returned",
   "publication-review",
+  "article-archive-request",
   "review",
   "feedback-request",
   "task-request",
@@ -32,6 +34,7 @@ export const notificationKindLabels: Record<
   application: "応募",
   "publication-review-returned": "公開審査から差し戻し",
   "publication-review": "公開審査",
+  "article-archive-request": "記事アーカイブ申請",
   "publication-ready": "公開準備完了",
   review: "フィードバック依頼",
   "feedback-request": "フィードバック依頼",
@@ -166,6 +169,12 @@ export async function loadGlobalNotificationCutoff(
   return { available: true, clearedBefore: row.cleared_before };
 }
 export function notificationSourceMetadata(sql: string) {
+  if (sql.includes("FROM editorial_document_archive_requests"))
+    return {
+      id: "'article-archive-request-' || s.id || '-' || s.status || '-' || s.updated_at",
+      time: "updated_at",
+      kind: "'article-archive-request'",
+    };
   if (sql.includes("FROM editorial_task_reminders"))
     return {
       id: "'task-reminder-rule-' || s.reminder_id || '-' || s.remind_at",
@@ -296,7 +305,7 @@ export async function handleNotificationFeatures(
   if (path.endsWith("/snooze") && request.method === "POST") {
     const id = typeof payload.id === "string" ? payload.id : "";
     if (
-      !/^(comment|mention|approved|published|publication-ready|review|publication-review|publication-review-returned|application|feedback-request|task-request|task-reminder|task-reminder-rule)-[a-zA-Z0-9:._+\-]{8,}$/.test(
+      !/^(comment|mention|approved|published|publication-ready|review|publication-review|publication-review-returned|article-archive-request|application|feedback-request|task-request|task-reminder|task-reminder-rule)-[a-zA-Z0-9:._+\-]{8,}$/.test(
         id,
       ) ||
       id.length > 512
