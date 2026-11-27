@@ -9,6 +9,7 @@
 - 最新headのGitHub CI run [45995862329](https://github.com/Atlasez/Admin-Atlasez/actions/runs/45995862329) は成功。単体テスト、build、E2E、アクセシビリティ、Lighthouseを含む。
 - ローカル検証はVitest 88 files / 800 tests、astro check、lint、format、deployment config、staging template、ADMIN build、build-info、Wrangler dry-runが成功。ローカルPlaywright browserの取得はHTTP 403で実行できず、E2EはGitHub CIで確認した。
 - staging read-only確認では、配信WorkerはPR #649のheadではなく以前の候補。専用D1のmigration ledgerは0140〜0143で、mainの0144は未適用。専用OAuth client/secretは登録済みだが、test-user allowlistは未設定。Resend/Discord credentialsも未設定。
+- 個人情報保持のOPSD-03は未承認。180日保持は候補で、本番方針ではない。定期処理も `deleteTerminalApplications: false` で実行し、終端応募の自動削除を停止している。保持方針・公開説明・backup上の削除時期が合うまで有効化しない。
 - 実stagingのrole別操作、通知到達、backup復元、本番D1 ledger再確認、本番migration/deploy、実利用者受入は未完了。
 
 ## リリースゲート
