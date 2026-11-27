@@ -5,8 +5,8 @@
 ## 現在の状況
 
 - mainには記事アーカイブの承認フローが含まれる。メンバー受入候補は別系統の記事削除フローと分離している。
-- main基準の受入候補はPR [#649](https://github.com/Atlasez/Admin-Atlasez/pull/649)。最新headは `2e11a892a1da2f9a266a6bdc64fa1390e98014f3`、main baseは `2b407b4374620cebd1e76f8eaa93355ae5e75ce8`。独立レビュー待ち。
-- 最新headのCI run [46012638173](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46012638173) は確認時点で実行中。後続の記録を最新headに照合してから完了扱いにする。
+- main基準の受入候補はPR [#649](https://github.com/Atlasez/Admin-Atlasez/pull/649)。main baseは `2b407b4374620cebd1e76f8eaa93355ae5e75ce8`。独立レビュー待ち。
+- コードを含む直近検証済みheadは `2e11a892a1da2f9a266a6bdc64fa1390e98014f3`。CI run [46012638173](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46012638173) はsuccess。後続は受入文書のみのcommitだが、その最終headに対するworkflow/check statusは未確認。
 - Cloudflareの読み取り専用確認で、staging WorkerはPRの作業ブランチではなく `codex/release-staging-647` に接続していた。現在のBuild settingsのSHAガードは `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718`、確認した失敗Build画面のコマンドは `f7a3d4edf70d4a0f8736f4d1b4b12d9f8011ef4d` を要求していた。Buildログはコマンド失敗までで、cloneされた実SHAは確認できない。PR headとの一致も未確認。staging配信を止め、この設定差をレビュー後に解消する。
 - 同Workerの設定ではstaging用OAuth secretが登録済み。synthetic test-user allowlistは未設定。メール/Discord deliveryはdisabled、Resend/Discord credentialsは未設定、Cron triggerは未設定。画面上のD1 bindingはstaging reports専用。secret値は記録しない。
 - 以前のread-only migration ledger確認では専用D1が0140〜0143、mainの0144は未適用。本番・stagingともmigration前に適用時点のledgerを再取得する。
