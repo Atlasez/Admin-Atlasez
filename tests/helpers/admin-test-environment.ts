@@ -109,10 +109,11 @@ export function createAdminTestEnvironment() {
     email: string,
     body?: unknown,
     origin = "https://admin.atlasez.test",
+    method = body === undefined ? "GET" : "POST",
   ) =>
     worker.fetch(
       new Request(`https://admin.atlasez.test${path}`, {
-        method: body === undefined ? "GET" : "POST",
+        method,
         headers: {
           cookie: `atlasez_admin_session=${session(email)}`,
           origin,

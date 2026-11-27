@@ -2440,6 +2440,7 @@ type AdminAuditAction =
   | "article_archive_approved"
   | "article_archive_rejected"
   | "article_archive_request_withdrawn"
+  | "article_archive_purged"
   | "article_approved"
   | "article_published"
   | "article_unpublished"
@@ -2487,6 +2488,7 @@ const adminAuditActionLabel = (action: AdminAuditAction | string) => ({
   article_archive_approved: "記事のアーカイブを承認",
   article_archive_rejected: "記事のアーカイブを却下",
   article_archive_request_withdrawn: "記事のアーカイブ申請を取り下げ",
+  article_archive_purged: "ゴミ箱の記事を完全削除",
   article_approved: "記事を承認",
   article_published: "記事を公開",
   article_unpublished: "記事の公開を取り消し",
@@ -6967,16 +6969,18 @@ async function listEditorialDocuments(
   const scope = await getAdminScope(request, env);
   if (isResponse(scope)) return scope;
   const searchParams = new URL(request.url).searchParams;
+  const archivedOnly = searchParams.get("archivedOnly") === "1";
   const filters: string[] = [];
   const values: unknown[] = [];
-  if (!scope.allSubjects) {
+  if (!scope.allSubjects && !(archivedOnly && (scope.isAtlasOperationsManager || scope.coordinatorSubjects?.includes("*")))) {
     const coordinatorSubjects = (scope.coordinatorSubjects ?? []).filter(
       (subject) => subject !== "*",
     );
     if (
       !scope.subjects.length &&
       !coordinatorSubjects.length &&
-      !scope.isProjectLeader
+      !scope.isProjectLeader &&
+      !archivedOnly
     )
       return json({
         documents: [],
@@ -6987,8 +6991,10 @@ async function listEditorialDocuments(
     const subjectFilter = subjectValues.length ? `d.subject IN (${subjectValues.map(() => "?").join(", ")})` : "0";
     // 分野統括者は担当分野の原稿だけを一覧できる。担当外の分野統括審査を
     // 無条件で追加すると、一覧には出るのに本文APIで403になる不整合が起きる。
-    filters.push(`(${subjectFilter} OR (publication_review_stage='project-leader' AND ? = 1))`);
-    values.push(...subjectValues, scope.isProjectLeader ? 1 : 0);
+    filters.push(archivedOnly
+      ? `(${subjectFilter} OR lower(d.created_by)=lower(?))`
+      : `(${subjectFilter} OR (publication_review_stage='project-leader' AND ? = 1))`);
+    values.push(...subjectValues, archivedOnly ? scope.email : scope.isProjectLeader ? 1 : 0);
   }
   const requestedSubject = searchParams.get("subject")?.trim();
   if (requestedSubject) {
@@ -6996,7 +7002,8 @@ async function listEditorialDocuments(
     values.push(requestedSubject);
   }
   const includeArchived = searchParams.get("includeArchived") === "1";
-  if (!includeArchived) filters.push("d.archived_at IS NULL");
+  if (archivedOnly) filters.push("d.archived_at IS NOT NULL");
+  else if (!includeArchived) filters.push("d.archived_at IS NULL");
   // Keep the first page small enough for Cloudflare's Worker CPU budget. The
   // article index can load additional pages explicitly, so a smaller default
   // does not reduce coverage while avoiding 503s when the D1 result contains
@@ -7109,6 +7116,8 @@ async function listEditorialDocuments(
   return json({
     documents: documentRows.map((document) => ({
       ...document,
+      canRestoreArchive: Boolean(document.archived_at && canRestoreEditorialArchive(scope, document)),
+      canPurgeArchive: Boolean(document.archived_at && canPurgeEditorialArchive(scope)),
       reviewer_email: reviewerByDocument.get(document.id) ?? null,
       active_editors: activeEditorsByDocument.get(document.id) ?? [],
     })),
@@ -7131,6 +7140,18 @@ async function listEditorialDocuments(
 const EDITORIAL_ARCHIVE_DAYS = 30;
 const editorialArchiveExpiry = (now: Date) =>
   new Date(now.getTime() + EDITORIAL_ARCHIVE_DAYS * 24 * 60 * 60 * 1_000).toISOString();
+
+const canPurgeEditorialArchive = (scope: AdminScope) =>
+  Boolean(scope.isManager || scope.isAtlasOperationsManager);
+
+const canRestoreEditorialArchive = (
+  scope: AdminScope,
+  document: Pick<EditorialDocument, "created_by" | "subject">,
+) =>
+  canPurgeEditorialArchive(scope) ||
+  canCoordinateSubject(scope, document.subject) ||
+  canEditSubject(scope, document.subject) ||
+  document.created_by.toLowerCase() === scope.email.toLowerCase();
 
 async function updateEditorialDocumentArchive(
   request: Request,
@@ -7159,7 +7180,7 @@ async function updateEditorialDocumentArchive(
       { error: "アーカイブできるのは公開前の下書き・フィードバック中の記事です。公開審査中・公開済みの記事はアーカイブできません。" },
       400,
     );
-  if (!scope.isManager && document.created_by.toLowerCase() !== scope.email.toLowerCase() && !canEditSubject(scope, document.subject))
+  if (!canRestoreEditorialArchive(scope, document))
     return json({ error: "この原稿をアーカイブする権限がありません。" }, 403);
   if (archive)
     return json({ error: "記事のアーカイブは編集画面から承認申請してください。" }, 409);
@@ -7170,9 +7191,9 @@ async function updateEditorialDocumentArchive(
       return json({ error: `アーカイブ期限（${EDITORIAL_ARCHIVE_DAYS}日）を過ぎたため復元できません。` }, 410);
     const now = new Date().toISOString();
     const result = await env.REPORTS.prepare(
-      "UPDATE editorial_documents SET archived_at = NULL, archived_by = NULL, archive_expires_at = NULL, updated_at = ?, updated_by = ? WHERE id = ? AND archived_at = ? AND status IN ('draft', 'in-review') AND published_version_id IS NULL AND published_at IS NULL AND scheduled_publish_at IS NULL AND publication_review_stage IS NULL",
+      "UPDATE editorial_documents SET archived_at = NULL, archived_by = NULL, archive_expires_at = NULL, updated_at = ?, updated_by = ? WHERE id = ? AND archived_at = ? AND (archive_expires_at IS NULL OR archive_expires_at > ?) AND status IN ('draft', 'in-review') AND published_version_id IS NULL AND published_at IS NULL AND scheduled_publish_at IS NULL AND publication_review_stage IS NULL",
     )
-      .bind(now, scope.email, documentId, document.archived_at)
+      .bind(now, scope.email, documentId, document.archived_at, now)
       .run();
     if (Number(result.meta?.changes ?? 0) !== 1)
       return json({ error: "原稿の状態が変わりました。再読み込みしてから復元してください。" }, 409);
@@ -7200,6 +7221,79 @@ type EditorialArchiveRequest = {
   decided_at: string | null;
   decision_note: string;
 };
+
+// Check the publication boundary again in the DELETE. A stale page or a
+// concurrent restoration must not turn an ordinary draft into a purge target.
+const editorialArchivePurgeCondition = `
+  archived_at IS NOT NULL AND status IN ('draft', 'in-review')
+  AND published_at IS NULL AND published_version_id IS NULL
+  AND publication_review_stage IS NULL AND scheduled_publish_at IS NULL
+  AND scheduled_publish_claimed_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM editorial_publication_runs run WHERE run.document_id=editorial_documents.id)
+  AND NOT EXISTS (SELECT 1 FROM editorial_article_catalog catalog WHERE catalog.document_id=editorial_documents.id)
+`;
+const editorialArchiveAutoPurgeCondition = `
+  archive_expires_at <= ?
+  AND EXISTS (
+    SELECT 1 FROM editorial_document_archive_requests request
+    WHERE request.document_id=editorial_documents.id
+      AND request.status='approved' AND request.decided_at=editorial_documents.archived_at
+  )
+`;
+
+async function purgeEditorialArchive(
+  env: Env,
+  actor: string,
+  document: Pick<EditorialArchiveDocument, "id" | "archived_at">,
+  cutoff?: string,
+) {
+  const reason = cutoff ? "expired" : "manual";
+  const deleted = await env.REPORTS.batch([
+    env.REPORTS.prepare(
+      `DELETE FROM editorial_documents WHERE id=? AND archived_at=?
+       AND ${editorialArchivePurgeCondition}
+       ${cutoff ? `AND ${editorialArchiveAutoPurgeCondition}` : ""}`,
+    ).bind(document.id, document.archived_at, ...(cutoff ? [cutoff] : [])),
+    adminAuditStatement(env, actor, "article_archive_purged", "article", document.id, "", "ゴミ箱の記事を完全削除", { reason }, true),
+    env.REPORTS.prepare(
+      "DELETE FROM editorial_document_archive_requests WHERE document_id=? AND changes()=1",
+    ).bind(document.id),
+  ]);
+  return Number(deleted[0]?.meta?.changes ?? 0) === 1;
+}
+
+async function deleteEditorialArchive(request: Request, env: Env, documentId: string) {
+  if (!isSameOrigin(request))
+    return json({ error: "この送信元からは受け付けられません。" }, 403);
+  const scope = await getAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  if (!canPurgeEditorialArchive(scope))
+    return json({ error: "ゴミ箱の記事を完全削除する権限がありません。" }, 403);
+  const payload = await request.json().catch(() => null) as { archivedAt?: unknown } | null;
+  if (typeof payload?.archivedAt !== "string" || !payload.archivedAt)
+    return json({ error: "ゴミ箱を再読み込みしてから削除してください。" }, 400);
+  if (!(await purgeEditorialArchive(env, scope.email, { id: documentId, archived_at: payload.archivedAt })))
+    return json({ error: "原稿の状態が変わったか、公開履歴があるため完全削除できません。" }, 409);
+  return json({ ok: true });
+}
+
+async function purgeExpiredEditorialArchives(env: Env, report: ScheduledJobReporter) {
+  const now = new Date().toISOString();
+  const due = await env.REPORTS.prepare(
+    `SELECT id, archived_at FROM editorial_documents
+     WHERE ${editorialArchivePurgeCondition} AND ${editorialArchiveAutoPurgeCondition}
+     ORDER BY archive_expires_at, id LIMIT 20`,
+  ).bind(now).all<Pick<EditorialArchiveDocument, "id" | "archived_at">>();
+  let failed = 0;
+  for (const document of due.results ?? []) {
+    try {
+      await purgeEditorialArchive(env, "system", document, now);
+    } catch {
+      failed += 1;
+    }
+  }
+  if (failed) report({ status: "warning", code: "partial_failure" });
+}
 
 type EditorialArchiveEligibility = Pick<
   EditorialArchiveDocument,
@@ -7246,6 +7340,7 @@ const canReadEditorialDocumentOrArchiveApprover = async (
   document: EditorialDocument,
 ) =>
   canReviewDocument(scope, document) ||
+  Boolean(document.archived_at && canRestoreEditorialArchive(scope, document)) ||
   (await canReviewPendingEditorialArchiveRequest(env, scope, document));
 
 async function getEditorialArchiveRequestState(
@@ -23439,8 +23534,26 @@ async function authorizeUserPage(
       302,
     );
   if (canAccess(current.stage, area)) return current;
+  const url = new URL(request.url);
+  const trashPage = /^\/admin\/articles\/?$/.test(pathname) && url.searchParams.get("trash") === "1";
+  const archiveEditorId = /^\/admin\/editor\/?$/.test(pathname)
+    ? url.searchParams.get("document")
+    : null;
+  if (trashPage || (archiveEditorId && /^[0-9a-f-]{36}$/i.test(archiveEditorId))) {
+    const scope = await getAdminScope(request, env);
+    if (!isResponse(scope)) {
+      if (trashPage) return current;
+      const document = await env.REPORTS.prepare("SELECT id, subject, archived_at FROM editorial_documents WHERE id=?")
+        .bind(archiveEditorId)
+        .first<Pick<EditorialArchiveDocument, "id" | "subject" | "archived_at">>();
+      if (document && (
+        (document.archived_at && canDecideEditorialArchive(scope, document.subject)) ||
+        await canReviewPendingEditorialArchiveRequest(env, scope, document)
+      )) return current;
+    }
+  }
   return Response.redirect(
-    `${new URL(request.url).origin}${stageHome(current.stage, current.projectSlug)}`,
+    `${url.origin}${stageHome(current.stage, current.projectSlug)}`,
     302,
   );
 }
@@ -25971,8 +26084,12 @@ async function handleAdminRequest(
     return json({ error: "GET、POST、PATCH、DELETEのみ利用できます。" }, 405);
   }
   const editorialArchiveMatch = url.pathname.match(
-    /^\/api\/admin\/editor\/documents\/([0-9a-f-]{36})\/(archive|unarchive)$/i,
+    /^\/api\/admin\/editor\/documents\/([0-9a-f-]{36})\/(archive|unarchive|purge-archive)$/i,
   );
+  if (editorialArchiveMatch?.[2].toLowerCase() === "purge-archive")
+    return request.method === "DELETE"
+      ? deleteEditorialArchive(request, env, editorialArchiveMatch[1])
+      : json({ error: "DELETEのみ利用できます。" }, 405);
   if (editorialArchiveMatch && request.method === "POST")
     return updateEditorialDocumentArchive(
       request,
@@ -26420,11 +26537,15 @@ export default {
           reportScheduledDeliveryResult(report, { failed: result.failed });
           return result;
         },
-        "personal-data-retention": () => runPersonalDataRetention(env.REPORTS, new Date(), {
-          clearArticleReportData:
-            env.ADMIN_PERSONAL_DATA_RETENTION_ENABLED?.trim().toLowerCase() ===
-            "true",
-        }),
+        "personal-data-retention": async (report) => {
+          const result = await runPersonalDataRetention(env.REPORTS, new Date(), {
+            clearArticleReportData:
+              env.ADMIN_PERSONAL_DATA_RETENTION_ENABLED?.trim().toLowerCase() ===
+              "true",
+          });
+          await purgeExpiredEditorialArchives(env, report);
+          return result;
+        },
       }).then(async () => {
         if (cron === "*/5 * * * *") await dispatchScheduledHealthAlerts(env);
       }),
