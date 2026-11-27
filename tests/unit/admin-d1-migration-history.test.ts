@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
@@ -6,6 +6,60 @@ const migration = (name: string) =>
   readFileSync(new URL(`../../migrations/${name}`, import.meta.url), "utf8");
 
 describe("ADMIN D1 migration history", () => {
+  it("rejects new sequence collisions while preserving exact legacy filenames", () => {
+    // D1 records full filenames, and these exact duplicates are already part
+    // of the deployed ledger. Keep them unchanged and reject any new reuse.
+    const legacySharedSequenceFiles = new Map([
+      [
+        "0055",
+        [
+          "0055_application_google_form_fields.sql",
+          "0055_search_console_oauth_tokens.sql",
+        ],
+      ],
+      [
+        "0081",
+        [
+          "0081_atlasez_google_account_identities.sql",
+          "0081_editorial_article_catalog.sql",
+          "0081_editorial_document_archives.sql",
+        ],
+      ],
+      [
+        "0082",
+        [
+          "0082_editorial_article_catalog_provenance.sql",
+          "0082_editorial_publication_pull_requests.sql",
+        ],
+      ],
+      [
+        "0088",
+        [
+          "0088_editorial_concept_metadata.sql",
+          "0088_editorial_publication_run_resilience.sql",
+        ],
+      ],
+    ]);
+    const files = readdirSync(new URL("../../migrations/", import.meta.url))
+      .filter((name) => name.endsWith(".sql"))
+      .sort();
+    const sequences = files.map((name) => name.match(/^(\d{4})_/)?.[1]);
+    const counts = new Map<string, number>();
+    for (const sequence of sequences) {
+      expect(sequence).toBeDefined();
+      if (sequence) counts.set(sequence, (counts.get(sequence) ?? 0) + 1);
+    }
+    const duplicateSequences = [...counts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([sequence]) => sequence);
+    expect(duplicateSequences).toEqual([...legacySharedSequenceFiles.keys()]);
+    for (const [sequence, expectedFiles] of legacySharedSequenceFiles) {
+      expect(files.filter((name) => name.startsWith(`${sequence}_`))).toEqual(
+        expectedFiles,
+      );
+    }
+  });
+
   it("keeps source for migrations already recorded in production", () => {
     expect(migration("0111_editorial_progress_reactions.sql")).toContain(
       "CREATE TABLE IF NOT EXISTS editorial_progress_reactions",

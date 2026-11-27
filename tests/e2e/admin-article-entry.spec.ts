@@ -1034,6 +1034,17 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(page.locator("[data-list]")).toContainText(
       "更新前も表示される記事",
     );
+    // The first list render can precede catalog enrichment. Wait for the
+    // load-retry state to settle before simulating a visibility refresh, or
+    // the test may dispatch while `load()` is coalescing the initial request.
+    await expect(page.locator("[data-admin-load-surface]")).toHaveAttribute(
+      "data-admin-load-state",
+      "ready",
+    );
+    await expect(page.locator("[data-admin-load-surface]")).toHaveAttribute(
+      "aria-busy",
+      "false",
+    );
     await page.evaluate(() => {
       Object.defineProperty(document, "visibilityState", {
         configurable: true,

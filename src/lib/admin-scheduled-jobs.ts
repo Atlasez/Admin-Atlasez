@@ -45,6 +45,7 @@ export async function executeAdminScheduledJobs(
   db: D1Database,
   cron: string,
   tasks: ScheduledJobTasks,
+  reconcileApplicationIntakes?: () => Promise<unknown>,
 ) {
   const ids: ScheduledJobId[] =
     cron === "*/1 * * * *"
@@ -57,6 +58,12 @@ export async function executeAdminScheduledJobs(
             ? maintenanceJobs
             : hourlyJobs;
   const pending = ids.map((id) => runObservedScheduledJob(db, id, tasks[id]));
+  if (
+    reconcileApplicationIntakes &&
+    (ids === maintenanceJobs || ids === hourlyJobs)
+  ) {
+    pending.push(Promise.resolve().then(reconcileApplicationIntakes));
+  }
   if (cron === "*/5 * * * *") {
     const results = await Promise.allSettled(pending);
     const rejected = results.filter(

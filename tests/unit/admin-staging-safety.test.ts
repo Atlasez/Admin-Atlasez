@@ -1,0 +1,433 @@
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import {
+  ADMIN_STAGING_TEMPLATE_PATH,
+  parseAdminStagingConfig,
+  validateAdminStagingConfig,
+} from "../../scripts/lib/admin-staging-config.mjs";
+import {
+  buildAdminStagingWranglerArgs,
+  matchesAdminStagingDeploySha,
+  missingAdminStagingDeployConfirmations,
+  parseAdminStagingDeployArgs,
+} from "../../scripts/lib/admin-staging-deploy-policy.mjs";
+import {
+  isApprovedStagingAddress,
+  isApprovedStagingRecipient,
+} from "../../src/lib/admin-staging-email-policy.mjs";
+import {
+  isStagingDiscordDisabled,
+  isStagingDiscordEnabled,
+} from "../../src/lib/admin-staging-discord-policy";
+import { ADMIN_STAGING_ACCOUNTS } from "../fixtures/admin-staging-accounts";
+
+const TEST_PRODUCTION_IDENTIFIERS = {
+  origin: "https://admin.production.example",
+  d1Name: "admin-production-reports",
+  d1Id: ["bbbbbbbb", "bbbb", "4bbb", "8bbb", "bbbbbbbbbbbb"].join("-"),
+  discordGuildId: "999999999999999999",
+  discordClientId: "999999999999999998",
+};
+
+const syntheticUuid = (character: string) =>
+  [
+    character.repeat(8),
+    character.repeat(4),
+    `4${character.repeat(3)}`,
+    `8${character.repeat(3)}`,
+    character.repeat(12),
+  ].join("-");
+
+function safeStagingConfig() {
+  const example = parseAdminStagingConfig(
+    readFileSync(ADMIN_STAGING_TEMPLATE_PATH, "utf8"),
+  );
+  const origin = "https://atlasez-admin-staging.synthetic-account.workers.dev";
+  example.account_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  example.vars.ADMIN_PUBLIC_ORIGIN = origin;
+  example.vars.PUBLIC_ANALYTICS_ORIGIN = origin;
+  example.vars.PUBLIC_SITE_ORIGIN = origin;
+  example.vars.GOOGLE_OAUTH_CLIENT_ID =
+    "synthetic-staging.apps.googleusercontent.com";
+  example.vars.EMAIL_FROM = "Atlasez Staging <noreply@staging.example.test>";
+  example.vars.APPLICATION_OPERATIONS_EMAILS = "operator@staging.example.test";
+  example.d1_databases[0].database_id = syntheticUuid("a");
+  return example;
+}
+
+describe("ADMIN staging isolation preflight", () => {
+  it("accepts only the explicit non-deployable template in example mode", () => {
+    const example = parseAdminStagingConfig(
+      readFileSync(ADMIN_STAGING_TEMPLATE_PATH, "utf8"),
+    );
+    expect(validateAdminStagingConfig(example, { allowExample: true })).toEqual(
+      [],
+    );
+    expect(validateAdminStagingConfig(example)).toContain(
+      "account_id must be an explicit Cloudflare account ID",
+    );
+  });
+
+  it("accepts a staging Worker and isolated D1 while Discord is disabled and unconfigured", () => {
+    const config = safeStagingConfig();
+    expect(config.vars.ATLASEZ_STAGING_DISCORD_MODE).toBe("disabled");
+    expect(config.vars.ATLASEZ_STAGING_DISCORD_POLICY_APPROVED).toBe("false");
+    expect(config.vars).not.toHaveProperty("DISCORD_GUILD_ID");
+    expect(config.vars).not.toHaveProperty("DISCORD_OAUTH_CLIENT_ID");
+    expect(config.vars).not.toHaveProperty("DISCORD_GUILD_NAME");
+    expect(validateAdminStagingConfig(config)).toEqual([]);
+  });
+
+  it("isolates the release staging Worker from the existing staging Worker and both existing databases", () => {
+    const config = safeStagingConfig();
+    const releaseOrigin =
+      "https://atlasez-admin-release-staging.synthetic-account.workers.dev";
+    config.name = "atlasez-admin-release-staging";
+    config.vars.ADMIN_PUBLIC_ORIGIN = releaseOrigin;
+    config.vars.PUBLIC_ANALYTICS_ORIGIN = releaseOrigin;
+    config.vars.PUBLIC_SITE_ORIGIN = releaseOrigin;
+    config.d1_databases[0].database_name =
+      "atlasez-admin-release-staging-reports";
+    expect(validateAdminStagingConfig(config)).toEqual([]);
+    expect(
+      isStagingDiscordDisabled({ ADMIN_PUBLIC_ORIGIN: releaseOrigin }),
+    ).toBe(true);
+
+    const existingStagingD1Id = syntheticUuid("c");
+    config.d1_databases[0].database_id = existingStagingD1Id;
+    expect(
+      validateAdminStagingConfig(config, { existingStagingD1Id }),
+    ).toContain("legacy staging D1 ID is forbidden for release staging");
+    config.d1_databases[0].database_id = TEST_PRODUCTION_IDENTIFIERS.d1Id;
+    expect(
+      validateAdminStagingConfig(config, {
+        productionIdentifiers: TEST_PRODUCTION_IDENTIFIERS,
+      }),
+    ).toContain("production D1 ID is forbidden");
+    config.d1_databases[0].database_name = "atlasez-admin-staging-reports";
+    expect(validateAdminStagingConfig(config)).toContain(
+      "database_name must be the dedicated staging D1 name",
+    );
+    config.vars.ADMIN_PUBLIC_ORIGIN =
+      "https://atlasez-admin-staging.synthetic-account.workers.dev";
+    expect(validateAdminStagingConfig(config)).toContain(
+      "origin must be the staging Worker workers.dev hostname",
+    );
+  });
+
+  it("requires explicit STG-08 approval and verified test-only Discord identities", () => {
+    const config = safeStagingConfig();
+    config.vars.ATLASEZ_STAGING_DISCORD_MODE = "test-guild";
+    config.vars.ATLASEZ_STAGING_DISCORD_POLICY_APPROVED = "true";
+    config.vars.DISCORD_GUILD_ID = "123456789012345678";
+    config.vars.DISCORD_OAUTH_CLIENT_ID = "123456789012345679";
+    config.vars.DISCORD_GUILD_NAME = "Atlasez Staging Test Guild";
+    expect(validateAdminStagingConfig(config)).toContain(
+      "test-guild mode requires the explicit STG-08 validation opt-in",
+    );
+    expect(
+      validateAdminStagingConfig(config, { allowDiscordTestGuild: true }),
+    ).toEqual([]);
+
+    const productionGuild = safeStagingConfig();
+    Object.assign(productionGuild.vars, {
+      ATLASEZ_STAGING_DISCORD_MODE: "test-guild",
+      ATLASEZ_STAGING_DISCORD_POLICY_APPROVED: "true",
+      DISCORD_GUILD_ID: TEST_PRODUCTION_IDENTIFIERS.discordGuildId,
+      DISCORD_OAUTH_CLIENT_ID: TEST_PRODUCTION_IDENTIFIERS.discordClientId,
+      DISCORD_GUILD_NAME: "Atlasez Staging Test Guild",
+    });
+    expect(
+      validateAdminStagingConfig(productionGuild, {
+        allowDiscordTestGuild: true,
+        productionIdentifiers: TEST_PRODUCTION_IDENTIFIERS,
+      }).some((failure) => failure.includes("DISCORD_GUILD_ID")),
+    ).toBe(true);
+  });
+
+  it("rejects Discord identities when the staging profile is disabled", () => {
+    const config = safeStagingConfig();
+    config.vars.DISCORD_GUILD_ID = "123456789012345678";
+    expect(validateAdminStagingConfig(config)).toContain(
+      "DISCORD_GUILD_ID must be absent while staging Discord is disabled",
+    );
+  });
+
+  it("requires explicit policy, test-guild, and secret read-back before the STG-08 preflight opt-in", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/verify-admin-staging-config.mjs",
+        "--example",
+        "--allow-discord-test-guild",
+      ],
+      {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH ?? "" },
+      },
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(
+      "requires approved STG-08 role policy, test-guild read-back, and secret-name read-back confirmations",
+    );
+  });
+
+  it("enables Discord at runtime only for a complete and explicitly approved staging test guild", () => {
+    const enabledProfile = {
+      ADMIN_PUBLIC_ORIGIN:
+        "https://atlasez-admin-staging.synthetic-account.workers.dev",
+      ATLASEZ_STAGING_MODE: "true",
+      ATLASEZ_STAGING_DISCORD_MODE: "test-guild",
+      ATLASEZ_STAGING_DISCORD_POLICY_APPROVED: "true",
+      DISCORD_GUILD_ID: "123456789012345678",
+      DISCORD_GUILD_NAME: "Atlasez Staging Test Guild",
+      DISCORD_BOT_TOKEN: "synthetic-bot-token",
+      DISCORD_OAUTH_CLIENT_ID: "123456789012345679",
+      DISCORD_OAUTH_CLIENT_SECRET: "synthetic-client-secret",
+      DISCORD_OAUTH_REDIRECT_URI:
+        "https://atlasez-admin-staging.synthetic-account.workers.dev/auth/discord/callback",
+      DISCORD_OAUTH_TOKEN_ENCRYPTION_KEY: "ab".repeat(32),
+    };
+    expect(isStagingDiscordEnabled(enabledProfile)).toBe(true);
+    expect(isStagingDiscordDisabled(enabledProfile)).toBe(false);
+    expect(
+      isStagingDiscordDisabled({
+        ...enabledProfile,
+        DISCORD_OAUTH_TOKEN_ENCRYPTION_KEY: "invalid-key",
+      }),
+    ).toBe(true);
+    expect(
+      isStagingDiscordDisabled({
+        ...enabledProfile,
+        ATLASEZ_STAGING_DISCORD_POLICY_APPROVED: "false",
+      }),
+    ).toBe(true);
+    expect(
+      isStagingDiscordDisabled({
+        ...enabledProfile,
+        DISCORD_GUILD_ID: "1359062450028282017",
+      }),
+    ).toBe(true);
+    expect(isStagingDiscordDisabled({})).toBe(false);
+  });
+
+  it("allows exact synthetic test domains and Resend simulator addresses only", () => {
+    expect(isApprovedStagingAddress("operator@staging.example.test")).toBe(
+      true,
+    );
+    expect(isApprovedStagingRecipient("delivered@resend.dev")).toBe(true);
+    expect(isApprovedStagingRecipient("person@staging-unowned.example")).toBe(
+      false,
+    );
+    expect(isApprovedStagingRecipient("person@my-staging.example.com")).toBe(
+      false,
+    );
+    expect(
+      isApprovedStagingAddress("person@atlasez.test.attacker.example"),
+    ).toBe(false);
+
+    const sender = safeStagingConfig();
+    sender.vars.EMAIL_FROM =
+      "Atlasez Staging <noreply@staging-unowned.example>";
+    expect(validateAdminStagingConfig(sender)).toContain(
+      "EMAIL_FROM must use an explicitly approved synthetic test domain",
+    );
+
+    const operator = safeStagingConfig();
+    operator.vars.APPLICATION_OPERATIONS_EMAILS =
+      "person@staging-unowned.example";
+    expect(validateAdminStagingConfig(operator)).toContain(
+      "operator notification recipients must use explicitly approved synthetic test addresses",
+    );
+  });
+
+  it("accepts an old-Worker compatibility config only when scheduled triggers are absent", () => {
+    const noCron = safeStagingConfig();
+    delete noCron.triggers;
+    expect(
+      validateAdminStagingConfig(noCron, { compatibilityNoCron: true }),
+    ).toEqual([]);
+    expect(validateAdminStagingConfig(noCron)).toContain(
+      "only the guarded five-minute intake reconciliation Cron is allowed",
+    );
+
+    const scheduled = safeStagingConfig();
+    expect(
+      validateAdminStagingConfig(scheduled, { compatibilityNoCron: true }),
+    ).toContain("no-Cron staging config must contain no scheduled triggers");
+  });
+
+  it("selects the no-Cron staging config only with an explicit no-Cron mode", () => {
+    expect(parseAdminStagingDeployArgs(["--dry-run"])).toMatchObject({
+      mode: "--dry-run",
+      noCron: false,
+      configPath: "wrangler.admin.staging.jsonc",
+    });
+    expect(
+      parseAdminStagingDeployArgs(["--deploy", "--no-cron"]),
+    ).toMatchObject({
+      mode: "--deploy",
+      noCron: true,
+      configPath: "wrangler.admin.staging.compat.jsonc",
+    });
+    expect(
+      parseAdminStagingDeployArgs(["--deploy", "--no-cron", "--prod"]),
+    ).toBeNull();
+    expect(parseAdminStagingDeployArgs(["--deploy", "--dry-run"])).toBeNull();
+  });
+
+  it("requires explicit no-Cron confirmation and an exact 40-character deploy SHA", () => {
+    const confirmations = {
+      ATLASEZ_STAGING_DEPLOY_CONFIRMED: "1",
+      ATLASEZ_STAGING_PROVIDER_SETTINGS_VERIFIED: "1",
+      ATLASEZ_STAGING_0141_VERIFIED: "1",
+    };
+    expect(
+      missingAdminStagingDeployConfirmations(confirmations, { noCron: false }),
+    ).toEqual([]);
+    expect(
+      missingAdminStagingDeployConfirmations(confirmations, { noCron: true }),
+    ).toEqual(["ATLASEZ_STAGING_NO_CRON_CONFIRMED"]);
+    expect(
+      missingAdminStagingDeployConfirmations(
+        { ...confirmations, ATLASEZ_STAGING_NO_CRON_CONFIRMED: "1" },
+        { noCron: true },
+      ),
+    ).toEqual([]);
+
+    const sha = "689a687d6f348e510fd84c923c8124153a7bcd7f";
+    expect(matchesAdminStagingDeploySha(sha, sha)).toBe(true);
+    expect(matchesAdminStagingDeploySha(sha.toUpperCase(), sha)).toBe(true);
+    expect(matchesAdminStagingDeploySha(`${sha}0`, sha)).toBe(false);
+    expect(matchesAdminStagingDeploySha("main", sha)).toBe(false);
+    expect(matchesAdminStagingDeploySha("", sha)).toBe(false);
+  });
+
+  it("preserves dashboard-managed staging variables on deploy and dry-run", () => {
+    expect(
+      buildAdminStagingWranglerArgs("wrangler.admin.staging.compat.jsonc"),
+    ).toEqual([
+      "exec",
+      "--",
+      "wrangler",
+      "deploy",
+      "--config",
+      "wrangler.admin.staging.compat.jsonc",
+      "--keep-vars",
+    ]);
+    expect(
+      buildAdminStagingWranglerArgs("wrangler.admin.staging.compat.jsonc", {
+        dryRun: true,
+      }),
+    ).toEqual([
+      "exec",
+      "--",
+      "wrangler",
+      "deploy",
+      "--config",
+      "wrangler.admin.staging.compat.jsonc",
+      "--keep-vars",
+      "--dry-run",
+    ]);
+  });
+
+  it("rejects the production Worker, D1, route, or Discord guild/client", () => {
+    const cases = [
+      (config: ReturnType<typeof safeStagingConfig>) => {
+        config.name = "production-worker";
+      },
+      (config: ReturnType<typeof safeStagingConfig>) => {
+        config.d1_databases[0].database_id = TEST_PRODUCTION_IDENTIFIERS.d1Id;
+      },
+      (config: ReturnType<typeof safeStagingConfig>) => {
+        config.vars.ADMIN_PUBLIC_ORIGIN = TEST_PRODUCTION_IDENTIFIERS.origin;
+      },
+      (config: ReturnType<typeof safeStagingConfig>) => {
+        config.vars.DISCORD_GUILD_ID =
+          TEST_PRODUCTION_IDENTIFIERS.discordGuildId;
+      },
+      (config: ReturnType<typeof safeStagingConfig>) => {
+        config.vars.DISCORD_OAUTH_CLIENT_ID =
+          TEST_PRODUCTION_IDENTIFIERS.discordClientId;
+      },
+      (config: ReturnType<typeof safeStagingConfig>) => {
+        config.routes = [
+          { pattern: "admin.production.example", custom_domain: true },
+        ];
+      },
+    ];
+    for (const mutate of cases) {
+      const config = safeStagingConfig();
+      mutate(config);
+      expect(
+        validateAdminStagingConfig(config, {
+          productionIdentifiers: TEST_PRODUCTION_IDENTIFIERS,
+        }).length,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it("rejects production routes, production Cron fan-out, and secrets in versioned vars", () => {
+    const routes = safeStagingConfig();
+    routes.routes = [{ pattern: "*.atlasez.org/*" }];
+    expect(validateAdminStagingConfig(routes)).toContain(
+      "custom Routes are not allowed in this staging config",
+    );
+
+    const cron = safeStagingConfig();
+    cron.triggers.crons = ["*/1 * * * *", "*/5 * * * *"];
+    expect(validateAdminStagingConfig(cron)).toContain(
+      "only the guarded five-minute intake reconciliation Cron is allowed",
+    );
+
+    const secret = safeStagingConfig();
+    secret.vars.RESEND_API_KEY = "do-not-store";
+    expect(validateAdminStagingConfig(secret)).toContain(
+      "secrets must not be stored in vars (RESEND_API_KEY)",
+    );
+  });
+
+  it("rejects unreviewed provider variables and remote resource bindings", () => {
+    const providerVar = safeStagingConfig();
+    providerVar.vars.GITHUB_APP_ID = "production-app";
+    expect(validateAdminStagingConfig(providerVar)).toContain(
+      "unsupported staging var is forbidden (GITHUB_APP_ID)",
+    );
+
+    for (const key of ["services", "kv_namespaces", "r2_buckets", "queues"]) {
+      const config = safeStagingConfig();
+      config[key] = [{ binding: "RESOURCE", id: "production-resource" }];
+      expect(validateAdminStagingConfig(config)).toContain(
+        `unsupported top-level setting is forbidden (${key})`,
+      );
+    }
+
+    const wrongEntrypoint = safeStagingConfig();
+    wrongEntrypoint.main = "src/public-worker.ts";
+    expect(validateAdminStagingConfig(wrongEntrypoint)).toContain(
+      "main must be the reviewed ADMIN Worker entrypoint",
+    );
+  });
+
+  it("contains a synthetic fixture for every requested role and lifecycle boundary", () => {
+    const keys = new Set(ADMIN_STAGING_ACCOUNTS.map((account) => account.key));
+    for (const key of [
+      "unauthenticated",
+      "applicant-reviewing",
+      "applicant-rejected",
+      "accepted-incomplete",
+      "member-multi-project",
+      "project-manager",
+      "subject-coordinator",
+      "global-operator",
+      "suspended-member",
+      "withdrawn-member",
+    ])
+      expect(keys.has(key)).toBe(true);
+    for (const account of ADMIN_STAGING_ACCOUNTS) {
+      if (account.email)
+        expect(account.email.endsWith("@atlasez.test")).toBe(true);
+    }
+  });
+});

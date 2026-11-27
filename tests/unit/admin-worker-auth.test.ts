@@ -1,4 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import worker from "../../src/admin-worker";
 
@@ -23,7 +25,7 @@ class Statement {
 
 const env = (mode: string, extra: Record<string, string> = {}) => ({
   ADMIN_AUTH_MODE: mode,
-  ADMIN_PRIMARY_EMAIL: "ukyoukay0@gmail.com",
+  ADMIN_PRIMARY_EMAIL: "owner@example.test",
   ...extra,
   REPORTS: {
     prepare: (query: string) => new Statement(query),
@@ -31,6 +33,9 @@ const env = (mode: string, extra: Record<string, string> = {}) => ({
   },
   ASSETS: { fetch: async () => new Response(null, { status: 404 }) },
 });
+
+const testUuid = () =>
+  ["12345678", "1234", "4234", "8234", "123456789abc"].join("-");
 
 const stageEnv = (
   applicationStatus: string | null,
@@ -44,7 +49,7 @@ const stageEnv = (
   sessionEmail = "applicant@example.com",
 ) => ({
   ADMIN_AUTH_MODE: "google-oauth",
-  ADMIN_PRIMARY_EMAIL: "ukyoukay0@gmail.com",
+  ADMIN_PRIMARY_EMAIL: "owner@example.test",
   REPORTS: {
     prepare: (query: string) => {
       const statement = new Statement(query);
@@ -638,6 +643,65 @@ describe("admin logout contract", () => {
 });
 
 describe("Google OAuth login callback", () => {
+  const releaseOrigin =
+    "https://atlasez-admin-release-staging.synthetic-account.workers.dev";
+
+  it.each([undefined, "different@example.com"])(
+    "rejects an unapproved release staging user before any D1 lookup (%s)",
+    async (allowlist) => {
+      const prepare = vi.fn();
+      const oauthEnv = {
+        ...env("google-oauth"),
+        ADMIN_PUBLIC_ORIGIN: releaseOrigin,
+        GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
+        GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
+        ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST: allowlist,
+        REPORTS: { prepare },
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValueOnce(Response.json({ access_token: "test-token" }))
+          .mockResolvedValueOnce(
+            Response.json({
+              email: "applicant@example.com",
+              email_verified: true,
+              sub: "test-subject",
+            }),
+          ),
+      );
+      try {
+        const start = await worker.fetch(
+          new Request(`${releaseOrigin}/auth/google/login`),
+          oauthEnv as never,
+        );
+        const state = new URL(start.headers.get("location")!).searchParams.get(
+          "state",
+        )!;
+        const callback = await worker.fetch(
+          new Request(
+            `${releaseOrigin}/auth/google/callback?code=test-code&state=${state}`,
+            {
+              headers: {
+                cookie: start.headers.getSetCookie()[0].split(";", 1)[0],
+              },
+            },
+          ),
+          oauthEnv as never,
+        );
+        expect(callback.headers.get("location")).toBe("/admin/login-error/");
+        expect(
+          callback.headers
+            .getSetCookie()
+            .some((cookie) => cookie.startsWith("atlasez_admin_session=")),
+        ).toBe(false);
+        expect(prepare).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
   it("returns an administrator to the native app callback after Google OAuth", async () => {
     const state = "s".repeat(43);
     const challenge = "c".repeat(43);
@@ -645,7 +709,7 @@ describe("Google OAuth login callback", () => {
     const returnTo = `/auth/native-app/complete?state=${state}&challenge=${challenge}&redirect_uri=${encodeURIComponent(redirectURI)}`;
     const oauthEnv = {
       ADMIN_AUTH_MODE: "google-oauth",
-      ADMIN_PRIMARY_EMAIL: "admin@atlasez.org",
+      ADMIN_PRIMARY_EMAIL: "admin@example.test",
       ADMIN_PUBLIC_ORIGIN: "https://admin.example",
       GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
       GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
@@ -655,15 +719,15 @@ describe("Google OAuth login callback", () => {
           statement.first = async <T>() => {
             if (query.includes("FROM admin_auth_sessions s"))
               return {
-                email: "admin@atlasez.org",
-                canonical_email: "admin@atlasez.org",
+                email: "admin@example.test",
+                canonical_email: "admin@example.test",
               } as T;
             if (query.includes("FROM atlasez_google_identities"))
               return null as T | null;
             if (query.includes("FROM atlasez_accounts a"))
               return {
                 id: "account-1",
-                canonical_email: "admin@atlasez.org",
+                canonical_email: "admin@example.test",
               } as T;
             if (
               query.includes("SELECT 1 AS found FROM report_admin_permissions")
@@ -673,7 +737,8 @@ describe("Google OAuth login callback", () => {
           };
           return statement;
         },
-        batch: async () => [],
+        batch: async (statements: Statement[]) =>
+          Promise.all(statements.map((statement) => statement.run())),
       },
       ASSETS: { fetch: async () => new Response("protected page") },
     };
@@ -693,7 +758,7 @@ describe("Google OAuth login callback", () => {
         )
           return new Response(
             JSON.stringify({
-              email: "admin@atlasez.org",
+              email: "admin@example.test",
               email_verified: true,
               sub: "google-subject-1",
             }),
@@ -756,207 +821,233 @@ describe("Google OAuth login callback", () => {
     }
   });
 
-  it("returns to the requested admin page with a valid hashed session", async () => {
-    const writes: Array<{ query: string; values: unknown[] }> = [];
-    let accountLookupCount = 0;
-    let storedSessionHash = "";
-    let storedSessionExpiry = "";
-    const oauthEnv = {
-      ADMIN_AUTH_MODE: "google-oauth",
-      ADMIN_PRIMARY_EMAIL: "admin@example.com",
-      ADMIN_PUBLIC_ORIGIN: "https://admin.example",
-      GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
-      GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
-      REPORTS: {
-        prepare: (query: string) => {
-          const statement = new Statement(query);
-          statement.first = async <T>() => {
-            if (query.includes("FROM admin_auth_sessions s")) {
-              const [candidateHash, now] = statement.boundValues;
-              return candidateHash === storedSessionHash &&
-                Date.parse(storedSessionExpiry) > Date.parse(String(now))
-                ? ({
-                    email: "admin@example.com",
-                    canonical_email: "admin@example.com",
-                  } as T)
-                : (null as T | null);
-            }
-            if (query.includes("FROM atlasez_accounts a")) {
-              accountLookupCount += 1;
-              return accountLookupCount === 1
-                ? (null as T | null)
-                : ({
-                    id: "account-1",
-                    canonical_email: "admin@example.com",
-                  } as T);
-            }
-            if (
-              query.includes(
-                "SELECT 1 AS found FROM report_admin_permissions WHERE email = ? LIMIT 1",
+  it.each(["https://admin.example", releaseOrigin])(
+    "returns to the requested admin page with a valid hashed session on %s",
+    async (origin) => {
+      const writes: Array<{ query: string; values: unknown[] }> = [];
+      let accountLookupCount = 0;
+      let storedSessionHash = "";
+      let storedSessionExpiry = "";
+      const oauthEnv = {
+        ADMIN_AUTH_MODE: "google-oauth",
+        ADMIN_PRIMARY_EMAIL: "admin@example.com",
+        ADMIN_PUBLIC_ORIGIN: origin,
+        ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST:
+          origin === releaseOrigin
+            ? " reviewer@example.com, ADMIN@example.COM "
+            : undefined,
+        GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
+        GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
+        REPORTS: {
+          prepare: (query: string) => {
+            const statement = new Statement(query);
+            statement.first = async <T>() => {
+              if (query.includes("FROM admin_auth_sessions s")) {
+                const [candidateHash, now] = statement.boundValues;
+                return candidateHash === storedSessionHash &&
+                  Date.parse(storedSessionExpiry) > Date.parse(String(now))
+                  ? ({
+                      email: "admin@example.com",
+                      canonical_email: "admin@example.com",
+                    } as T)
+                  : (null as T | null);
+              }
+              if (query.includes("FROM atlasez_accounts a")) {
+                accountLookupCount += 1;
+                return accountLookupCount === 1
+                  ? (null as T | null)
+                  : ({
+                      id: "account-1",
+                      canonical_email: "admin@example.com",
+                    } as T);
+              }
+              if (
+                query.includes(
+                  "SELECT 1 AS found FROM report_admin_permissions WHERE email = ? LIMIT 1",
+                )
               )
-            )
-              return { found: 1 } as T;
-            return null as T | null;
-          };
-          statement.all = async <T>() => {
-            if (query.includes("SELECT subject FROM report_admin_permissions"))
-              return { results: [{ subject: "*" }] as T[] };
-            return { results: [] as T[] };
-          };
-          statement.run = async () => {
-            writes.push({ query, values: [...statement.boundValues] });
-            if (query.includes("INSERT INTO admin_auth_sessions")) {
-              storedSessionHash = String(statement.boundValues[0] ?? "");
-              storedSessionExpiry = String(statement.boundValues[4] ?? "");
-            }
-            return { meta: { changes: 1 } };
-          };
-          return statement;
+                return { found: 1 } as T;
+              return null as T | null;
+            };
+            statement.all = async <T>() => {
+              if (
+                query.includes("SELECT subject FROM report_admin_permissions")
+              )
+                return { results: [{ subject: "*" }] as T[] };
+              return { results: [] as T[] };
+            };
+            statement.run = async () => {
+              writes.push({ query, values: [...statement.boundValues] });
+              if (query.includes("INSERT INTO admin_auth_sessions")) {
+                storedSessionHash = String(statement.boundValues[0] ?? "");
+                storedSessionExpiry = String(statement.boundValues[4] ?? "");
+              }
+              return { meta: { changes: 1 } };
+            };
+            return statement;
+          },
+          batch: async () => [],
         },
-        batch: async () => [],
-      },
-      ASSETS: {
-        fetch: async () =>
-          new Response("protected admin page", { status: 200 }),
-      },
-    };
-    const googleFetch = vi.fn(
-      async (input: RequestInfo | URL, _init?: RequestInit) => {
-        const url = String(input);
-        if (url === "https://oauth2.googleapis.com/token")
-          return new Response(
-            JSON.stringify({ access_token: "access-token" }),
-            {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            },
-          );
-        if (url === "https://openidconnect.googleapis.com/v1/userinfo")
-          return new Response(
-            JSON.stringify({
-              email: "admin@example.com",
-              email_verified: true,
-              sub: "google-subject-1",
+        ASSETS: {
+          fetch: async () =>
+            new Response("protected admin page", { status: 200 }),
+        },
+      };
+      const googleFetch = vi.fn(
+        async (input: RequestInfo | URL, _init?: RequestInit) => {
+          const url = String(input);
+          if (url === "https://oauth2.googleapis.com/token")
+            return new Response(
+              JSON.stringify({ access_token: "access-token" }),
+              {
+                status: 200,
+                headers: { "content-type": "application/json" },
+              },
+            );
+          if (url === "https://openidconnect.googleapis.com/v1/userinfo")
+            return new Response(
+              JSON.stringify({
+                email: "admin@example.com",
+                email_verified: true,
+                sub: "google-subject-1",
+              }),
+              {
+                status: 200,
+                headers: { "content-type": "application/json" },
+              },
+            );
+          return new Response("unexpected OAuth request", { status: 500 });
+        },
+      );
+
+      vi.stubGlobal("fetch", googleFetch);
+      try {
+        const entry = await worker.fetch(
+          new Request(`${origin}/admin/operations/?project=atlas`),
+          oauthEnv as never,
+        );
+        expect(entry.status).toBe(302);
+        const loginPath = entry.headers.get("location");
+        expect(loginPath).toContain("/auth/google/login?");
+        const loginUrl = new URL(loginPath!, origin);
+        expect(loginUrl.searchParams.get("returnTo")).toBe(
+          "/admin/operations/?project=atlas",
+        );
+
+        const login = await worker.fetch(
+          new Request(`${origin}${loginPath}`),
+          oauthEnv as never,
+        );
+        expect(login.status).toBe(302);
+        const authorizationUrl = new URL(login.headers.get("location")!);
+        const stateCookie = login.headers.get("set-cookie")!;
+        const stateCookiePair = stateCookie.split(";", 1)[0];
+        expect(authorizationUrl.origin).toBe("https://accounts.google.com");
+        expect(authorizationUrl.pathname).toBe("/o/oauth2/v2/auth");
+        expect(authorizationUrl.searchParams.get("state")).toBeTruthy();
+        expect(stateCookie).toContain("Path=/auth/google");
+        expect(stateCookie).toContain("HttpOnly");
+        expect(stateCookie).toContain("Secure");
+        expect(stateCookie).toContain("SameSite=Lax");
+        expect(stateCookie).not.toContain("Domain=");
+
+        const callback = await worker.fetch(
+          new Request(
+            `${origin}/auth/google/callback?code=authorization-code&state=${encodeURIComponent(authorizationUrl.searchParams.get("state")!)}`,
+            { headers: { cookie: stateCookiePair } },
+          ),
+          oauthEnv as never,
+        );
+        expect(callback.status).toBe(302);
+        expect(callback.headers.get("location")).toBe(
+          "/admin/operations/?project=atlas",
+        );
+        expect(googleFetch).toHaveBeenCalledTimes(2);
+        const tokenCall = googleFetch.mock.calls.find(
+          ([input]) => String(input) === "https://oauth2.googleapis.com/token",
+        );
+        const tokenBody = new URLSearchParams(
+          String(tokenCall?.[1]?.body ?? ""),
+        );
+        expect(tokenCall?.[1]?.method).toBe("POST");
+        expect(tokenBody.get("code")).toBe("authorization-code");
+        expect(tokenBody.get("client_id")).toBe("oauth-client-id");
+        expect(tokenBody.get("client_secret")).toBe("oauth-client-secret");
+        expect(tokenBody.get("redirect_uri")).toBe(
+          `${origin}/auth/google/callback`,
+        );
+        expect(tokenBody.get("grant_type")).toBe("authorization_code");
+        const userInfoCall = googleFetch.mock.calls.find(
+          ([input]) =>
+            String(input) ===
+            "https://openidconnect.googleapis.com/v1/userinfo",
+        );
+        expect(
+          new Headers(userInfoCall?.[1]?.headers).get("authorization"),
+        ).toBe("Bearer access-token");
+
+        const callbackCookies = callback.headers.getSetCookie();
+        const sessionCookie = callbackCookies.find((value) =>
+          value.startsWith("atlasez_admin_session="),
+        );
+        expect(sessionCookie).toContain(
+          "Path=/; HttpOnly; Secure; SameSite=Lax",
+        );
+        expect(
+          callbackCookies.some(
+            (value) =>
+              value.startsWith("atlasez_google_oauth_state=") &&
+              value.includes("Max-Age=0; Path=/auth/google"),
+          ),
+        ).toBe(true);
+
+        const rawSessionToken = decodeURIComponent(
+          sessionCookie!.split(";", 1)[0].split("=", 2)[1],
+        );
+        const sessionWrite = writes.find((write) =>
+          write.query.includes("INSERT INTO admin_auth_sessions"),
+        );
+        expect(sessionWrite?.values[0]).toMatch(/^[a-f0-9]{64}$/);
+        expect(sessionWrite?.values[0]).not.toBe(rawSessionToken);
+        const sessionDigest = await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(rawSessionToken),
+        );
+        const expectedSessionHash = [...new Uint8Array(sessionDigest)]
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("");
+        expect(sessionWrite?.values[0]).toBe(expectedSessionHash);
+        expect(sessionWrite?.values.slice(1, 4)).toEqual([
+          "admin@example.com",
+          "account-1",
+          "google-subject-1",
+        ]);
+
+        const signedInPage = await worker.fetch(
+          new Request(`${origin}/admin/operations/?project=atlas`, {
+            headers: { cookie: sessionCookie!.split(";", 1)[0] },
+          }),
+          oauthEnv as never,
+        );
+        expect(signedInPage.status).toBe(200);
+        expect(await signedInPage.text()).toBe("protected admin page");
+        if (origin === releaseOrigin) {
+          const revokedSession = await worker.fetch(
+            new Request(`${origin}/api/admin/portal`, {
+              headers: { cookie: sessionCookie!.split(";", 1)[0] },
             }),
             {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            },
+              ...oauthEnv,
+              ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST: "",
+            } as never,
           );
-        return new Response("unexpected OAuth request", { status: 500 });
-      },
-    );
-
-    vi.stubGlobal("fetch", googleFetch);
-    try {
-      const entry = await worker.fetch(
-        new Request("https://admin.example/admin/operations/?project=atlas"),
-        oauthEnv as never,
-      );
-      expect(entry.status).toBe(302);
-      const loginPath = entry.headers.get("location");
-      expect(loginPath).toContain("/auth/google/login?");
-      const loginUrl = new URL(loginPath!, "https://admin.example");
-      expect(loginUrl.searchParams.get("returnTo")).toBe(
-        "/admin/operations/?project=atlas",
-      );
-
-      const login = await worker.fetch(
-        new Request(`https://admin.example${loginPath}`),
-        oauthEnv as never,
-      );
-      expect(login.status).toBe(302);
-      const authorizationUrl = new URL(login.headers.get("location")!);
-      const stateCookie = login.headers.get("set-cookie")!;
-      const stateCookiePair = stateCookie.split(";", 1)[0];
-      expect(authorizationUrl.origin).toBe("https://accounts.google.com");
-      expect(authorizationUrl.pathname).toBe("/o/oauth2/v2/auth");
-      expect(authorizationUrl.searchParams.get("state")).toBeTruthy();
-      expect(stateCookie).toContain("Path=/auth/google");
-      expect(stateCookie).toContain("HttpOnly");
-      expect(stateCookie).toContain("Secure");
-      expect(stateCookie).toContain("SameSite=Lax");
-      expect(stateCookie).not.toContain("Domain=");
-
-      const callback = await worker.fetch(
-        new Request(
-          `https://admin.example/auth/google/callback?code=authorization-code&state=${encodeURIComponent(authorizationUrl.searchParams.get("state")!)}`,
-          { headers: { cookie: stateCookiePair } },
-        ),
-        oauthEnv as never,
-      );
-      expect(callback.status).toBe(302);
-      expect(callback.headers.get("location")).toBe(
-        "/admin/operations/?project=atlas",
-      );
-      expect(googleFetch).toHaveBeenCalledTimes(2);
-      const tokenCall = googleFetch.mock.calls.find(
-        ([input]) => String(input) === "https://oauth2.googleapis.com/token",
-      );
-      const tokenBody = new URLSearchParams(String(tokenCall?.[1]?.body ?? ""));
-      expect(tokenCall?.[1]?.method).toBe("POST");
-      expect(tokenBody.get("code")).toBe("authorization-code");
-      expect(tokenBody.get("client_id")).toBe("oauth-client-id");
-      expect(tokenBody.get("client_secret")).toBe("oauth-client-secret");
-      expect(tokenBody.get("redirect_uri")).toBe(
-        "https://admin.example/auth/google/callback",
-      );
-      expect(tokenBody.get("grant_type")).toBe("authorization_code");
-      const userInfoCall = googleFetch.mock.calls.find(
-        ([input]) =>
-          String(input) === "https://openidconnect.googleapis.com/v1/userinfo",
-      );
-      expect(new Headers(userInfoCall?.[1]?.headers).get("authorization")).toBe(
-        "Bearer access-token",
-      );
-
-      const callbackCookies = callback.headers.getSetCookie();
-      const sessionCookie = callbackCookies.find((value) =>
-        value.startsWith("atlasez_admin_session="),
-      );
-      expect(sessionCookie).toContain("Path=/; HttpOnly; Secure; SameSite=Lax");
-      expect(
-        callbackCookies.some(
-          (value) =>
-            value.startsWith("atlasez_google_oauth_state=") &&
-            value.includes("Max-Age=0; Path=/auth/google"),
-        ),
-      ).toBe(true);
-
-      const rawSessionToken = decodeURIComponent(
-        sessionCookie!.split(";", 1)[0].split("=", 2)[1],
-      );
-      const sessionWrite = writes.find((write) =>
-        write.query.includes("INSERT INTO admin_auth_sessions"),
-      );
-      expect(sessionWrite?.values[0]).toMatch(/^[a-f0-9]{64}$/);
-      expect(sessionWrite?.values[0]).not.toBe(rawSessionToken);
-      const sessionDigest = await crypto.subtle.digest(
-        "SHA-256",
-        new TextEncoder().encode(rawSessionToken),
-      );
-      const expectedSessionHash = [...new Uint8Array(sessionDigest)]
-        .map((byte) => byte.toString(16).padStart(2, "0"))
-        .join("");
-      expect(sessionWrite?.values[0]).toBe(expectedSessionHash);
-      expect(sessionWrite?.values.slice(1, 4)).toEqual([
-        "admin@example.com",
-        "account-1",
-        "google-subject-1",
-      ]);
-
-      const signedInPage = await worker.fetch(
-        new Request("https://admin.example/admin/operations/?project=atlas", {
-          headers: { cookie: sessionCookie!.split(";", 1)[0] },
-        }),
-        oauthEnv as never,
-      );
-      expect(signedInPage.status).toBe(200);
-      expect(await signedInPage.text()).toBe("protected admin page");
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
+          expect(revokedSession.status).toBe(401);
+        }
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it("rejects a callback whose state does not match the browser cookie", async () => {
     const googleFetch = vi.fn();
@@ -983,11 +1074,58 @@ describe("Google OAuth login callback", () => {
       expect(authorizationUrl.searchParams.get("state")).not.toBe(
         "wrong-state",
       );
-      expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toMatchObject({
-        error: "Googleログインの確認に失敗しました。もう一度お試しください。",
-      });
+      expect(response.status).toBe(303);
+      expect(response.headers.get("location")).toBe("/admin/login-error/");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(response.headers.get("location")).not.toContain(
+        "authorization-code",
+      );
+      expect(response.headers.getSetCookie()).toContainEqual(
+        expect.stringContaining("Max-Age=0; Path=/auth/google"),
+      );
       expect(googleFetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("redirects token exchange failures without leaving OAuth parameters in the URL", async () => {
+    const oauthEnv = env("google-oauth", {
+      GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
+    });
+    const prepare = vi.spyOn(oauthEnv.REPORTS, "prepare");
+    const googleFetch = vi.fn(
+      async () => new Response("provider unavailable", { status: 503 }),
+    );
+    vi.stubGlobal("fetch", googleFetch);
+    try {
+      const login = await worker.fetch(
+        new Request("https://admin.example/auth/google/login"),
+        oauthEnv as never,
+      );
+      const authorizationUrl = new URL(login.headers.get("location")!);
+      const stateCookie = login.headers.get("set-cookie")!.split(";", 1)[0];
+      const callback = await worker.fetch(
+        new Request(
+          `https://admin.example/auth/google/callback?code=unit-test-code&state=${encodeURIComponent(authorizationUrl.searchParams.get("state")!)}`,
+          { headers: { cookie: stateCookie } },
+        ),
+        oauthEnv as never,
+      );
+
+      expect(callback.status).toBe(303);
+      expect(callback.headers.get("location")).toBe("/admin/login-error/");
+      expect(callback.headers.get("location")).not.toContain("unit-test-code");
+      expect(callback.headers.get("location")).not.toContain("state=");
+      expect(callback.headers.get("cache-control")).toBe("no-store");
+      expect(callback.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(callback.headers.getSetCookie()).toContainEqual(
+        expect.stringContaining("Max-Age=0; Path=/auth/google"),
+      );
+      expect(googleFetch).toHaveBeenCalledTimes(1);
+      expect(prepare).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }
@@ -1045,11 +1183,11 @@ describe("Google OAuth login callback", () => {
         oauthEnv as never,
       );
 
-      expect(callback.status).toBe(403);
-      await expect(callback.json()).resolves.toMatchObject({
-        error: "確認済みのGoogleメールアドレスが必要です。",
-      });
-      expect(callback.headers.getSetCookie()).toEqual([]);
+      expect(callback.status).toBe(303);
+      expect(callback.headers.get("location")).toBe("/admin/login-error/");
+      expect(callback.headers.getSetCookie()).toContainEqual(
+        expect.stringContaining("Max-Age=0; Path=/auth/google"),
+      );
       expect(prepare).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
@@ -1085,7 +1223,7 @@ describe("standalone macOS app authentication", () => {
   });
 
   it("exchanges a valid one-time PKCE grant for a server-side admin session", async () => {
-    const code = "11111111-1111-4111-8111-111111111111".repeat(2);
+    const code = testUuid().repeat(2);
     const verifier = "verifier_value_0123456789abcdefghijklmnopqrstuvwxyz";
     const challenge = [
       ...new Uint8Array(
@@ -1250,7 +1388,7 @@ describe("standalone macOS app authentication", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          code: "11111111-1111-4111-8111-111111111111".repeat(2),
+          code: testUuid().repeat(2),
           verifier: "v".repeat(43),
         }),
       }),
@@ -1617,7 +1755,7 @@ describe("admin API scope gate", () => {
     const writeLog: Statement[] = [];
     const response = await worker.fetch(
       new Request(
-        "https://admin.example/api/admin/operations/tasks/11111111-1111-4111-8111-111111111111",
+        `https://admin.example/api/admin/operations/tasks/${testUuid()}`,
         {
           method: "PATCH",
           headers: {
@@ -1649,7 +1787,7 @@ describe("admin API scope gate", () => {
     const writeLog: Statement[] = [];
     const response = await worker.fetch(
       new Request(
-        "https://admin.example/api/admin/operations/tasks/11111111-1111-4111-8111-111111111111",
+        `https://admin.example/api/admin/operations/tasks/${testUuid()}`,
         {
           method: "PATCH",
           headers: {
@@ -1802,7 +1940,7 @@ describe("applicant stage server-side access", () => {
         0,
         false,
         false,
-        "ukyoukay0@gmail.com",
+        "owner@example.test",
       ) as never,
     );
     expect(rootPage.status).toBe(302);
@@ -1815,7 +1953,7 @@ describe("applicant stage server-side access", () => {
     const response = await worker.fetch(
       new Request("https://admin.example/api/admin/report-admin-permissions", {
         headers: {
-          "Cf-Access-Authenticated-User-Email": "ukyoukay0@gmail.com",
+          "Cf-Access-Authenticated-User-Email": "owner@example.test",
         },
       }),
       env("cloudflare-access") as never,
@@ -1825,7 +1963,7 @@ describe("applicant stage server-side access", () => {
     expect(await response.json()).toMatchObject({
       permissions: [
         expect.objectContaining({
-          email: "ukyoukay0@gmail.com",
+          email: "owner@example.test",
           subjects: "*",
           display_name: "主管理者",
         }),
@@ -1845,12 +1983,12 @@ describe("applicant stage server-side access", () => {
     const response = await worker.fetch(
       new Request("https://admin.example/api/admin/report-admin-permissions", {
         headers: {
-          "Cf-Access-Authenticated-User-Email": "ukyoukay0@gmail.com",
+          "Cf-Access-Authenticated-User-Email": "owner@example.test",
         },
       }),
       {
         ADMIN_AUTH_MODE: "cloudflare-access",
-        ADMIN_PRIMARY_EMAIL: "ukyoukay0@gmail.com",
+        ADMIN_PRIMARY_EMAIL: "owner@example.test",
         REPORTS: reports,
         ASSETS: { fetch: async () => new Response(null, { status: 404 }) },
       } as never,
@@ -1895,12 +2033,12 @@ describe("applicant stage server-side access", () => {
     const response = await worker.fetch(
       new Request("https://admin.example/api/admin/report-admin-permissions", {
         headers: {
-          "Cf-Access-Authenticated-User-Email": "ukyoukay0@gmail.com",
+          "Cf-Access-Authenticated-User-Email": "owner@example.test",
         },
       }),
       {
         ADMIN_AUTH_MODE: "cloudflare-access",
-        ADMIN_PRIMARY_EMAIL: "ukyoukay0@gmail.com",
+        ADMIN_PRIMARY_EMAIL: "owner@example.test",
         REPORTS: reports,
         ASSETS: { fetch: async () => new Response(null, { status: 404 }) },
       } as never,
@@ -1940,12 +2078,12 @@ describe("applicant stage server-side access", () => {
     const response = await worker.fetch(
       new Request("https://admin.example/api/admin/verification-members", {
         headers: {
-          "Cf-Access-Authenticated-User-Email": "ukyoukay0@gmail.com",
+          "Cf-Access-Authenticated-User-Email": "owner@example.test",
         },
       }),
       {
         ADMIN_AUTH_MODE: "cloudflare-access",
-        ADMIN_PRIMARY_EMAIL: "ukyoukay0@gmail.com",
+        ADMIN_PRIMARY_EMAIL: "owner@example.test",
         REPORTS: reports,
         ASSETS: { fetch: async () => new Response(null, { status: 404 }) },
       } as never,
@@ -2231,70 +2369,143 @@ describe("applicant stage server-side access", () => {
   });
 
   it("accepts a complete student-council application and records its project", async () => {
-    const inserts: unknown[][] = [];
-    const applicationEnv = {
-      ADMIN_AUTH_MODE: "google-oauth",
-      REPORTS: {
-        prepare: (query: string) => {
-          const statement = new Statement(query);
-          statement.first = async <T>() => {
-            if (query.includes("admin_auth_sessions"))
-              return { email: "council-applicant@example.com" } as T;
-            return null as T | null;
-          };
-          statement.run = async () => {
-            if (query.includes("INSERT INTO atlasez_member_applications"))
-              inserts.push([]);
-            return { meta: { changes: 1 } };
-          };
-          return statement;
-        },
-        batch: async () => [],
-      },
-      ASSETS: { fetch: async () => new Response(null, { status: 404 }) },
-    };
-    const response = await worker.fetch(
-      new Request("https://admin.example/api/apply", {
-        method: "POST",
-        headers: {
-          cookie: "atlasez_admin_session=logged-in",
-          origin: "https://admin.example",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          projectSlug: "student-council-exchange",
-          familyName: "テスト",
-          givenName: "太郎",
-          familyNameKana: "てすと",
-          givenNameKana: "たろう",
-          formLanguage: "ja",
-          affiliationEmail: "student@school.example",
-          affiliationType: "高等学校",
-          institution: "テスト高等学校",
-          grade: "高2",
-          country: "日本",
-          timezone: "Asia/Tokyo",
-          birthDate: "2008-01-01",
-          residenceCity: "東京都",
-          referralSource: "テスト",
-          interests: "企画運営",
-          message: "応募テストです。",
-          motivationReasons: "活動に参加したい。",
-          desiredRoles: "企画",
-          interviewAvailability: "平日夕方",
-          projectAnswers: {
-            councilStatus: "生徒会所属中",
-            councilRole: "書記",
-            councilPlans: "学校を越えた交流会を企画したい。",
+    const db = new DatabaseSync(":memory:");
+    try {
+      const migrationDirectory = new URL("../../migrations/", import.meta.url);
+      for (const file of readdirSync(migrationDirectory)
+        .filter((name) => name.endsWith(".sql"))
+        .sort())
+        db.exec(readFileSync(new URL(file, migrationDirectory), "utf8"));
+      const token = "logged-in";
+      db.prepare(
+        "INSERT INTO admin_auth_sessions(session_hash,email,expires_at,created_at) VALUES (?,?,?,?)",
+      ).run(
+        createHash("sha256").update(token).digest("hex"),
+        "council-applicant@example.com",
+        "2099-01-01T00:00:00.000Z",
+        new Date().toISOString(),
+      );
+      const applicationEnv = {
+        ADMIN_AUTH_MODE: "google-oauth",
+        APPLICATION_OPERATIONS_EMAILS: "operator@atlasez.test",
+        REPORTS: {
+          prepare: (query: string) => {
+            type SqliteBoundValue =
+              null | number | bigint | string | NodeJS.ArrayBufferView;
+            let values: SqliteBoundValue[] = [];
+            return {
+              bind(...nextValues: unknown[]) {
+                values = nextValues as SqliteBoundValue[];
+                return this;
+              },
+              async run() {
+                return {
+                  meta: {
+                    changes: Number(db.prepare(query).run(...values).changes),
+                  },
+                };
+              },
+              async first<T>() {
+                return (
+                  (db.prepare(query).get(...values) as T | undefined) ?? null
+                );
+              },
+              async all<T>() {
+                return { results: db.prepare(query).all(...values) as T[] };
+              },
+            };
           },
+          batch: async (
+            statements: Array<{
+              run: () => Promise<{ meta: { changes: number } }>;
+            }>,
+          ) => {
+            db.exec("BEGIN");
+            try {
+              const results = [];
+              for (const statement of statements)
+                results.push(await statement.run());
+              db.exec("COMMIT");
+              return results;
+            } catch (error) {
+              db.exec("ROLLBACK");
+              throw error;
+            }
+          },
+        },
+        ASSETS: { fetch: async () => new Response(null, { status: 404 }) },
+      };
+      const response = await worker.fetch(
+        new Request("https://admin.example/api/apply", {
+          method: "POST",
+          headers: {
+            cookie: "atlasez_admin_session=logged-in",
+            origin: "https://admin.example",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            projectSlug: "student-council-exchange",
+            familyName: "テスト",
+            givenName: "太郎",
+            familyNameKana: "てすと",
+            givenNameKana: "たろう",
+            formLanguage: "ja",
+            affiliationEmail: "student@school.example",
+            affiliationType: "高等学校",
+            institution: "テスト高等学校",
+            grade: "高2",
+            country: "日本",
+            timezone: "Asia/Tokyo",
+            birthDate: "2008-01-01",
+            residenceCity: "東京都",
+            referralSource: "テスト",
+            interests: "企画運営",
+            message: "応募テストです。",
+            motivationReasons: "活動に参加したい。",
+            desiredRoles: "企画",
+            interviewAvailability: "平日夕方",
+            projectAnswers: {
+              councilStatus: "生徒会所属中",
+              councilRole: "書記",
+              councilPlans: "学校を越えた交流会を企画したい。",
+            },
+          }),
         }),
-      }),
-      applicationEnv as never,
-    );
+        applicationEnv as never,
+      );
 
-    expect(response.status).toBe(201);
-    expect(await response.json()).toMatchObject({ ok: true });
-    expect(inserts).toHaveLength(1);
+      expect(response.status).toBe(201);
+      expect(await response.json()).toMatchObject({
+        ok: true,
+        responseTaskCreated: true,
+        emailQueued: true,
+        emailQueueCount: 2,
+        emailProviderConfigured: false,
+      });
+      expect(
+        db
+          .prepare(
+            "SELECT project_slug FROM atlasez_member_applications WHERE email=?",
+          )
+          .get("council-applicant@example.com"),
+      ).toEqual({ project_slug: "student-council-exchange" });
+      expect(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM editorial_tasks WHERE created_by='応募フォーム'",
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+      expect(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM atlasez_application_email_deliveries",
+          )
+          .get(),
+      ).toEqual({ count: 2 });
+    } finally {
+      db.close();
+    }
   });
 
   it("sends a Google-authenticated user without an application to the applicant start page", async () => {
@@ -2492,25 +2703,25 @@ describe("applicant stage server-side access", () => {
       ],
       [
         "DELETE",
-        "/api/admin/operations/availability-blocks/123e4567-e89b-12d3-a456-426614174000",
+        `/api/admin/operations/availability-blocks/${testUuid()}`,
         undefined,
         200,
       ],
       [
         "DELETE",
-        "/api/admin/operations/availability-rules/123e4567-e89b-12d3-a456-426614174000",
+        `/api/admin/operations/availability-rules/${testUuid()}`,
         undefined,
         200,
       ],
       [
         "PATCH",
-        "/api/admin/operations/tasks/123e4567-e89b-12d3-a456-426614174000",
+        `/api/admin/operations/tasks/${testUuid()}`,
         { status: "doing" },
         404,
       ],
       [
         "PUT",
-        "/api/admin/operations/events/123e4567-e89b-12d3-a456-426614174000/availability",
+        `/api/admin/operations/events/${testUuid()}/availability`,
         { availability: "available" },
         404,
       ],
@@ -2589,14 +2800,10 @@ describe("applicant stage server-side access", () => {
     };
 
     const response = await worker.fetch(
-      loggedInApiRequest(
-        "/api/admin/operations/tasks/123e4567-e89b-12d3-a456-426614174000",
-        "PATCH",
-        {
-          status: "open",
-          expectedUpdatedAt: "2026-09-28T00:00:00.000Z",
-        },
-      ),
+      loggedInApiRequest(`/api/admin/operations/tasks/${testUuid()}`, "PATCH", {
+        status: "open",
+        expectedUpdatedAt: "2026-09-28T00:00:00.000Z",
+      }),
       memberEnvironment as never,
     );
 
