@@ -33,6 +33,8 @@
 
 2026-11-04 UTCのread-only確認で、Cloudflare上の専用Worker `atlasez-admin-staging` と別D1 `atlasez-admin-staging-reports` が存在し、専用 `workers.dev` originを使い、Custom Routeとscheduled triggerはありません。候補migration一式（0134を含む）を指定したD1 migration listはpendingなしでした。WorkerはVersion prefix `ef25f36d`が100%配信、Source `Unknown`で、live `build-info.json`は古いcommit `a509d52b5ad766d5cd41ad438ddf0040c7c13daa`, `ref=unknown`を返しました。current candidateの配信証拠ではありません。
 
+2026-11-27 JSTにCloudflareで再照合しました。専用Worker `atlasez-admin-staging` は `c6720fa9` を100%配信し、`REPORTS` は専用D1 `atlasez-admin-staging-reports` に接続しています。Cron、Queue consumer、Email Routing triggerはありません。D1台帳の末尾は `0134_application_intake_reconciliation.sql` で、0138–0143の記録はありません。旧0134と現0141のSQLはGit上でバイト単位で同一です。旧台帳に最新一式を一括適用すると、このSQLが再実行されるため、受入試験には別途承認された空の専用D1を使用します。既存D1を使う場合は、実スキーマと台帳の差分を確認し、レビュー・承認済みの専用移行手順が必要です。
+
 既存staging D1には運営者identityと試験データがあるため保持します。**既存Worker/D1を作り直す、削除する、空にする、role tableをresetする、またはrestoreする操作をしないでください。** Google Cloud Consoleの専用client/callback/test-user一覧は未確認で、運営者とは異なるsynthetic applicant/member・project reviewerは未準備です。Resend/Discordは設定上disabledですが、provider呼出し回数は計測していません。これらのread-back以降に設定差分を見つけた場合も、修正やresource作成の前に別途承認を取得します。
 
 以下の新規Worker/D1作成・空DB migration手順は、**新たな使い捨て環境が必要と判断され、個別変更承認が得られた場合のみ**の条件付き手順です。現在のstagingには適用しません。作業中に本番 `atlasez-admin`、本番D1、`admin.atlasez.org` のroute/secretを参照・変更しないでください。

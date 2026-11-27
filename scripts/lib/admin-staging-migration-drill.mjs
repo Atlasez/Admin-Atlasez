@@ -11,6 +11,12 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 const TARGET_MIGRATION = "0141_application_intake_reconciliation.sql";
+const EDITORIAL_MIGRATION = "0140_editorial_document_deletion_requests.sql";
+const MIGRATIONS_BEFORE_INTAKE = [
+  "0142_admin_scheduled_job_health.sql",
+  "0143_admin_scheduled_health_alerts.sql",
+  EDITORIAL_MIGRATION,
+];
 const SYNTHETIC_APPLICATION_ID = "staging-migration-fixture-0141";
 const NOW = "2026-11-03T00:00:00.000Z";
 
@@ -41,12 +47,14 @@ export function runAdminStagingMigrationDrill({
   const files = readdirSync(migrationDirectory)
     .filter((name) => name.endsWith(".sql"))
     .sort();
-  const targetIndex = files.indexOf(TARGET_MIGRATION);
-  assert.notEqual(
-    targetIndex,
-    -1,
-    "migration 0141 must be present on the tested branch",
-  );
+  for (const file of [...MIGRATIONS_BEFORE_INTAKE, TARGET_MIGRATION]) {
+    assert.ok(files.includes(file), `release migration ${file} is missing`);
+  }
+  // Match production: the two monitoring migrations precede the release stack.
+  const preMigrationFiles = [
+    ...files.filter((file) => file < EDITORIAL_MIGRATION),
+    ...MIGRATIONS_BEFORE_INTAKE,
+  ];
   const directory = mkdtempSync(
     join(tmpdir(), "atlasez-admin-staging-migration-"),
   );
@@ -57,7 +65,7 @@ export function runAdminStagingMigrationDrill({
   try {
     db = new DatabaseSync(databasePath);
     db.exec("PRAGMA foreign_keys=ON");
-    for (const file of files.slice(0, targetIndex))
+    for (const file of preMigrationFiles)
       db.exec(readFileSync(join(migrationDirectory, file), "utf8"));
     db.exec(`
       CREATE TABLE d1_migrations (
@@ -69,7 +77,7 @@ export function runAdminStagingMigrationDrill({
     const recordMigration = db.prepare(
       "INSERT INTO d1_migrations(name) VALUES(?)",
     );
-    for (const file of files.slice(0, targetIndex)) recordMigration.run(file);
+    for (const file of preMigrationFiles) recordMigration.run(file);
 
     // A fresh D1 receives hard-coded production operator/editor identities from
     // older migrations. A staging database must clear those bootstrap grants
@@ -257,17 +265,15 @@ export function runAdminStagingMigrationDrill({
       ),
       2,
     );
-    assert.equal(
-      count(
-        db,
-        "SELECT COUNT(*) AS count FROM d1_migrations WHERE name=?",
-        TARGET_MIGRATION,
-      ),
-      0,
-    );
+    const restoredMigrationFiles = db
+      .prepare("SELECT name FROM d1_migrations ORDER BY id")
+      .all()
+      .map((row) => row.name);
+    assert.deepEqual(restoredMigrationFiles, preMigrationFiles);
     assertDatabaseIntegrity(db);
     return {
-      preMigrationFiles: targetIndex,
+      preMigrationFiles: preMigrationFiles.length,
+      restoredMigrationTail: restoredMigrationFiles.slice(-3),
       migration: TARGET_MIGRATION,
       preservedApplicationRows: 1,
       preservedEmailQueueRows: 2,

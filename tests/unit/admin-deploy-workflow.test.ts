@@ -17,10 +17,12 @@ type Workflow = {
   name?: string;
   on?: Record<string, unknown>;
   permissions?: Record<string, string>;
+  concurrency?: unknown;
   jobs?: Record<
     string,
     {
       if?: string;
+      concurrency?: unknown;
       environment?: unknown;
       "timeout-minutes"?: number;
       env?: Record<string, string>;
@@ -109,6 +111,7 @@ describe("ADMIN Workers Builds-only production policy", () => {
     expect(build.on?.workflow_run).toEqual({
       workflows: ["CI"],
       types: ["completed"],
+      branches: ["main"],
     });
     expect(build.on).not.toHaveProperty("workflow_dispatch");
     expect(Object.keys(build.jobs ?? {})).toEqual(["verify"]);
@@ -137,6 +140,14 @@ describe("ADMIN Workers Builds-only production policy", () => {
     expect(wranglerLines).toEqual([
       "npx wrangler deploy --dry-run --config wrangler.admin.jsonc --keep-vars",
     ]);
+  });
+
+  it("limits cancellation to eligible verification jobs for the same main commit", () => {
+    expect(build.concurrency).toBeUndefined();
+    expect(build.jobs?.verify?.concurrency).toEqual({
+      group: "verify-admin-build-${{ github.event.workflow_run.head_sha }}",
+      "cancel-in-progress": true,
+    });
   });
 
   it("preserves all target, identity, CI, dry-run and artifact checks", () => {
