@@ -1,6 +1,199 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 const editorDocumentListRoute = /\/api\/admin\/editor\/documents(?:\?.*)?$/;
+
+type ArchiveTestRequest = {
+  id: string;
+  status: "pending" | "approved" | "rejected" | "withdrawn";
+  requested_by: string;
+  requested_at: string;
+  request_note: string;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string;
+};
+
+async function mockArchiveWorkflowApi(
+  page: Page,
+  options: {
+    documents: Record<string, unknown>[];
+    actor: () => string;
+    requests: Map<string, ArchiveTestRequest>;
+    archivedIds: Set<string>;
+  },
+) {
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const { pathname } = new URL(request.url());
+    const method = request.method();
+    const documentList = options.documents.map((document) => {
+      const id = String(document.id);
+      const archived = options.archivedIds.has(id);
+      return {
+        ...document,
+        archived_at: archived ? "2026-08-28T01:00:00.000Z" : null,
+        archive_expires_at: archived ? "2026-09-27T01:00:00.000Z" : null,
+      };
+    });
+    let status = 200;
+    let payload: unknown = {};
+    const archiveMatch = pathname.match(
+      /^\/api\/admin\/editor\/documents\/([^/]+)\/archive-request$/,
+    );
+    const unarchiveMatch = pathname.match(
+      /^\/api\/admin\/editor\/documents\/([^/]+)\/unarchive$/,
+    );
+    const revisionsMatch = pathname.match(
+      /^\/api\/admin\/editor\/documents\/([^/]+)\/revisions$/,
+    );
+    const publicationReviewMatch = pathname.match(
+      /^\/api\/admin\/editor\/documents\/([^/]+)\/publication-review$/,
+    );
+    const documentMatch = pathname.match(
+      /^\/api\/admin\/editor\/documents\/([^/]+)$/,
+    );
+
+    if (pathname === "/api/admin/auth-status") {
+      payload = {
+        email: options.actor(),
+        isManager: false,
+        canAccessAdmin: true,
+        canAccessScopedAdminPages: true,
+      };
+    } else if (pathname === "/api/admin/notifications") {
+      const pending = [...options.requests.values()].find(
+        (item) => item.status === "pending",
+      );
+      payload = {
+        notifications:
+          pending && options.actor() !== pending.requested_by
+            ? [
+                {
+                  id: `article-archive-request-${pending.id}-pending-${pending.requested_at}`,
+                  kind: "article-archive-request",
+                  title: "記事アーカイブ申請：整理前の下書き",
+                  detail: "承認待ち",
+                  href: `/admin/editor/?document=${options.documents[0]?.id}`,
+                  updatedAt: pending.requested_at,
+                },
+              ]
+            : [],
+        unreadNotificationsCount:
+          pending && options.actor() !== pending.requested_by ? 1 : 0,
+      };
+    } else if (pathname === "/api/admin/editor/documents") {
+      payload = {
+        scope: {
+          email: options.actor(),
+          subjects: options.actor() === "alice@example.com" ? ["mathematics"] : [],
+          isManager: false,
+        },
+        documents: documentList,
+        pagination: { hasMore: false, nextCursor: null },
+      };
+    } else if (archiveMatch) {
+      const documentId = archiveMatch[1];
+      const document = options.documents.find((item) => item.id === documentId);
+      const archiveRequest = options.requests.get(documentId) ?? null;
+      const archived = options.archivedIds.has(documentId);
+      if (method === "GET") {
+        const eligible = Boolean(
+          document &&
+            (document.status === "draft" || document.status === "in-review") &&
+            !document.publication_review_stage &&
+            !document.published_at &&
+            !archived,
+        );
+        const pending = archiveRequest?.status === "pending";
+        payload = {
+          request: archiveRequest,
+          canRequest:
+            eligible && !pending && document?.created_by === options.actor(),
+          canDecide:
+            pending &&
+            options.actor() === "operator@example.com" &&
+            archiveRequest?.requested_by !== options.actor(),
+          canWithdraw:
+            pending &&
+            (archiveRequest?.requested_by === options.actor() ||
+              options.actor() === "operator@example.com"),
+          eligible,
+          archived,
+        };
+      } else if (method === "POST") {
+        const body = request.postDataJSON() as { note?: string };
+        const now = new Date().toISOString();
+        options.requests.set(documentId, {
+          id: `archive-request-${documentId}`,
+          status: "pending",
+          requested_by: options.actor(),
+          requested_at: now,
+          request_note: body.note ?? "",
+          decided_by: null,
+          decided_at: null,
+          decision_note: "",
+        });
+        status = 201;
+        payload = { ok: true, status: "pending" };
+      } else if (method === "PATCH") {
+        const body = request.postDataJSON() as {
+          decision?: "approved" | "rejected";
+          note?: string;
+        };
+        const current = options.requests.get(documentId);
+        if (current) {
+          current.status = body.decision ?? "rejected";
+          current.decided_by = options.actor();
+          current.decided_at = new Date().toISOString();
+          current.decision_note = body.note ?? "";
+        }
+        if (body.decision === "approved") options.archivedIds.add(documentId);
+        payload = { ok: true, status: body.decision };
+      } else if (method === "DELETE") {
+        const current = options.requests.get(documentId);
+        if (current) current.status = "withdrawn";
+        payload = { ok: true, status: "withdrawn" };
+      }
+    } else if (unarchiveMatch && method === "POST") {
+      options.archivedIds.delete(unarchiveMatch[1]);
+      payload = { ok: true, archived: false };
+    } else if (revisionsMatch) {
+      payload = { revisions: [], feedbackRequests: [] };
+    } else if (publicationReviewMatch) {
+      const document = options.documents.find(
+        (item) => item.id === publicationReviewMatch[1],
+      );
+      payload = {
+        stage: document?.publication_review_stage ?? null,
+        canCompleteWriting: false,
+        canDecide: false,
+        archived: options.archivedIds.has(publicationReviewMatch[1]),
+        feedbackTaskTotal: 0,
+        feedbackTaskDone: 0,
+      };
+    } else if (documentMatch && method === "GET") {
+      const document = options.documents.find(
+        (item) => item.id === documentMatch[1],
+      );
+      payload = document ? { document, comments: [] } : { error: "not found" };
+      if (!document) status = 404;
+    } else if (pathname.endsWith("/assets")) {
+      payload = { assets: [] };
+    } else if (pathname === "/api/admin/editor/taxonomy") {
+      payload = { catalog: [] };
+    } else if (pathname === "/api/admin/editor/catalog") {
+      payload = { articles: [] };
+    } else if (pathname === "/api/admin/editor/publication-integration") {
+      payload = { configured: false, ready: false };
+    }
+
+    await route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify(payload),
+    });
+  });
+}
 
 test.describe("A/D 原稿一覧の作業導線", () => {
   test("運営トップを指定どおり4グループに分け、プロジェクト側マイページを表示しない", async ({
@@ -981,88 +1174,55 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     );
   });
 
-  test("D-4: 下書きをアーカイブし、30日以内なら一覧から復元できる", async ({
+  test("D-4: 編集画面で申請し、運営内運営の承認後に一覧から復元できる", async ({
     page,
   }) => {
     const activeId = "11111111-1111-4111-8111-111111111111";
     const archivedId = "22222222-2222-4222-8222-222222222222";
-    const now = Date.now();
-    const activeArchivedAt = new Date(now - 60 * 60 * 1_000).toISOString();
-    const activeArchiveExpiresAt = new Date(
-      now + 29 * 24 * 60 * 60 * 1_000,
-    ).toISOString();
-    const existingArchivedAt = new Date(
-      now - 2 * 24 * 60 * 60 * 1_000,
-    ).toISOString();
-    const existingArchiveExpiresAt = new Date(
-      now + 28 * 24 * 60 * 60 * 1_000,
-    ).toISOString();
-    let activeArchived = false;
-    await page.route("**/api/admin/editor/documents**", async (route) => {
-      await route.fulfill({
-        json: {
-          scope: { email: "alice@example.com" },
-          documents: [
-            {
-              id: activeId,
-              subject: "mathematics",
-              category: "algebra",
-              title: "整理前の下書き",
-              status: "draft",
-              created_by: "alice@example.com",
-              updated_at: "2026-08-28T00:00:00.000Z",
-              published_at: null,
-              ...(activeArchived
-                ? {
-                    archived_at: activeArchivedAt,
-                    archive_expires_at: activeArchiveExpiresAt,
-                  }
-                : {}),
-            },
-            {
-              id: archivedId,
-              subject: "mathematics",
-              category: "algebra",
-              title: "保管中の下書き",
-              status: "draft",
-              created_by: "alice@example.com",
-              updated_at: "2026-08-27T00:00:00.000Z",
-              published_at: null,
-              archived_at: existingArchivedAt,
-              archive_expires_at: existingArchiveExpiresAt,
-            },
-          ],
-        },
-      });
+    let actor = "alice@example.com";
+    const archivedIds = new Set([archivedId]);
+    const requests = new Map<string, ArchiveTestRequest>();
+    const documents = [
+      {
+        id: activeId,
+        source_article_id: null,
+        subject: "mathematics",
+        category: "algebra",
+        locale: "ja",
+        slug: "整理前の下書き",
+        title: "整理前の下書き",
+        summary: "",
+        concept_id: "math.algebra.archive-draft",
+        body: "## 整理前の下書き\n\n記事本文です。",
+        latex_engine: "katex",
+        status: "draft",
+        publication_review_stage: null,
+        created_by: "alice@example.com",
+        updated_by: "alice@example.com",
+        created_at: "2026-08-28T00:00:00.000Z",
+        updated_at: "2026-08-28T00:00:00.000Z",
+        published_at: null,
+      },
+      {
+        id: archivedId,
+        subject: "mathematics",
+        category: "algebra",
+        locale: "ja",
+        slug: "保管中の下書き",
+        title: "保管中の下書き",
+        status: "draft",
+        created_by: "alice@example.com",
+        updated_at: "2026-08-27T00:00:00.000Z",
+        published_at: null,
+      },
+    ];
+    await mockArchiveWorkflowApi(page, {
+      documents,
+      actor: () => actor,
+      requests,
+      archivedIds,
     });
-    await page.route(
-      `**/api/admin/editor/documents/${activeId}/archive`,
-      async (route) => {
-        activeArchived = true;
-        await route.fulfill({
-          json: {
-            ok: true,
-            archived: true,
-            archived_at: activeArchivedAt,
-            archive_expires_at: activeArchiveExpiresAt,
-          },
-        });
-      },
-    );
-    await page.route(
-      `**/api/admin/editor/documents/${activeId}/unarchive`,
-      async (route) => {
-        activeArchived = false;
-        await route.fulfill({
-          json: {
-            ok: true,
-            archived: false,
-            archived_at: null,
-            archive_expires_at: null,
-          },
-        });
-      },
-    );
+    page.on("dialog", (dialog) => dialog.accept());
 
     await page.goto("admin/articles/?verify=archive");
     await expect(page.locator("[data-archive]")).toHaveValue("active");
@@ -1071,17 +1231,40 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(page.locator("[data-list]")).not.toContainText(
       "保管中の下書き",
     );
+    const activeRow = page.locator(`[data-document-id="${activeId}"]`);
+    await expect(activeRow.locator("[data-archive-action]")).toHaveCount(0);
 
-    await page
-      .locator(
-        `[data-document-id="${activeId}"] [data-archive-action="archive"]`,
-      )
-      .click();
-    await expect(page).toHaveURL(/admin\/articles\/\?verify=archive$/);
+    await page.goto(`admin/editor/?document=${activeId}`);
+    await expect(page.locator("[data-document-form]")).toBeVisible();
+    await expect(page.locator("[data-request-archive]")).toBeVisible();
+    await page.locator("[data-archive-request-note]").fill("内容を整理します。");
+    await page.locator("[data-request-archive]").click();
+    await expect(page.locator("[data-archive-request-status]")).toContainText(
+      "承認待ち",
+    );
+    expect(requests.get(activeId)?.requested_by).toBe("alice@example.com");
+    await expect(page.locator("[data-archive-request-approve]")).toBeHidden();
+
+    actor = "operator@example.com";
+    await page.goto(`admin/editor/?document=${activeId}`);
+    await page.locator("[data-admin-notifications]").click();
+    await expect(page.locator("[data-admin-notification-list]")).toContainText(
+      "記事アーカイブ申請",
+    );
+    await page.locator("[data-close-notifications]").click();
+    await expect(page.locator("[data-archive-request-approve]")).toBeVisible();
+    await expect(page.locator("[data-request-archive]")).toBeHidden();
+    await page.locator("[data-archive-request-approve]").click();
+    await expect(page.locator("[data-archive-request-status]")).toContainText(
+      "承認されました",
+    );
+    expect(archivedIds.has(activeId)).toBe(true);
+
+    actor = "alice@example.com";
+    await page.goto("admin/articles/?verify=archive");
     await expect(page.locator("[data-list]")).not.toContainText(
       "整理前の下書き",
     );
-
     await page.locator(".advanced-filters > summary").click();
     await page.locator("[data-archive]").selectOption("archived");
     await expect(page.locator("[data-list] .article")).toHaveCount(2);
@@ -1099,79 +1282,67 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     );
   });
 
-  test("D-5: フィードバック中はアーカイブでき、公開審査中はできない", async ({
+  test("D-5: フィードバック中は申請でき、公開審査中は申請できない", async ({
     page,
   }) => {
     const feedbackId = "33333333-3333-4333-8333-333333333333";
     const reviewId = "44444444-4444-4444-8444-444444444444";
-    let archived = false;
+    const actor = () => "alice@example.com";
+    const requests = new Map<string, ArchiveTestRequest>();
+    const archivedIds = new Set<string>();
     const feedbackDocument = {
       id: feedbackId,
+      source_article_id: null,
       subject: "mathematics",
       category: "algebra",
+      locale: "ja",
+      slug: "feedback-article",
       title: "フィードバック中の記事",
+      summary: "",
+      concept_id: "math.algebra.feedback-article",
+      body: "## フィードバック中の記事\n\n記事本文です。",
+      latex_engine: "katex",
       status: "in-review",
       publication_review_stage: null,
       created_by: "alice@example.com",
+      updated_by: "alice@example.com",
+      created_at: "2026-08-28T00:00:00.000Z",
       updated_at: "2026-08-28T00:00:00.000Z",
       published_at: null,
-      archived_at: null,
     };
-    await page.route("**/api/admin/editor/documents**", async (route) => {
-      await route.fulfill({
-        json: {
-          scope: { email: "alice@example.com" },
-          documents: [
-            ...(archived
-              ? [
-                  {
-                    ...feedbackDocument,
-                    archived_at: "2026-08-28T01:00:00.000Z",
-                  },
-                ]
-              : [feedbackDocument]),
-            {
-              id: reviewId,
-              subject: "mathematics",
-              category: "algebra",
-              title: "公開審査中の記事",
-              status: "in-review",
-              publication_review_stage: "subject-coordinator",
-              created_by: "alice@example.com",
-              updated_at: "2026-08-27T00:00:00.000Z",
-              published_at: null,
-              archived_at: null,
-            },
-          ],
-        },
-      });
+    const reviewDocument = {
+      ...feedbackDocument,
+      id: reviewId,
+      slug: "publication-review-article",
+      title: "公開審査中の記事",
+      concept_id: "math.algebra.publication-review-article",
+      body: "## 公開審査中の記事\n\n記事本文です。",
+      publication_review_stage: "subject-coordinator",
+      updated_at: "2026-08-27T00:00:00.000Z",
+    };
+    await mockArchiveWorkflowApi(page, {
+      documents: [feedbackDocument, reviewDocument],
+      actor,
+      requests,
+      archivedIds,
     });
-    await page.route(
-      `**/api/admin/editor/documents/${feedbackId}/archive`,
-      async (route) => {
-        archived = true;
-        await route.fulfill({
-          json: {
-            ok: true,
-            archived: true,
-            archived_at: "2026-08-28T01:00:00.000Z",
-            archive_expires_at: "2026-09-27T01:00:00.000Z",
-          },
-        });
-      },
-    );
 
     await page.goto("admin/articles/?verify=feedback-archive");
     const feedbackRow = page.locator(`[data-document-id="${feedbackId}"]`);
     const reviewRow = page.locator(`[data-document-id="${reviewId}"]`);
-    await expect(
-      feedbackRow.locator('[data-archive-action="archive"]'),
-    ).toBeVisible();
     await expect(reviewRow.locator("[data-archive-action]")).toHaveCount(0);
+    await expect(feedbackRow.locator("[data-archive-action]")).toHaveCount(0);
 
-    await feedbackRow.locator('[data-archive-action="archive"]').click();
-    await expect(page.locator("[data-list]")).not.toContainText(
-      "フィードバック中の記事",
+    await page.goto(`admin/editor/?document=${feedbackId}`);
+    await expect(page.locator("[data-request-archive]")).toBeVisible();
+    await expect(page.locator("[data-archive-request-status]")).toContainText(
+      "申請すると",
+    );
+
+    await page.goto(`admin/editor/?document=${reviewId}`);
+    await expect(page.locator("[data-request-archive]")).toBeHidden();
+    await expect(page.locator("[data-archive-request-status]")).toContainText(
+      "公開審査中",
     );
   });
 
