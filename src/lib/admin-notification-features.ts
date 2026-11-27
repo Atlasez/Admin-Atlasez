@@ -12,6 +12,7 @@ export const notificationKinds = [
   "approved",
   "published",
   "task-reminder",
+  "article-deletion",
 ] as const;
 export const importantKinds = new Set<string>([
   "mention",
@@ -22,6 +23,7 @@ export const importantKinds = new Set<string>([
   "feedback-request",
   "task-request",
   "task-reminder",
+  "article-deletion",
 ]);
 export const notificationKindLabels: Record<
   (typeof notificationKinds)[number],
@@ -39,6 +41,7 @@ export const notificationKindLabels: Record<
   approved: "フィードバック完了",
   published: "公開",
   "task-reminder": "リマインダー",
+  "article-deletion": "記事の削除申請",
 };
 export function notificationKindLabel(kind: string | undefined) {
   if (!kind) return "通知";
@@ -190,6 +193,21 @@ export function notificationSourceMetadata(sql: string) {
     ["status = 'approved'", "approved", "updated_at"],
     ["published_at IS NOT NULL", "published", "published_at"],
   ] as const;
+  if (
+    sql.includes("FROM editorial_document_deletion_requests") &&
+    sql.includes("status IN ('approved','rejected')")
+  )
+    return {
+      id: "'article-deletion-result-' || s.id || '-' || s.status",
+      time: "updated_at",
+      kind: "'article-deletion'",
+    };
+  if (sql.includes("FROM editorial_document_deletion_requests"))
+    return {
+      id: "'article-deletion-' || s.id",
+      time: "updated_at",
+      kind: "'article-deletion'",
+    };
   if (sql.includes("FROM editorial_tasks t"))
     return {
       id: "CASE WHEN s.task_kind='feedback' THEN 'feedback-request-' ELSE 'task-request-' END || s.id",
@@ -296,7 +314,7 @@ export async function handleNotificationFeatures(
   if (path.endsWith("/snooze") && request.method === "POST") {
     const id = typeof payload.id === "string" ? payload.id : "";
     if (
-      !/^(comment|mention|approved|published|publication-ready|review|publication-review|publication-review-returned|application|feedback-request|task-request|task-reminder|task-reminder-rule)-[a-zA-Z0-9:._+\-]{8,}$/.test(
+      !/^(comment|mention|approved|published|publication-ready|review|publication-review|publication-review-returned|application|feedback-request|task-request|task-reminder|task-reminder-rule|article-deletion)-[a-zA-Z0-9:._+\-]{8,}$/.test(
         id,
       ) ||
       id.length > 512
