@@ -822,6 +822,7 @@ type AdminScope = {
   memberAccess?: boolean;
   coordinatorSubjects?: string[];
   isProjectLeader?: boolean;
+  isAtlasOperationsManager?: boolean;
 };
 
 type CurrentUserStage = {
@@ -1194,10 +1195,11 @@ async function resolveAdminScope(
       isManager: true,
       coordinatorSubjects: ["*"],
       isProjectLeader: true,
+      isAtlasOperationsManager: true,
     };
   if (email !== primaryAdminEmail(env) && !(await isAtlasMemberActive(env, email)))
     return json({ error: "アトラスでの活動は停止中です。再開は諸手続きから申請してください。", code: "PROJECT_MEMBERSHIP_INACTIVE" }, 403);
-  const [result, workflowRoles] = await Promise.all([
+  const [result, workflowRoles, atlasManager] = await Promise.all([
     env.REPORTS.prepare(
       "SELECT subject FROM report_admin_permissions WHERE email = ?",
     )
@@ -1208,6 +1210,17 @@ async function resolveAdminScope(
     )
       .bind(email)
       .all<{ role: EditorialWorkflowRole; subject: string }>(),
+    env.REPORTS.prepare(
+      `SELECT 1 AS found FROM atlasez_project_memberships m
+       WHERE m.project_id='atlas' AND lower(m.email)=lower(?) AND m.role='manager'
+         AND NOT EXISTS (SELECT 1 FROM atlasez_project_member_lifecycle participation
+           WHERE participation.project_id=m.project_id AND lower(participation.email)=lower(m.email) AND participation.state!='active')
+         AND NOT EXISTS (SELECT 1 FROM admin_member_lifecycle lifecycle
+           WHERE lower(lifecycle.email)=lower(m.email) AND lifecycle.status='archived')
+       LIMIT 1`,
+    )
+      .bind(email)
+      .first<{ found: number }>(),
   ]);
   const grantedSubjects = result.results
     .map((permission) => permission.subject)
@@ -1216,6 +1229,7 @@ async function resolveAdminScope(
   if (
     !grantedSubjects.length &&
     !(workflowRoles.results ?? []).length &&
+    !atlasManager &&
     email !== configuredPrimaryAdmin
   )
     return json({ error: "この管理画面の閲覧権限が設定されていません。" }, 403);
@@ -1235,6 +1249,7 @@ async function resolveAdminScope(
     isProjectLeader: (workflowRoles.results ?? []).some(
       (role) => role.role === "project-leader",
     ),
+    isAtlasOperationsManager: Boolean(atlasManager),
   };
 }
 
@@ -2421,6 +2436,10 @@ type AdminAuditAction =
   | "article_created"
   | "article_updated"
   | "article_update_proposal_created"
+  | "article_archive_requested"
+  | "article_archive_approved"
+  | "article_archive_rejected"
+  | "article_archive_request_withdrawn"
   | "article_approved"
   | "article_published"
   | "article_unpublished"
@@ -2464,6 +2483,10 @@ const adminAuditActionLabel = (action: AdminAuditAction | string) => ({
   article_created: "記事を作成",
   article_updated: "記事を更新",
   article_update_proposal_created: "記事の更新案を作成",
+  article_archive_requested: "記事のアーカイブを申請",
+  article_archive_approved: "記事のアーカイブを承認",
+  article_archive_rejected: "記事のアーカイブを却下",
+  article_archive_request_withdrawn: "記事のアーカイブ申請を取り下げ",
   article_approved: "記事を承認",
   article_published: "記事を公開",
   article_unpublished: "記事の公開を取り消し",
@@ -7099,6 +7122,7 @@ async function listEditorialDocuments(
       allSubjects: scope.allSubjects,
       isManager: scope.isManager,
       isProjectLeader: scope.isProjectLeader,
+      isAtlasOperationsManager: scope.isAtlasOperationsManager,
       coordinatorSubjects: scope.coordinatorSubjects,
     },
   });
@@ -7137,6 +7161,8 @@ async function updateEditorialDocumentArchive(
     );
   if (!scope.isManager && document.created_by.toLowerCase() !== scope.email.toLowerCase() && !canEditSubject(scope, document.subject))
     return json({ error: "この原稿をアーカイブする権限がありません。" }, 403);
+  if (archive)
+    return json({ error: "記事のアーカイブは編集画面から承認申請してください。" }, 409);
 
   if (!archive) {
     if (!document.archived_at) return json({ ok: true, archived: false });
@@ -7152,22 +7178,278 @@ async function updateEditorialDocumentArchive(
       return json({ error: "原稿の状態が変わりました。再読み込みしてから復元してください。" }, 409);
     return json({ ok: true, archived: false, archived_at: null, archive_expires_at: null });
   }
+  return json({ error: "記事のアーカイブは編集画面から承認申請してください。" }, 409);
+}
 
-  if (document.archived_at && document.archive_expires_at && Date.parse(document.archive_expires_at) > Date.now())
-    return json({ ok: true, archived: true, archived_at: document.archived_at, archive_expires_at: document.archive_expires_at });
-  if (document.archived_at)
-    return json({ error: `アーカイブ期限（${EDITORIAL_ARCHIVE_DAYS}日）を過ぎたため再アーカイブできません。` }, 410);
-  const now = new Date();
-  const archivedAt = now.toISOString();
-  const archiveExpiresAt = editorialArchiveExpiry(now);
-  const result = await env.REPORTS.prepare(
-    "UPDATE editorial_documents SET archived_at = ?, archived_by = ?, archive_expires_at = ?, updated_at = ?, updated_by = ? WHERE id = ? AND archived_at IS NULL AND status IN ('draft', 'in-review') AND published_version_id IS NULL AND published_at IS NULL AND scheduled_publish_at IS NULL AND publication_review_stage IS NULL",
+type EditorialArchiveDocument = Pick<
+  EditorialDocument,
+  | "id" | "title" | "subject" | "status" | "created_by" | "updated_at"
+  | "published_at" | "published_version_id" | "publication_review_stage"
+  | "scheduled_publish_at" | "archived_at" | "archive_expires_at"
+>;
+
+type EditorialArchiveRequest = {
+  id: string;
+  document_id: string;
+  status: "pending" | "approved" | "rejected" | "withdrawn";
+  requested_by: string;
+  requested_at: string;
+  requested_updated_at: string;
+  request_note: string;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string;
+};
+
+type EditorialArchiveEligibility = Pick<
+  EditorialArchiveDocument,
+  | "status" | "archived_at" | "publication_review_stage" | "published_version_id"
+  | "published_at" | "scheduled_publish_at"
+>;
+
+const editorialDocumentArchiveEligible = (document: EditorialArchiveEligibility) =>
+  !document.archived_at &&
+  (document.status === "draft" || document.status === "in-review") &&
+  !document.publication_review_stage &&
+  !document.published_version_id &&
+  !document.published_at &&
+  !document.scheduled_publish_at;
+
+const canRequestEditorialArchive = (scope: AdminScope, document: EditorialArchiveDocument) =>
+  scope.isManager || scope.isAtlasOperationsManager || scope.isProjectLeader || canCoordinateSubject(scope, document.subject) ||
+  canEditSubject(scope, document.subject) ||
+  document.created_by.toLowerCase() === scope.email.toLowerCase();
+
+const canDecideEditorialArchive = (scope: AdminScope, subject: string) =>
+  Boolean(scope.isManager || scope.isAtlasOperationsManager || scope.isProjectLeader || canCoordinateSubject(scope, subject));
+
+const canReviewPendingEditorialArchiveRequest = async (
+  env: Env,
+  scope: AdminScope,
+  document: Pick<EditorialArchiveDocument, "id" | "subject">,
+) => {
+  if (!canDecideEditorialArchive(scope, document.subject)) return false;
+  const pendingRequest = await env.REPORTS.prepare(
+    "SELECT requested_by FROM editorial_document_archive_requests WHERE document_id=? AND status='pending' LIMIT 1",
   )
-    .bind(archivedAt, scope.email, archiveExpiresAt, archivedAt, scope.email, documentId)
-    .run();
-  if (Number(result.meta?.changes ?? 0) !== 1)
-    return json({ error: "原稿の状態が変わりました。再読み込みしてからアーカイブしてください。" }, 409);
-  return json({ ok: true, archived: true, archived_at: archivedAt, archive_expires_at: archiveExpiresAt });
+    .bind(document.id)
+    .first<{ requested_by: string }>();
+  return Boolean(
+    pendingRequest &&
+      pendingRequest.requested_by.toLowerCase() !== scope.email.toLowerCase(),
+  );
+};
+
+const canReadEditorialDocumentOrArchiveApprover = async (
+  env: Env,
+  scope: AdminScope,
+  document: EditorialDocument,
+) =>
+  canReviewDocument(scope, document) ||
+  (await canReviewPendingEditorialArchiveRequest(env, scope, document));
+
+async function getEditorialArchiveRequestState(
+  request: Request,
+  env: Env,
+  documentId: string,
+): Promise<Response> {
+  const scope = await getAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  const document = await env.REPORTS.prepare(
+    `SELECT id,title,subject,status,created_by,updated_at,published_at,published_version_id,
+            publication_review_stage,scheduled_publish_at,archived_at,archive_expires_at
+       FROM editorial_documents WHERE id=?`,
+  ).bind(documentId).first<EditorialArchiveDocument>();
+  if (!document) return json({ error: "原稿が見つかりません。" }, 404);
+  if (!canReviewDocument(scope, document) && !canRequestEditorialArchive(scope, document))
+    return json({ error: "この原稿のアーカイブ申請を閲覧する権限がありません。" }, 403);
+  const row = await env.REPORTS.prepare(
+    `SELECT id,document_id,status,requested_by,requested_at,requested_updated_at,request_note,
+            decided_by,decided_at,decision_note
+       FROM editorial_document_archive_requests WHERE document_id=?
+       ORDER BY requested_at DESC,id DESC LIMIT 1`,
+  ).bind(documentId).first<EditorialArchiveRequest>();
+  const pending = row?.status === "pending";
+  const eligible = editorialDocumentArchiveEligible(document);
+  const approver = canDecideEditorialArchive(scope, document.subject);
+  return json({
+    request: row ?? null,
+    canRequest: eligible && !pending && canRequestEditorialArchive(scope, document),
+    canDecide: Boolean(pending && approver && row?.requested_by.toLowerCase() !== scope.email.toLowerCase()),
+    canWithdraw: Boolean(pending && (approver || row?.requested_by.toLowerCase() === scope.email.toLowerCase())),
+    eligible,
+    archived: Boolean(document.archived_at),
+  });
+}
+
+async function createEditorialArchiveRequest(
+  request: Request,
+  env: Env,
+  documentId: string,
+): Promise<Response> {
+  if (!isSameOrigin(request))
+    return json({ error: "この送信元からは受け付けられません。" }, 403);
+  const scope = await getAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  const payload = await request.json().catch(() => null) as { note?: unknown; expectedUpdatedAt?: unknown } | null;
+  const document = await env.REPORTS.prepare(
+    `SELECT id,title,subject,status,created_by,updated_at,published_at,published_version_id,
+            publication_review_stage,scheduled_publish_at,archived_at,archive_expires_at
+       FROM editorial_documents WHERE id=?`,
+  ).bind(documentId).first<EditorialArchiveDocument>();
+  if (!document) return json({ error: "原稿が見つかりません。" }, 404);
+  if (!canRequestEditorialArchive(scope, document))
+    return json({ error: "この原稿のアーカイブを申請する権限がありません。" }, 403);
+  if (!editorialDocumentArchiveEligible(document))
+    return json({ error: "アーカイブできるのは公開前の下書き・フィードバック中の記事です。公開審査中・公開済み・公開予約中の記事は申請できません。" }, 409);
+  const expectedUpdatedAt = typeof payload?.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt.trim() : "";
+  if (!expectedUpdatedAt || expectedUpdatedAt !== document.updated_at)
+    return json({ error: "記事の保存状態が変わりました。再読み込みしてから申請してください。" }, 409);
+  const now = new Date().toISOString();
+  const requestId = crypto.randomUUID();
+  const requestNote = typeof payload?.note === "string" ? payload.note.trim().slice(0, 1000) : "";
+  let inserted: { meta?: { changes?: number } };
+  try {
+    inserted = await env.REPORTS.prepare(
+      `INSERT INTO editorial_document_archive_requests
+        (id,document_id,status,requested_by,requested_at,requested_updated_at,request_note,decided_by,decided_at,decision_note)
+       SELECT ?,?,'pending',?,?,?,?,NULL,NULL,''
+        WHERE EXISTS (SELECT 1 FROM editorial_documents d WHERE d.id=? AND d.updated_at=?
+          AND d.archived_at IS NULL AND d.status IN ('draft','in-review')
+          AND d.publication_review_stage IS NULL AND d.published_version_id IS NULL
+          AND d.published_at IS NULL AND d.scheduled_publish_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM editorial_document_archive_requests r WHERE r.document_id=? AND r.status='pending')`,
+    ).bind(requestId, documentId, scope.email, now, expectedUpdatedAt, requestNote, documentId, expectedUpdatedAt, documentId).run();
+  } catch {
+    const pending = await env.REPORTS.prepare(
+      "SELECT id FROM editorial_document_archive_requests WHERE document_id=? AND status='pending' LIMIT 1",
+    ).bind(documentId).first<{ id: string }>();
+    if (pending) return json({ error: "この記事には承認待ちの申請があります。" }, 409);
+    throw new Error("アーカイブ申請を保存できませんでした。");
+  }
+  if (Number(inserted.meta?.changes ?? 0) !== 1)
+    return json({ error: "記事の状態が変わりました。再読み込みしてから申請してください。" }, 409);
+  await recordAdminAudit(env, scope.email, "article_archive_requested", "article", documentId, document.title, `記事のアーカイブを申請：${document.title}`, { requestId, subject: document.subject, note: requestNote });
+  await Promise.all([
+    notifyEditorialDocumentChange(env, documentId),
+    notifyAtlasDiscordWebhook(env, {
+      dedupeKey: `article-archive-request:${requestId}:requested`,
+      kind: "article-archive-request",
+      content: `記事アーカイブ申請：${document.title}\n申請者：${scope.email}\n分野：${document.subject}${requestNote ? `\n理由：${requestNote}` : ""}\n/admin/editor/?document=${documentId}`,
+    }),
+  ]);
+  return json({ ok: true, requestId, status: "pending" }, 201);
+}
+
+async function decideEditorialArchiveRequest(
+  request: Request,
+  env: Env,
+  documentId: string,
+): Promise<Response> {
+  if (!isSameOrigin(request))
+    return json({ error: "この送信元からは受け付けられません。" }, 403);
+  const scope = await getAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  const payload = await request.json().catch(() => null) as { requestId?: unknown; decision?: unknown; note?: unknown } | null;
+  const decision = payload?.decision === "approved" || payload?.decision === "rejected" ? payload.decision : null;
+  if (!decision) return json({ error: "承認または却下を指定してください。" }, 400);
+  const requestId = typeof payload?.requestId === "string" ? payload.requestId.trim() : "";
+  const archiveRequest = await env.REPORTS.prepare(
+    `SELECT r.id,r.requested_by,d.title,d.subject,d.status AS document_status,d.published_at,
+            d.published_version_id,d.publication_review_stage,d.scheduled_publish_at,d.archived_at
+       FROM editorial_document_archive_requests r
+       JOIN editorial_documents d ON d.id=r.document_id
+      WHERE r.document_id=? AND r.status='pending' AND (?='' OR r.id=?) LIMIT 1`,
+  ).bind(documentId, requestId, requestId).first<{
+    id: string; requested_by: string; title: string; subject: string;
+    document_status: EditorialDocument["status"];
+    published_at: string | null; published_version_id: string | null;
+    publication_review_stage: EditorialDocument["publication_review_stage"];
+    scheduled_publish_at: string | null; archived_at: string | null;
+  }>();
+  if (!archiveRequest) return json({ error: "承認待ちのアーカイブ申請が見つかりません。" }, 404);
+  if (!canDecideEditorialArchive(scope, archiveRequest.subject))
+    return json({ error: "アーカイブ申請を処理できるのは該当分野の統括、プロジェクトリーダー、運営内運営、全分野管理者です。" }, 403);
+  if (archiveRequest.requested_by.toLowerCase() === scope.email.toLowerCase())
+    return json({ error: "申請者本人は自分の申請を承認・却下できません。" }, 403);
+  const note = typeof payload?.note === "string" ? payload.note.trim().slice(0, 1000) : "";
+  const now = new Date().toISOString();
+  if (decision === "rejected") {
+    const results = await env.REPORTS.batch([
+      env.REPORTS.prepare(
+        "UPDATE editorial_document_archive_requests SET status='rejected',decided_by=?,decided_at=?,decision_note=? WHERE id=? AND status='pending'",
+      ).bind(scope.email, now, note, archiveRequest.id),
+      adminAuditStatement(env, scope.email, "article_archive_rejected", "article", documentId, archiveRequest.title, `記事のアーカイブ申請を却下：${archiveRequest.title}`, { requestId: archiveRequest.id, requestedBy: archiveRequest.requested_by, note }, true),
+    ]);
+    if (Number(results[0]?.meta?.changes ?? 0) !== 1)
+      return json({ error: "申請状態が変わりました。再読み込みしてください。" }, 409);
+    await notifyAtlasDiscordWebhook(env, {
+      dedupeKey: `article-archive-request:${archiveRequest.id}:rejected`,
+      kind: "article-archive-request",
+      content: `記事アーカイブ申請を却下：${archiveRequest.title}\n申請者：${archiveRequest.requested_by}\n対応者：${scope.email}${note ? `\n理由：${note}` : ""}`,
+    });
+    return json({ ok: true, status: "rejected" });
+  }
+  if (!editorialDocumentArchiveEligible({ ...archiveRequest, status: archiveRequest.document_status }))
+    return json({ error: "この記事は現在アーカイブできる状態ではありません。申請を却下してください。" }, 409);
+  const archiveExpiresAt = editorialArchiveExpiry(new Date(now));
+  const results = await env.REPORTS.batch([
+    env.REPORTS.prepare(
+      `UPDATE editorial_documents SET archived_at=?,archived_by=?,archive_expires_at=?,updated_at=?,updated_by=?
+        WHERE id=? AND archived_at IS NULL AND status IN ('draft','in-review')
+          AND published_version_id IS NULL AND published_at IS NULL AND scheduled_publish_at IS NULL
+          AND publication_review_stage IS NULL
+          AND EXISTS (SELECT 1 FROM editorial_document_archive_requests r WHERE r.id=? AND r.status='pending')`,
+    ).bind(now, scope.email, archiveExpiresAt, now, scope.email, documentId, archiveRequest.id),
+    env.REPORTS.prepare(
+      `UPDATE editorial_document_archive_requests SET status='approved',decided_by=?,decided_at=?,decision_note=?
+        WHERE id=? AND status='pending' AND EXISTS (SELECT 1 FROM editorial_documents d WHERE d.id=? AND d.archived_at=? AND d.archived_by=?)`,
+    ).bind(scope.email, now, note, archiveRequest.id, documentId, now, scope.email),
+    adminAuditStatement(env, scope.email, "article_archive_approved", "article", documentId, archiveRequest.title, `記事のアーカイブを承認：${archiveRequest.title}`, { requestId: archiveRequest.id, requestedBy: archiveRequest.requested_by, archiveExpiresAt, note }, true),
+  ]);
+  if (Number(results[0]?.meta?.changes ?? 0) !== 1 || Number(results[1]?.meta?.changes ?? 0) !== 1)
+    return json({ error: "記事または申請の状態が変わりました。再読み込みしてから処理してください。" }, 409);
+  await Promise.all([
+    notifyEditorialDocumentChange(env, documentId),
+    notifyAtlasDiscordWebhook(env, {
+      dedupeKey: `article-archive-request:${archiveRequest.id}:approved`,
+      kind: "article-archive-request",
+      content: `記事アーカイブ申請を承認：${archiveRequest.title}\n申請者：${archiveRequest.requested_by}\n対応者：${scope.email}\n30日間復元できます。`,
+    }),
+  ]);
+  return json({ ok: true, status: "approved", archivedAt: now, archiveExpiresAt });
+}
+
+async function withdrawEditorialArchiveRequest(
+  request: Request,
+  env: Env,
+  documentId: string,
+): Promise<Response> {
+  if (!isSameOrigin(request))
+    return json({ error: "この送信元からは受け付けられません。" }, 403);
+  const scope = await getAdminScope(request, env);
+  if (isResponse(scope)) return scope;
+  const payload = await request.json().catch(() => null) as { requestId?: unknown } | null;
+  const requestId = typeof payload?.requestId === "string" ? payload.requestId.trim() : "";
+  const archiveRequest = await env.REPORTS.prepare(
+    `SELECT r.id,r.document_id,r.status,r.requested_by,r.requested_at,r.requested_updated_at,r.request_note,
+            r.decided_by,r.decided_at,r.decision_note,d.subject
+       FROM editorial_document_archive_requests r JOIN editorial_documents d ON d.id=r.document_id
+      WHERE r.document_id=? AND r.status='pending' AND (?='' OR r.id=?) LIMIT 1`,
+  ).bind(documentId, requestId, requestId).first<EditorialArchiveRequest & { subject: string }>();
+  if (!archiveRequest) return json({ error: "承認待ちのアーカイブ申請が見つかりません。" }, 404);
+  const canWithdraw = canDecideEditorialArchive(scope, archiveRequest.subject) || archiveRequest.requested_by.toLowerCase() === scope.email.toLowerCase();
+  if (!canWithdraw) return json({ error: "このアーカイブ申請を取り下げる権限がありません。" }, 403);
+  const now = new Date().toISOString();
+  const results = await env.REPORTS.batch([
+    env.REPORTS.prepare(
+      "UPDATE editorial_document_archive_requests SET status='withdrawn',decided_by=?,decided_at=? WHERE id=? AND status='pending'",
+    ).bind(scope.email, now, archiveRequest.id),
+    adminAuditStatement(env, scope.email, "article_archive_request_withdrawn", "article", documentId, documentId, "記事のアーカイブ申請を取り下げ", { requestId: archiveRequest.id, requestedBy: archiveRequest.requested_by }, true),
+  ]);
+  if (Number(results[0]?.meta?.changes ?? 0) !== 1)
+    return json({ error: "申請状態が変わりました。再読み込みしてください。" }, 409);
+  return json({ ok: true, status: "withdrawn" });
 }
 
 const publicArticleCatalogFields = `
@@ -15897,7 +16179,7 @@ async function getEditorialDocument(
     .bind(documentId)
     .first<EditorialDocument>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (!canReviewDocument(scope, document))
+  if (!(await canReadEditorialDocumentOrArchiveApprover(env, scope, document)))
     return json({ error: "この分野の原稿を閲覧する権限がありません。" }, 403);
   const comments = await env.REPORTS.prepare(
     `SELECT id, document_id, parent_comment_id, body, created_by, created_at, selection_start, selection_end, selection_text,
@@ -16842,7 +17124,14 @@ async function listEditorialRevisions(
       published_version_id: string | null;
       archived_at: string | null;
     }>();
-  if (!document || !canReviewDocument(scope, document))
+  if (
+    !document ||
+    (!canReviewDocument(scope, document) &&
+      !(await canReviewPendingEditorialArchiveRequest(env, scope, {
+        id: documentId,
+        subject: document.subject,
+      })))
+  )
     return json({ error: "この原稿を閲覧する権限がありません。" }, 403);
   const result = await env.REPORTS.prepare(
     `SELECT r.id, r.title, r.summary, r.body, r.status, r.saved_by, r.saved_at, r.snapshot_json,
@@ -22436,7 +22725,10 @@ async function getPublicationReviewState(
   )
     .bind(documentId)
     .first<EditorialDocument>();
-  if (!document || !canReviewDocument(scope, document))
+  if (
+    !document ||
+    !(await canReadEditorialDocumentOrArchiveApprover(env, scope, document))
+  )
     return json({ error: "この原稿を閲覧する権限がありません。" }, 403);
   const [coordinators, leaders, feedbackTasks] = await Promise.all([
     publicationReviewRoleEmails(env, "subject-coordinator", document.subject),
@@ -24197,8 +24489,15 @@ async function adminNotifications(
   env: Env,
   preloadedScope?: AdminScope,
 ): Promise<Response> {
-  const scope = preloadedScope ?? (await getMemberOperationScope(request, env));
+  let scope = preloadedScope ?? (await getMemberOperationScope(request, env));
   if (isResponse(scope)) return scope;
+  // Regular project members can still use task notifications. If the same user
+  // also has editorial approval or Atlas project-manager privileges, upgrade to
+  // that narrower editorial scope so archive decisions appear in their inbox.
+  if (scope.memberAccess) {
+    const editorialScope = await getAdminScope(request, env);
+    if (!isResponse(editorialScope)) scope = editorialScope;
+  }
   const globalCutoff = await loadGlobalNotificationCutoff(env.REPORTS);
   if (!globalCutoff.available || !globalCutoff.clearedBefore)
     return json(
@@ -24537,6 +24836,26 @@ async function adminNotifications(
       [scope.email],
     ),
   ]);
+  const broadArchiveApprover = Boolean(scope.isManager || scope.isAtlasOperationsManager || scope.isProjectLeader);
+  const archiveCoordinatorPredicate = broadArchiveApprover
+    ? "1=1"
+    : scope.coordinatorSubjects?.length
+      ? `EXISTS (SELECT 1 FROM editorial_workflow_roles wr WHERE wr.role='subject-coordinator'
+           AND lower(wr.email)=lower(?) AND (wr.subject=d.subject OR wr.subject='*'))`
+      : "0=1";
+  const archiveRequestRows = await queryNotificationSource<{
+    id: string; document_id: string; title: string; status: "pending" | "approved" | "rejected" | "withdrawn";
+    requested_by: string; request_note: string; decision_note: string; updated_at: string;
+  }>(
+    `SELECT r.id,r.document_id,d.title,r.status,r.requested_by,r.request_note,r.decision_note,
+            COALESCE(r.decided_at,r.requested_at) AS updated_at
+       FROM editorial_document_archive_requests r
+       JOIN editorial_documents d ON d.id=r.document_id
+      WHERE (r.status='pending' AND ${archiveCoordinatorPredicate})
+         OR (lower(r.requested_by)=lower(?) AND r.status IN ('pending','approved','rejected','withdrawn'))
+      ORDER BY COALESCE(r.decided_at,r.requested_at) DESC`,
+    [...(!broadArchiveApprover && scope.coordinatorSubjects?.length ? [scope.email] : []), scope.email],
+  );
   const sortedNotifications = [
     ...(commentRows.results ?? []).map((item) => ({
       id: `comment-${item.id}`,
@@ -24594,6 +24913,18 @@ async function adminNotifications(
         item.note || "フィードバック中へ戻されました。内容を確認してください。",
       href: `/admin/editor/?document=${encodeURIComponent(item.id)}`,
       updatedAt: item.created_at,
+    })),
+    ...(archiveRequestRows.results ?? []).map((item) => ({
+      id: `article-archive-request-${item.id}-${item.status}-${item.updated_at}`,
+      kind: "article-archive-request",
+      title: item.status === "pending"
+        ? `アーカイブ承認申請：${item.title}`
+        : `アーカイブ申請を${item.status === "approved" ? "承認" : item.status === "rejected" ? "却下" : "取り下げ"}：${item.title}`,
+      detail: item.status === "pending"
+        ? `申請者：${item.requested_by}${item.request_note ? ` ／ 理由：${item.request_note}` : " ／ 承認または却下してください。"}`
+        : item.decision_note || "申請状態を確認してください。",
+      href: `/admin/editor/?document=${encodeURIComponent(item.document_id)}`,
+      updatedAt: item.updated_at,
     })),
     ...(scope.isManager
       ? (reviewRows.results ?? []).map((item) => ({
@@ -24725,7 +25056,7 @@ async function markAdminNotificationsRead(
             .filter(
               (id): id is string =>
                 typeof id === "string" &&
-                /^(comment|mention|approved|published|publication-ready|review|publication-review|publication-review-returned|application|feedback-request|task-request|task-reminder|task-reminder-rule)-[a-zA-Z0-9:._+\-]{8,}$/.test(
+                /^(comment|mention|approved|published|publication-ready|review|publication-review|publication-review-returned|article-archive-request|application|feedback-request|task-request|task-reminder|task-reminder-rule)-[a-zA-Z0-9:._+\-]{8,}$/.test(
                   id,
                 ),
             ),
@@ -24764,7 +25095,7 @@ async function markAdminNotificationsRead(
       ? notificationData.unreadNotificationIds.filter(
           (id): id is string =>
             typeof id === "string" &&
-            /^(comment|mention|approved|published|publication-ready|review|publication-review|publication-review-returned|application|feedback-request|task-request|task-reminder|task-reminder-rule)-[a-zA-Z0-9:._+\-]{8,}$/.test(id),
+            /^(comment|mention|approved|published|publication-ready|review|publication-review|publication-review-returned|article-archive-request|application|feedback-request|task-request|task-reminder|task-reminder-rule)-[a-zA-Z0-9:._+\-]{8,}$/.test(id),
         )
       : [];
     await writeReadIds(ids);
@@ -25624,6 +25955,20 @@ async function handleAdminRequest(
     if (request.method === "GET") return listEditorialDocuments(request, env);
     if (request.method === "POST") return createEditorialDocument(request, env);
     return json({ error: "GET、POSTのみ利用できます。" }, 405);
+  }
+  const editorialArchiveRequestMatch = url.pathname.match(
+    /^\/api\/admin\/editor\/documents\/([0-9a-f-]{36})\/archive-request$/i,
+  );
+  if (editorialArchiveRequestMatch) {
+    if (request.method === "GET")
+      return getEditorialArchiveRequestState(request, env, editorialArchiveRequestMatch[1]);
+    if (request.method === "POST")
+      return createEditorialArchiveRequest(request, env, editorialArchiveRequestMatch[1]);
+    if (request.method === "PATCH")
+      return decideEditorialArchiveRequest(request, env, editorialArchiveRequestMatch[1]);
+    if (request.method === "DELETE")
+      return withdrawEditorialArchiveRequest(request, env, editorialArchiveRequestMatch[1]);
+    return json({ error: "GET、POST、PATCH、DELETEのみ利用できます。" }, 405);
   }
   const editorialArchiveMatch = url.pathname.match(
     /^\/api\/admin\/editor\/documents\/([0-9a-f-]{36})\/(archive|unarchive)$/i,
