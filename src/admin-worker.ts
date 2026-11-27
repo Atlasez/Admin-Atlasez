@@ -64,7 +64,10 @@ import {
   isDiscordOperationPath,
   isStagingDiscordDisabled,
 } from "./lib/admin-staging-discord-policy";
-import { isAdminStagingOrigin } from "./lib/admin-staging-origin.mjs";
+import {
+  isAdminReleaseStagingOrigin,
+  isAdminStagingOrigin,
+} from "./lib/admin-staging-origin.mjs";
 import { purgeExpiredPersonalData } from "./lib/personal-data-retention";
 import { normalizeArticleReferences } from "./lib/article-references.mjs";
 import { tikzPackageHelp } from "./lib/tikz-policy.mjs";
@@ -107,6 +110,7 @@ interface Env {
   ADMIN_PUBLIC_ORIGIN?: string;
   GOOGLE_OAUTH_CLIENT_ID?: string;
   GOOGLE_OAUTH_CLIENT_SECRET?: string;
+  ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST?: string;
   /** Staging-only switch. Its scheduled handler is restricted to intake reconciliation. */
   ATLASEZ_STAGING_MODE?: string;
   ATLASEZ_STAGING_CRON_MODE?: string;
@@ -1073,12 +1077,21 @@ async function googleIdentityByEmail(
     .first();
 }
 
+function isGoogleEmailAllowed(env: Env, email: string) {
+  if (!isAdminReleaseStagingOrigin(env.ADMIN_PUBLIC_ORIGIN)) return true;
+  const normalized = email.trim().toLowerCase();
+  const allowlist = env.ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST ?? "";
+  return normalized !== "" && allowlist.toLowerCase().split(/[\s,]+/).includes(normalized);
+}
+
 async function resolveGoogleAccount(
   env: Env,
   subject: string,
   email: string,
   expectedAccountId?: string,
 ): Promise<{ id: string; canonical_email: string }> {
+  if (!isGoogleEmailAllowed(env, email))
+    throw new Error("受入環境で許可されていないGoogleアカウントです。");
   const [bySubject, byEmail] = await Promise.all([
     googleIdentityBySubject(env, subject),
     googleIdentityByEmail(env, email),
@@ -1105,6 +1118,8 @@ async function resolveGoogleAccount(
       ? await accountById(env, bySubject.account_id)
       : await ensureAtlasezAccount(env, email);
   if (!account) throw new Error("Atlasezアカウントが見つかりません。");
+  if (!isGoogleEmailAllowed(env, account.canonical_email))
+    throw new Error("受入環境で許可されていないAtlasezアカウントです。");
   const now = new Date().toISOString();
   if (bySubject) {
     await env.REPORTS.prepare(
@@ -1154,8 +1169,14 @@ async function getAuthenticatedEmail(
       )
         .bind(await hash(token), new Date().toISOString())
         .first<{ email: string; canonical_email: string | null }>();
-      if (session?.email)
-        return (session.canonical_email ?? session.email).trim().toLowerCase();
+      if (session?.email) {
+        const canonicalEmail = session.canonical_email ?? session.email;
+        if (
+          isGoogleEmailAllowed(env, session.email) &&
+          isGoogleEmailAllowed(env, canonicalEmail)
+        )
+          return canonicalEmail.trim().toLowerCase();
+      }
     }
   }
 

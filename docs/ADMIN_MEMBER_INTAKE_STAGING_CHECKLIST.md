@@ -71,7 +71,7 @@
 
 1. Google Cloud管理者はまず既存専用OAuth clientのAuthorized JavaScript origin、`https://<STAGING_HOST>/auth/google/callback` redirect URI、test-user一覧をread-onlyで確認する。コードのcallback routeは `/auth/google/callback`。既存clientがないことを確認した場合に限り、Google管理者の個別変更承認後に作成する。
 2. 運営者identityとは異なる管理下synthetic applicant/memberとproject-scoped reviewerを用意する。アカウント作成・test-user登録にはGoogle Cloud管理者の承認が必要。個人・運営者の通常アカウントをrole境界の証拠に転用しない。test account pseudonym、OAuth client pseudonym、cleanup ownerだけを台帳へ記録する。
-3. Client ID/Secretはstaging Workerの専用secret storeへだけ登録する。secret値、OAuth `state`、認証code、Cookieを記録しない。OAuth同意・callback・logout後の再login・取消からの回復をSTG-01で確認する。
+3. Client ID/Secretはstaging Workerの専用secret storeへだけ登録する。受入専用Worker `atlasez-admin-release-staging` には `ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST` をSecretとして登録し、承認済みの合成Googleアカウントのメールアドレスをカンマまたは改行で指定する。未登録の場合はログインを拒否する。Google Cloudプロジェクトのテストユーザー一覧を共有している場合も、Worker側でアカウントを照合する。secret値、許可リスト、OAuth `state`、認証code、Cookieを記録しない。OAuth同意・callback・logout後の再login・取消からの回復をSTG-01で確認する。
 
 ### 3. Resendのtest sink
 

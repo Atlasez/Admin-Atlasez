@@ -640,6 +640,61 @@ describe("admin logout contract", () => {
 });
 
 describe("Google OAuth login callback", () => {
+  const releaseOrigin =
+    "https://atlasez-admin-release-staging.example-account.workers.dev";
+
+  it.each([undefined, "different@example.com"])(
+    "rejects an unapproved release staging user before any D1 lookup (%s)",
+    async (allowlist) => {
+      const prepare = vi.fn();
+      const oauthEnv = {
+        ...env("google-oauth"),
+        ADMIN_PUBLIC_ORIGIN: releaseOrigin,
+        GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
+        GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
+        ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST: allowlist,
+        REPORTS: { prepare },
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(Response.json({ access_token: "test-token" }))
+          .mockResolvedValueOnce(
+            Response.json({
+              email: "applicant@example.com",
+              email_verified: true,
+              sub: "test-subject",
+            }),
+          ),
+      );
+      try {
+        const start = await worker.fetch(
+          new Request(`${releaseOrigin}/auth/google/login`),
+          oauthEnv as never,
+        );
+        const state = new URL(start.headers.get("location")!)
+          .searchParams.get("state")!;
+        const callback = await worker.fetch(
+          new Request(
+            `${releaseOrigin}/auth/google/callback?code=test-code&state=${state}`,
+            {
+              headers: { cookie: start.headers.getSetCookie()[0].split(";", 1)[0] },
+            },
+          ),
+          oauthEnv as never,
+        );
+        expect(callback.headers.get("location")).toBe("/admin/login-error/");
+        expect(
+          callback.headers.getSetCookie().some((cookie) =>
+            cookie.startsWith("atlasez_admin_session="),
+          ),
+        ).toBe(false);
+        expect(prepare).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
   it("returns an administrator to the native app callback after Google OAuth", async () => {
     const state = "s".repeat(43);
     const challenge = "c".repeat(43);
@@ -759,7 +814,7 @@ describe("Google OAuth login callback", () => {
     }
   });
 
-  it("returns to the requested admin page with a valid hashed session", async () => {
+  it.each(["https://admin.example", releaseOrigin])("returns to the requested admin page with a valid hashed session on %s", async (origin) => {
     const writes: Array<{ query: string; values: unknown[] }> = [];
     let accountLookupCount = 0;
     let storedSessionHash = "";
@@ -767,7 +822,9 @@ describe("Google OAuth login callback", () => {
     const oauthEnv = {
       ADMIN_AUTH_MODE: "google-oauth",
       ADMIN_PRIMARY_EMAIL: "admin@example.com",
-      ADMIN_PUBLIC_ORIGIN: "https://admin.example",
+      ADMIN_PUBLIC_ORIGIN: origin,
+      ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST: origin === releaseOrigin
+        ? " reviewer@example.com, ADMIN@example.COM " : undefined,
       GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
       GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
       REPORTS: {
@@ -853,19 +910,19 @@ describe("Google OAuth login callback", () => {
     vi.stubGlobal("fetch", googleFetch);
     try {
       const entry = await worker.fetch(
-        new Request("https://admin.example/admin/operations/?project=atlas"),
+        new Request(`${origin}/admin/operations/?project=atlas`),
         oauthEnv as never,
       );
       expect(entry.status).toBe(302);
       const loginPath = entry.headers.get("location");
       expect(loginPath).toContain("/auth/google/login?");
-      const loginUrl = new URL(loginPath!, "https://admin.example");
+      const loginUrl = new URL(loginPath!, origin);
       expect(loginUrl.searchParams.get("returnTo")).toBe(
         "/admin/operations/?project=atlas",
       );
 
       const login = await worker.fetch(
-        new Request(`https://admin.example${loginPath}`),
+        new Request(`${origin}${loginPath}`),
         oauthEnv as never,
       );
       expect(login.status).toBe(302);
@@ -883,7 +940,7 @@ describe("Google OAuth login callback", () => {
 
       const callback = await worker.fetch(
         new Request(
-          `https://admin.example/auth/google/callback?code=authorization-code&state=${encodeURIComponent(authorizationUrl.searchParams.get("state")!)}`,
+          `${origin}/auth/google/callback?code=authorization-code&state=${encodeURIComponent(authorizationUrl.searchParams.get("state")!)}`,
           { headers: { cookie: stateCookiePair } },
         ),
         oauthEnv as never,
@@ -902,7 +959,7 @@ describe("Google OAuth login callback", () => {
       expect(tokenBody.get("client_id")).toBe("oauth-client-id");
       expect(tokenBody.get("client_secret")).toBe("oauth-client-secret");
       expect(tokenBody.get("redirect_uri")).toBe(
-        "https://admin.example/auth/google/callback",
+        `${origin}/auth/google/callback`,
       );
       expect(tokenBody.get("grant_type")).toBe("authorization_code");
       const userInfoCall = googleFetch.mock.calls.find(
@@ -949,13 +1006,22 @@ describe("Google OAuth login callback", () => {
       ]);
 
       const signedInPage = await worker.fetch(
-        new Request("https://admin.example/admin/operations/?project=atlas", {
+        new Request(`${origin}/admin/operations/?project=atlas`, {
           headers: { cookie: sessionCookie!.split(";", 1)[0] },
         }),
         oauthEnv as never,
       );
       expect(signedInPage.status).toBe(200);
       expect(await signedInPage.text()).toBe("protected admin page");
+      if (origin === releaseOrigin) {
+        const revokedSession = await worker.fetch(
+          new Request(`${origin}/api/admin/portal`, {
+            headers: { cookie: sessionCookie!.split(";", 1)[0] },
+          }),
+          { ...oauthEnv, ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST: "" } as never,
+        );
+        expect(revokedSession.status).toBe(401);
+      }
     } finally {
       vi.unstubAllGlobals();
     }
