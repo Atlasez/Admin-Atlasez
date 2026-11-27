@@ -657,7 +657,8 @@ describe("Google OAuth login callback", () => {
       };
       vi.stubGlobal(
         "fetch",
-        vi.fn()
+        vi
+          .fn()
           .mockResolvedValueOnce(Response.json({ access_token: "test-token" }))
           .mockResolvedValueOnce(
             Response.json({
@@ -672,22 +673,25 @@ describe("Google OAuth login callback", () => {
           new Request(`${releaseOrigin}/auth/google/login`),
           oauthEnv as never,
         );
-        const state = new URL(start.headers.get("location")!)
-          .searchParams.get("state")!;
+        const state = new URL(start.headers.get("location")!).searchParams.get(
+          "state",
+        )!;
         const callback = await worker.fetch(
           new Request(
             `${releaseOrigin}/auth/google/callback?code=test-code&state=${state}`,
             {
-              headers: { cookie: start.headers.getSetCookie()[0].split(";", 1)[0] },
+              headers: {
+                cookie: start.headers.getSetCookie()[0].split(";", 1)[0],
+              },
             },
           ),
           oauthEnv as never,
         );
         expect(callback.headers.get("location")).toBe("/admin/login-error/");
         expect(
-          callback.headers.getSetCookie().some((cookie) =>
-            cookie.startsWith("atlasez_admin_session="),
-          ),
+          callback.headers
+            .getSetCookie()
+            .some((cookie) => cookie.startsWith("atlasez_admin_session=")),
         ).toBe(false);
         expect(prepare).not.toHaveBeenCalled();
       } finally {
@@ -814,218 +818,233 @@ describe("Google OAuth login callback", () => {
     }
   });
 
-  it.each(["https://admin.example", releaseOrigin])("returns to the requested admin page with a valid hashed session on %s", async (origin) => {
-    const writes: Array<{ query: string; values: unknown[] }> = [];
-    let accountLookupCount = 0;
-    let storedSessionHash = "";
-    let storedSessionExpiry = "";
-    const oauthEnv = {
-      ADMIN_AUTH_MODE: "google-oauth",
-      ADMIN_PRIMARY_EMAIL: "admin@example.com",
-      ADMIN_PUBLIC_ORIGIN: origin,
-      ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST: origin === releaseOrigin
-        ? " reviewer@example.com, ADMIN@example.COM " : undefined,
-      GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
-      GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
-      REPORTS: {
-        prepare: (query: string) => {
-          const statement = new Statement(query);
-          statement.first = async <T>() => {
-            if (query.includes("FROM admin_auth_sessions s")) {
-              const [candidateHash, now] = statement.boundValues;
-              return candidateHash === storedSessionHash &&
-                Date.parse(storedSessionExpiry) > Date.parse(String(now))
-                ? ({
-                    email: "admin@example.com",
-                    canonical_email: "admin@example.com",
-                  } as T)
-                : (null as T | null);
-            }
-            if (query.includes("FROM atlasez_accounts a")) {
-              accountLookupCount += 1;
-              return accountLookupCount === 1
-                ? (null as T | null)
-                : ({
-                    id: "account-1",
-                    canonical_email: "admin@example.com",
-                  } as T);
-            }
-            if (
-              query.includes(
-                "SELECT 1 AS found FROM report_admin_permissions WHERE email = ? LIMIT 1",
+  it.each(["https://admin.example", releaseOrigin])(
+    "returns to the requested admin page with a valid hashed session on %s",
+    async (origin) => {
+      const writes: Array<{ query: string; values: unknown[] }> = [];
+      let accountLookupCount = 0;
+      let storedSessionHash = "";
+      let storedSessionExpiry = "";
+      const oauthEnv = {
+        ADMIN_AUTH_MODE: "google-oauth",
+        ADMIN_PRIMARY_EMAIL: "admin@example.com",
+        ADMIN_PUBLIC_ORIGIN: origin,
+        ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST:
+          origin === releaseOrigin
+            ? " reviewer@example.com, ADMIN@example.COM "
+            : undefined,
+        GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
+        GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
+        REPORTS: {
+          prepare: (query: string) => {
+            const statement = new Statement(query);
+            statement.first = async <T>() => {
+              if (query.includes("FROM admin_auth_sessions s")) {
+                const [candidateHash, now] = statement.boundValues;
+                return candidateHash === storedSessionHash &&
+                  Date.parse(storedSessionExpiry) > Date.parse(String(now))
+                  ? ({
+                      email: "admin@example.com",
+                      canonical_email: "admin@example.com",
+                    } as T)
+                  : (null as T | null);
+              }
+              if (query.includes("FROM atlasez_accounts a")) {
+                accountLookupCount += 1;
+                return accountLookupCount === 1
+                  ? (null as T | null)
+                  : ({
+                      id: "account-1",
+                      canonical_email: "admin@example.com",
+                    } as T);
+              }
+              if (
+                query.includes(
+                  "SELECT 1 AS found FROM report_admin_permissions WHERE email = ? LIMIT 1",
+                )
               )
-            )
-              return { found: 1 } as T;
-            return null as T | null;
-          };
-          statement.all = async <T>() => {
-            if (query.includes("SELECT subject FROM report_admin_permissions"))
-              return { results: [{ subject: "*" }] as T[] };
-            return { results: [] as T[] };
-          };
-          statement.run = async () => {
-            writes.push({ query, values: [...statement.boundValues] });
-            if (query.includes("INSERT INTO admin_auth_sessions")) {
-              storedSessionHash = String(statement.boundValues[0] ?? "");
-              storedSessionExpiry = String(statement.boundValues[4] ?? "");
-            }
-            return { meta: { changes: 1 } };
-          };
-          return statement;
+                return { found: 1 } as T;
+              return null as T | null;
+            };
+            statement.all = async <T>() => {
+              if (
+                query.includes("SELECT subject FROM report_admin_permissions")
+              )
+                return { results: [{ subject: "*" }] as T[] };
+              return { results: [] as T[] };
+            };
+            statement.run = async () => {
+              writes.push({ query, values: [...statement.boundValues] });
+              if (query.includes("INSERT INTO admin_auth_sessions")) {
+                storedSessionHash = String(statement.boundValues[0] ?? "");
+                storedSessionExpiry = String(statement.boundValues[4] ?? "");
+              }
+              return { meta: { changes: 1 } };
+            };
+            return statement;
+          },
+          batch: async () => [],
         },
-        batch: async () => [],
-      },
-      ASSETS: {
-        fetch: async () =>
-          new Response("protected admin page", { status: 200 }),
-      },
-    };
-    const googleFetch = vi.fn(
-      async (input: RequestInfo | URL, _init?: RequestInit) => {
-        const url = String(input);
-        if (url === "https://oauth2.googleapis.com/token")
-          return new Response(
-            JSON.stringify({ access_token: "access-token" }),
-            {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            },
-          );
-        if (url === "https://openidconnect.googleapis.com/v1/userinfo")
-          return new Response(
-            JSON.stringify({
-              email: "admin@example.com",
-              email_verified: true,
-              sub: "google-subject-1",
-            }),
-            {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            },
-          );
-        return new Response("unexpected OAuth request", { status: 500 });
-      },
-    );
-
-    vi.stubGlobal("fetch", googleFetch);
-    try {
-      const entry = await worker.fetch(
-        new Request(`${origin}/admin/operations/?project=atlas`),
-        oauthEnv as never,
-      );
-      expect(entry.status).toBe(302);
-      const loginPath = entry.headers.get("location");
-      expect(loginPath).toContain("/auth/google/login?");
-      const loginUrl = new URL(loginPath!, origin);
-      expect(loginUrl.searchParams.get("returnTo")).toBe(
-        "/admin/operations/?project=atlas",
+        ASSETS: {
+          fetch: async () =>
+            new Response("protected admin page", { status: 200 }),
+        },
+      };
+      const googleFetch = vi.fn(
+        async (input: RequestInfo | URL, _init?: RequestInit) => {
+          const url = String(input);
+          if (url === "https://oauth2.googleapis.com/token")
+            return new Response(
+              JSON.stringify({ access_token: "access-token" }),
+              {
+                status: 200,
+                headers: { "content-type": "application/json" },
+              },
+            );
+          if (url === "https://openidconnect.googleapis.com/v1/userinfo")
+            return new Response(
+              JSON.stringify({
+                email: "admin@example.com",
+                email_verified: true,
+                sub: "google-subject-1",
+              }),
+              {
+                status: 200,
+                headers: { "content-type": "application/json" },
+              },
+            );
+          return new Response("unexpected OAuth request", { status: 500 });
+        },
       );
 
-      const login = await worker.fetch(
-        new Request(`${origin}${loginPath}`),
-        oauthEnv as never,
-      );
-      expect(login.status).toBe(302);
-      const authorizationUrl = new URL(login.headers.get("location")!);
-      const stateCookie = login.headers.get("set-cookie")!;
-      const stateCookiePair = stateCookie.split(";", 1)[0];
-      expect(authorizationUrl.origin).toBe("https://accounts.google.com");
-      expect(authorizationUrl.pathname).toBe("/o/oauth2/v2/auth");
-      expect(authorizationUrl.searchParams.get("state")).toBeTruthy();
-      expect(stateCookie).toContain("Path=/auth/google");
-      expect(stateCookie).toContain("HttpOnly");
-      expect(stateCookie).toContain("Secure");
-      expect(stateCookie).toContain("SameSite=Lax");
-      expect(stateCookie).not.toContain("Domain=");
+      vi.stubGlobal("fetch", googleFetch);
+      try {
+        const entry = await worker.fetch(
+          new Request(`${origin}/admin/operations/?project=atlas`),
+          oauthEnv as never,
+        );
+        expect(entry.status).toBe(302);
+        const loginPath = entry.headers.get("location");
+        expect(loginPath).toContain("/auth/google/login?");
+        const loginUrl = new URL(loginPath!, origin);
+        expect(loginUrl.searchParams.get("returnTo")).toBe(
+          "/admin/operations/?project=atlas",
+        );
 
-      const callback = await worker.fetch(
-        new Request(
-          `${origin}/auth/google/callback?code=authorization-code&state=${encodeURIComponent(authorizationUrl.searchParams.get("state")!)}`,
-          { headers: { cookie: stateCookiePair } },
-        ),
-        oauthEnv as never,
-      );
-      expect(callback.status).toBe(302);
-      expect(callback.headers.get("location")).toBe(
-        "/admin/operations/?project=atlas",
-      );
-      expect(googleFetch).toHaveBeenCalledTimes(2);
-      const tokenCall = googleFetch.mock.calls.find(
-        ([input]) => String(input) === "https://oauth2.googleapis.com/token",
-      );
-      const tokenBody = new URLSearchParams(String(tokenCall?.[1]?.body ?? ""));
-      expect(tokenCall?.[1]?.method).toBe("POST");
-      expect(tokenBody.get("code")).toBe("authorization-code");
-      expect(tokenBody.get("client_id")).toBe("oauth-client-id");
-      expect(tokenBody.get("client_secret")).toBe("oauth-client-secret");
-      expect(tokenBody.get("redirect_uri")).toBe(
-        `${origin}/auth/google/callback`,
-      );
-      expect(tokenBody.get("grant_type")).toBe("authorization_code");
-      const userInfoCall = googleFetch.mock.calls.find(
-        ([input]) =>
-          String(input) === "https://openidconnect.googleapis.com/v1/userinfo",
-      );
-      expect(new Headers(userInfoCall?.[1]?.headers).get("authorization")).toBe(
-        "Bearer access-token",
-      );
+        const login = await worker.fetch(
+          new Request(`${origin}${loginPath}`),
+          oauthEnv as never,
+        );
+        expect(login.status).toBe(302);
+        const authorizationUrl = new URL(login.headers.get("location")!);
+        const stateCookie = login.headers.get("set-cookie")!;
+        const stateCookiePair = stateCookie.split(";", 1)[0];
+        expect(authorizationUrl.origin).toBe("https://accounts.google.com");
+        expect(authorizationUrl.pathname).toBe("/o/oauth2/v2/auth");
+        expect(authorizationUrl.searchParams.get("state")).toBeTruthy();
+        expect(stateCookie).toContain("Path=/auth/google");
+        expect(stateCookie).toContain("HttpOnly");
+        expect(stateCookie).toContain("Secure");
+        expect(stateCookie).toContain("SameSite=Lax");
+        expect(stateCookie).not.toContain("Domain=");
 
-      const callbackCookies = callback.headers.getSetCookie();
-      const sessionCookie = callbackCookies.find((value) =>
-        value.startsWith("atlasez_admin_session="),
-      );
-      expect(sessionCookie).toContain("Path=/; HttpOnly; Secure; SameSite=Lax");
-      expect(
-        callbackCookies.some(
-          (value) =>
-            value.startsWith("atlasez_google_oauth_state=") &&
-            value.includes("Max-Age=0; Path=/auth/google"),
-        ),
-      ).toBe(true);
+        const callback = await worker.fetch(
+          new Request(
+            `${origin}/auth/google/callback?code=authorization-code&state=${encodeURIComponent(authorizationUrl.searchParams.get("state")!)}`,
+            { headers: { cookie: stateCookiePair } },
+          ),
+          oauthEnv as never,
+        );
+        expect(callback.status).toBe(302);
+        expect(callback.headers.get("location")).toBe(
+          "/admin/operations/?project=atlas",
+        );
+        expect(googleFetch).toHaveBeenCalledTimes(2);
+        const tokenCall = googleFetch.mock.calls.find(
+          ([input]) => String(input) === "https://oauth2.googleapis.com/token",
+        );
+        const tokenBody = new URLSearchParams(
+          String(tokenCall?.[1]?.body ?? ""),
+        );
+        expect(tokenCall?.[1]?.method).toBe("POST");
+        expect(tokenBody.get("code")).toBe("authorization-code");
+        expect(tokenBody.get("client_id")).toBe("oauth-client-id");
+        expect(tokenBody.get("client_secret")).toBe("oauth-client-secret");
+        expect(tokenBody.get("redirect_uri")).toBe(
+          `${origin}/auth/google/callback`,
+        );
+        expect(tokenBody.get("grant_type")).toBe("authorization_code");
+        const userInfoCall = googleFetch.mock.calls.find(
+          ([input]) =>
+            String(input) ===
+            "https://openidconnect.googleapis.com/v1/userinfo",
+        );
+        expect(
+          new Headers(userInfoCall?.[1]?.headers).get("authorization"),
+        ).toBe("Bearer access-token");
 
-      const rawSessionToken = decodeURIComponent(
-        sessionCookie!.split(";", 1)[0].split("=", 2)[1],
-      );
-      const sessionWrite = writes.find((write) =>
-        write.query.includes("INSERT INTO admin_auth_sessions"),
-      );
-      expect(sessionWrite?.values[0]).toMatch(/^[a-f0-9]{64}$/);
-      expect(sessionWrite?.values[0]).not.toBe(rawSessionToken);
-      const sessionDigest = await crypto.subtle.digest(
-        "SHA-256",
-        new TextEncoder().encode(rawSessionToken),
-      );
-      const expectedSessionHash = [...new Uint8Array(sessionDigest)]
-        .map((byte) => byte.toString(16).padStart(2, "0"))
-        .join("");
-      expect(sessionWrite?.values[0]).toBe(expectedSessionHash);
-      expect(sessionWrite?.values.slice(1, 4)).toEqual([
-        "admin@example.com",
-        "account-1",
-        "google-subject-1",
-      ]);
+        const callbackCookies = callback.headers.getSetCookie();
+        const sessionCookie = callbackCookies.find((value) =>
+          value.startsWith("atlasez_admin_session="),
+        );
+        expect(sessionCookie).toContain(
+          "Path=/; HttpOnly; Secure; SameSite=Lax",
+        );
+        expect(
+          callbackCookies.some(
+            (value) =>
+              value.startsWith("atlasez_google_oauth_state=") &&
+              value.includes("Max-Age=0; Path=/auth/google"),
+          ),
+        ).toBe(true);
 
-      const signedInPage = await worker.fetch(
-        new Request(`${origin}/admin/operations/?project=atlas`, {
-          headers: { cookie: sessionCookie!.split(";", 1)[0] },
-        }),
-        oauthEnv as never,
-      );
-      expect(signedInPage.status).toBe(200);
-      expect(await signedInPage.text()).toBe("protected admin page");
-      if (origin === releaseOrigin) {
-        const revokedSession = await worker.fetch(
-          new Request(`${origin}/api/admin/portal`, {
+        const rawSessionToken = decodeURIComponent(
+          sessionCookie!.split(";", 1)[0].split("=", 2)[1],
+        );
+        const sessionWrite = writes.find((write) =>
+          write.query.includes("INSERT INTO admin_auth_sessions"),
+        );
+        expect(sessionWrite?.values[0]).toMatch(/^[a-f0-9]{64}$/);
+        expect(sessionWrite?.values[0]).not.toBe(rawSessionToken);
+        const sessionDigest = await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(rawSessionToken),
+        );
+        const expectedSessionHash = [...new Uint8Array(sessionDigest)]
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("");
+        expect(sessionWrite?.values[0]).toBe(expectedSessionHash);
+        expect(sessionWrite?.values.slice(1, 4)).toEqual([
+          "admin@example.com",
+          "account-1",
+          "google-subject-1",
+        ]);
+
+        const signedInPage = await worker.fetch(
+          new Request(`${origin}/admin/operations/?project=atlas`, {
             headers: { cookie: sessionCookie!.split(";", 1)[0] },
           }),
-          { ...oauthEnv, ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST: "" } as never,
+          oauthEnv as never,
         );
-        expect(revokedSession.status).toBe(401);
+        expect(signedInPage.status).toBe(200);
+        expect(await signedInPage.text()).toBe("protected admin page");
+        if (origin === releaseOrigin) {
+          const revokedSession = await worker.fetch(
+            new Request(`${origin}/api/admin/portal`, {
+              headers: { cookie: sessionCookie!.split(";", 1)[0] },
+            }),
+            {
+              ...oauthEnv,
+              ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST: "",
+            } as never,
+          );
+          expect(revokedSession.status).toBe(401);
+        }
+      } finally {
+        vi.unstubAllGlobals();
       }
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
+    },
+  );
 
   it("rejects a callback whose state does not match the browser cookie", async () => {
     const googleFetch = vi.fn();
