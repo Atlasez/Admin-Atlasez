@@ -71,7 +71,7 @@ for (const [project, label, site] of projects) {
       document.dispatchEvent(new Event("astro:page-load")),
     );
     await expect(main.locator('[data-management-project="atlas"]')).toHaveCount(
-      project === "atlas" ? 6 : 0,
+      project === "atlas" ? 7 : 0,
     );
   });
   if (project === "atlas") continue;
