@@ -85,7 +85,8 @@ async function mockArchiveWorkflowApi(
       payload = {
         scope: {
           email: options.actor(),
-          subjects: options.actor() === "alice@example.com" ? ["mathematics"] : [],
+          subjects:
+            options.actor() === "alice@example.com" ? ["mathematics"] : [],
           isManager: false,
         },
         documents: documentList,
@@ -99,10 +100,10 @@ async function mockArchiveWorkflowApi(
       if (method === "GET") {
         const eligible = Boolean(
           document &&
-            (document.status === "draft" || document.status === "in-review") &&
-            !document.publication_review_stage &&
-            !document.published_at &&
-            !archived,
+          (document.status === "draft" || document.status === "in-review") &&
+          !document.publication_review_stage &&
+          !document.published_at &&
+          !archived,
         );
         const pending = archiveRequest?.status === "pending";
         payload = {
@@ -1237,7 +1238,9 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await page.goto(`admin/editor/?document=${activeId}`);
     await expect(page.locator("[data-document-form]")).toBeVisible();
     await expect(page.locator("[data-request-archive]")).toBeVisible();
-    await page.locator("[data-archive-request-note]").fill("内容を整理します。");
+    await page
+      .locator("[data-archive-request-note]")
+      .fill("内容を整理します。");
     await page.locator("[data-request-archive]").click();
     await expect(page.locator("[data-archive-request-status]")).toContainText(
       "承認待ち",
