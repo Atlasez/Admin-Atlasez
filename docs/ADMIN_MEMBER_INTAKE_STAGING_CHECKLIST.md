@@ -24,6 +24,7 @@
 - [x] staging専用Worker/D1/OAuthの存在をread-onlyで確認。
 - [ ] staging origin、OAuth callback、cookie domain、CORS、redirect allowlistがstaging専用で一致することを確認する。
 - [ ] production比較値を外部環境変数から与える。値はrepository、PR、Issueへ保存しない: ATLASEZ_PRODUCTION_ADMIN_ORIGIN、ATLASEZ_PRODUCTION_D1_NAME、ATLASEZ_PRODUCTION_D1_ID、ATLASEZ_PRODUCTION_DISCORD_GUILD_ID、ATLASEZ_PRODUCTION_DISCORD_CLIENT_ID。
+- [ ] Discord stagingのruntime guard用にATLASEZ_PRODUCTION_DISCORD_GUILD_IDとATLASEZ_PRODUCTION_DISCORD_CLIENT_IDをstaging Workerのsecret storeへ設定し、secret値を表示せず名前だけread-backする。どちらかが未設定ならstaging Discordを有効化しない。
 - [ ] release staging利用時は既存staging D1との重複を避けるためATLASEZ_EXISTING_STAGING_D1_IDも外部環境から渡す。
 - [ ] operatorが承認したsynthetic accountだけをstaging allowlistに設定する。現状はallowlist未設定。
 - [ ] exact commit SHAを確認用環境変数へ設定し、dry-runとread-back結果を記録する。確認したread-only情報とPR headが揃うまでdeployしない。
