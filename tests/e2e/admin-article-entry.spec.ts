@@ -22,6 +22,10 @@ async function mockArchiveWorkflowApi(
     archivedIds: Set<string>;
   },
 ) {
+  const archivedAt = new Date(Date.now() - 60 * 60 * 1_000).toISOString();
+  const archiveExpiresAt = new Date(
+    Date.now() + 29 * 24 * 60 * 60 * 1_000,
+  ).toISOString();
   await page.route("**/api/admin/**", async (route) => {
     const request = route.request();
     const { pathname } = new URL(request.url());
@@ -31,8 +35,8 @@ async function mockArchiveWorkflowApi(
       const archived = options.archivedIds.has(id);
       return {
         ...document,
-        archived_at: archived ? "2026-08-28T01:00:00.000Z" : null,
-        archive_expires_at: archived ? "2026-09-27T01:00:00.000Z" : null,
+        archived_at: archived ? archivedAt : null,
+        archive_expires_at: archived ? archiveExpiresAt : null,
       };
     });
     let status = 200;
