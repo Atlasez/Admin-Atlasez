@@ -3989,7 +3989,7 @@ describe("admin worker editor APIs", () => {
     });
   });
 
-  it("allows archiving a feedback-stage article but rejects publication-review stages", async () => {
+  it("requires an approval request to archive a feedback-stage article", async () => {
     const documentId = "33333333-3333-4333-8333-333333333333";
     const executed: string[] = [];
     const document = {
@@ -4033,11 +4033,11 @@ describe("admin worker editor APIs", () => {
       env as never,
     );
 
-    expect(response.status).toBe(200);
-    expect(executed).toHaveLength(1);
-    expect(executed[0]).toContain("status IN ('draft', 'in-review')");
-    expect(executed[0]).toContain("published_version_id IS NULL");
-    expect(executed[0]).toContain("publication_review_stage IS NULL");
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("承認申請"),
+    });
+    expect(executed).toEqual([]);
 
     document.published_version_id = "published-revision";
     executed.length = 0;

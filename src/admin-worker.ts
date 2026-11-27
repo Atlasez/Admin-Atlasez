@@ -6371,15 +6371,12 @@ const canReviewDocument = (
   document: EditorialDocumentReviewAccess,
 ) =>
   canEditSubject(scope, document.subject) ||
-  canCoordinateSubject(scope, document.subject) ||
   (document.status === "in-review" &&
     document.publication_review_stage === "subject-coordinator" &&
     canCoordinateSubject(scope, document.subject)) ||
   (document.status === "in-review" &&
     document.publication_review_stage === "project-leader" &&
     scope.isProjectLeader) ||
-  scope.isProjectLeader ||
-  scope.isAtlasOperationsManager ||
   (scope.isManager && document.status === "in-review");
 
 const canCoordinateSubject = (scope: AdminScope, subject: string) =>
@@ -7225,6 +7222,31 @@ const canRequestEditorialArchive = (scope: AdminScope, document: EditorialArchiv
 
 const canDecideEditorialArchive = (scope: AdminScope, subject: string) =>
   Boolean(scope.isManager || scope.isAtlasOperationsManager || scope.isProjectLeader || canCoordinateSubject(scope, subject));
+
+const canReviewPendingEditorialArchiveRequest = async (
+  env: Env,
+  scope: AdminScope,
+  document: Pick<EditorialArchiveDocument, "id" | "subject">,
+) => {
+  if (!canDecideEditorialArchive(scope, document.subject)) return false;
+  const pendingRequest = await env.REPORTS.prepare(
+    "SELECT requested_by FROM editorial_document_archive_requests WHERE document_id=? AND status='pending' LIMIT 1",
+  )
+    .bind(document.id)
+    .first<{ requested_by: string }>();
+  return Boolean(
+    pendingRequest &&
+      pendingRequest.requested_by.toLowerCase() !== scope.email.toLowerCase(),
+  );
+};
+
+const canReadEditorialDocumentOrArchiveApprover = async (
+  env: Env,
+  scope: AdminScope,
+  document: EditorialDocument,
+) =>
+  canReviewDocument(scope, document) ||
+  (await canReviewPendingEditorialArchiveRequest(env, scope, document));
 
 async function getEditorialArchiveRequestState(
   request: Request,
@@ -16157,7 +16179,7 @@ async function getEditorialDocument(
     .bind(documentId)
     .first<EditorialDocument>();
   if (!document) return json({ error: "原稿が見つかりません。" }, 404);
-  if (!canReviewDocument(scope, document))
+  if (!(await canReadEditorialDocumentOrArchiveApprover(env, scope, document)))
     return json({ error: "この分野の原稿を閲覧する権限がありません。" }, 403);
   const comments = await env.REPORTS.prepare(
     `SELECT id, document_id, parent_comment_id, body, created_by, created_at, selection_start, selection_end, selection_text,
@@ -17102,7 +17124,14 @@ async function listEditorialRevisions(
       published_version_id: string | null;
       archived_at: string | null;
     }>();
-  if (!document || !canReviewDocument(scope, document))
+  if (
+    !document ||
+    (!canReviewDocument(scope, document) &&
+      !(await canReviewPendingEditorialArchiveRequest(env, scope, {
+        id: documentId,
+        subject: document.subject,
+      })))
+  )
     return json({ error: "この原稿を閲覧する権限がありません。" }, 403);
   const result = await env.REPORTS.prepare(
     `SELECT r.id, r.title, r.summary, r.body, r.status, r.saved_by, r.saved_at, r.snapshot_json,
@@ -22696,7 +22725,10 @@ async function getPublicationReviewState(
   )
     .bind(documentId)
     .first<EditorialDocument>();
-  if (!document || !canReviewDocument(scope, document))
+  if (
+    !document ||
+    !(await canReadEditorialDocumentOrArchiveApprover(env, scope, document))
+  )
     return json({ error: "この原稿を閲覧する権限がありません。" }, 403);
   const [coordinators, leaders, feedbackTasks] = await Promise.all([
     publicationReviewRoleEmails(env, "subject-coordinator", document.subject),

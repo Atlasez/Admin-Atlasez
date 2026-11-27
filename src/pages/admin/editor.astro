@@ -1407,6 +1407,9 @@ const editorData = JSON.stringify({ subjects, articles, conceptOptions, commentT
     let publicCatalogReady: Promise<void> = Promise.resolve();
     const externalStatementIds = [...new Set(articles.flatMap((article) => [...article.body.matchAll(/\{#([A-Za-z][A-Za-z0-9_-]*)\}/g)].map((match) => match[1].toLowerCase())))];
     const form = root.querySelector<HTMLFormElement>("[data-document-form]")!;
+    // Scroll-direction and intersection observers previously changed the
+    // toolbar's size and visibility on tiny trackpad deltas. Keep its state
+    // independent of scroll jitter; only the one-time sticky activation below remains.
     const articleReportCount = root.querySelector<HTMLElement>("[data-article-report-count]")!;
     const articleReportFeedback = root.querySelector<HTMLElement>("[data-article-report-feedback]")!;
     const articleReportList = root.querySelector<HTMLElement>("[data-article-report-list]")!;
