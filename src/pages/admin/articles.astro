@@ -1311,7 +1311,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
             ? archiveExpired(article)
               ? '<button type="button" class="article-action" disabled title="アーカイブ期限を過ぎています">期限切れ</button>'
               : `<button type="button" class="article-action" data-archive-action="unarchive" data-archive-document-id="${esc(article.id)}">復元</button>`
-            : `<button type="button" class="article-action" data-archive-action="archive" data-archive-document-id="${esc(article.id)}">アーカイブ</button>`
+            : ""
           : "";
         const editingSummary = activeEditorSummary(article);
         const editingBadge = activeEditorsFor(article).length
@@ -1598,7 +1598,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       event.preventDefault();
       const documentId = button.dataset.archiveDocumentId;
       const action = button.dataset.archiveAction;
-      if (!documentId || (action !== "archive" && action !== "unarchive")) return;
+      if (!documentId || action !== "unarchive") return;
       button.disabled = true;
       try {
         const response = await fetch(`/api/admin/editor/documents/${encodeURIComponent(documentId)}/${action}`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" } });
