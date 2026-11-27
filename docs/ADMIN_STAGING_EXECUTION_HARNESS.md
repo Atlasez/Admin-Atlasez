@@ -35,6 +35,7 @@
   - ATLASEZ_PRODUCTION_DISCORD_GUILD_ID
   - ATLASEZ_PRODUCTION_DISCORD_CLIENT_ID
   - release staging利用時はATLASEZ_EXISTING_STAGING_D1_ID
+- Discord staging runtime guardにもATLASEZ_PRODUCTION_DISCORD_GUILD_IDとATLASEZ_PRODUCTION_DISCORD_CLIENT_IDが必要。両方をstaging Workerのsecret storeへ設定し、secret値を表示せず名前だけread-backする。production比較値が欠ける場合はDiscord stagingを有効にしない。
 - OAuth secret、Cloudflare token、メール/Discord credentialはsecret storeから読み込み、CLI出力へ表示しない。
 - 設定チェックはdry-runから始める。
 
