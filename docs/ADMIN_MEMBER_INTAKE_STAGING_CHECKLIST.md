@@ -63,7 +63,7 @@
    npx wrangler d1 migrations list <STAGING_D1_NAME> --remote --config wrangler.admin.staging.jsonc
    ```
 
-   新規の使い捨てD1演習でだけmigration適用記録と`0141_application_intake_reconciliation.sql`を含む対象SHAを保存する。本番名 `atlasez-reports`、本番config `wrangler.admin.jsonc`、本番D1 UUIDはコマンドへ指定しない。既存staging D1の最新ledgerは未確認なので、照合と個別承認なしにmigrationを適用しない。
+   新規の使い捨てD1演習でだけmigration適用記録と`0141_application_intake_reconciliation.sql`を含む対象SHAを保存する。本番名 `atlasez-reports`、本番config `wrangler.admin.jsonc`、本番D1 UUIDはコマンドへ指定しない。旧0134が記録された既存staging D1は、この手順の対象外とする。
 
 ### 2. Google OAuthの合成アカウント
 
@@ -112,7 +112,7 @@ STG-01〜09の開始前に、Cloudflare管理者はWorker名・route・D1 bindin
 
 既存の専用staging Worker/D1をread-onlyで識別し、worker.dev origin・Google OAuth・provider設定・bindingが本番と分離されているか確認する。新しいstaging resourceやproviderは不足が明確で、個別の変更承認がある場合だけ準備する。既存の試験データと運営者identityを保持し、cleanupやresetをしない。stagingアプリに本番secretや本番D1 bindingが残っていないことを、値を表示せずbinding名・環境IDで確認する。
 
-下記の空DB migration/apply手順は新しい使い捨てD1の演習専用です。既存 `atlasez-admin-staging-reports` は2026-11-04時点で0134を含むcandidate migrationにpendingなしでしたが、最新candidate・0141のread-only確認は未実施です。既存D1にapply、初期seed削除、reset、restoreをしません。
+下記の空DB migration/apply手順は新しい使い捨てD1の演習専用です。2026-11-27 JSTの照合時点で、既存 `atlasez-admin-staging-reports` は旧0134までの台帳を持ちます。既存D1にapply、初期seed削除、reset、restoreをしません。
 
 | Pseudonym            | 初期状態・role                       | 用途                                    | cleanup owner | 準備状態 |
 | -------------------- | ------------------------------------ | --------------------------------------- | ------------- | -------- |
@@ -216,12 +216,12 @@ before/afterの行数・状態 / PIIを除いた画像またはログ / cleanup�
 - [ ] Cloudflare管理者がWorkers Buildsの接続repository、Production branch `main`、Preview無効、Build/Deploy command、対象Workerを読み取り確認する。PR mergeでproduction buildが起動し得るか明示する。設定を確認できない場合は「自動配信なし」と推測せず、PR mergeを止める。
 - [ ] Issue #509のprovenance gateとして、成功したBuild run ID、checkout SHA、固定Worker `atlasez-admin` のVersion、100%配信、公開build-infoを照合する。build-infoとmainのSHA一致だけでは合格にしない。
 - [ ] D1運用者が固定された本番D1の現在のmigration ledgerをread-onlyで取得する。権限エラー、古い結果、対象DBを識別できない出力は未確認扱いとする。
-- [ ] PR #545を含む新Workerを配信する前に、承認済みbackup・migration手順で `0141_application_intake_reconciliation.sql` を本番D1へ適用し、read-only ledgerで適用を確認する。実行者、承認者、対象DB識別子、対象SHA、時刻、結果を別々に記録する。PR mergeの許可をmigration許可に読み替えない。
+- [ ] #630 と #562 の各merge前に、承認済みbackup・migration手順で対応する `0140_editorial_document_deletion_requests.sql` と `0141_application_intake_reconciliation.sql` を本番D1へ順に適用し、各回のread-only ledgerで適用を確認する。実行者、承認者、対象DB識別子、対象SHA、時刻、結果を別々に記録する。PR mergeの許可をmigration許可に読み替えない。
 - [ ] 運営責任者がOPSD決定票の必要項目、少人数上限、担当/代理、停止・復旧担当を承認する。未決定の保存期間、SLA、Discord role方針を公開・実行しない。
 
 ### mergeと配信の順序
 
-Issue #548の順序案は `#546 → #545 → #547`。この順序はCloudflareのproduction buildが安全に制御・検証でき、各merge後のmain CIと配信証拠を見て次へ進める場合だけ使う。必要なmigrationが未確認、Workers Builds provenanceが未解決、または自動配信の発生有無を確認できない場合は、独立したdocs-only PRを含めmergeしない。
+現在の順序は #647 の `0140適用 → #630 → 配信確認 → 0141適用 → #562 → 配信確認`。Cloudflareのproduction buildが安全に制御・検証でき、各merge後のmain CIと配信証跡を確認できる場合に進める。必要なmigration、Workers Builds provenance、自動配信設定のいずれかが未確認の場合は、対象PRのmergeを保留する。
 
 各merge後にmain SHA、CI run、Cloudflare Build/Deployment/Version、配信率、build-infoを記録する。異常があれば次のPRをmergeせず、deploy・rollback・promote・cache purgeを推測で実行しない。
 
