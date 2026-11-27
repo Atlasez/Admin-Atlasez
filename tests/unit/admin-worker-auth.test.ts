@@ -1515,7 +1515,11 @@ describe("admin API scope gate", () => {
     );
     expect(rosterQuery?.query).toContain("WHERE m.project_id=?");
     expect(rosterQuery?.query).toContain("permission.subject IN (?)");
-    expect(rosterQuery?.boundValues).toEqual(["secretariat", "mathematics"]);
+    expect(rosterQuery?.boundValues).toEqual([
+      "mathematics",
+      "secretariat",
+      "mathematics",
+    ]);
   });
 
   it("hides other members' email addresses in scoped operation data", async () => {

@@ -39,10 +39,10 @@ const assigneeHelpId = projectScoped ? "task-assignee-help" : "member-task-assig
   )}
   <label class="field-label">
     <span>担当者</span>
-    <select data-assignee data-task-assignee multiple size="6" aria-describedby={assigneeHelpId}>
+    <select data-assignee data-task-assignee data-selection-mode="tags" data-selection-label="担当者を検索" data-search-placeholder="名前・メール・分野担当グループを検索" multiple aria-describedby={assigneeHelpId}>
       <option value="" disabled>担当者を選択</option>
     </select>
-    <small id={assigneeHelpId}>チェックを入れて複数人を選択できます。</small>
+    <small id={assigneeHelpId}>名前やメールで検索して複数人を選択できます。</small>
   </label>
   <div class="task-deadline">
     <label class="field-label">
