@@ -50,6 +50,23 @@ function fixture() {
 }
 
 describe("editorial archive trash", () => {
+  it.each(["/admin/articles/?trash=1", `/admin/editor/?document=${fileA}`])(
+    "keeps the archive destination %s through login",
+    async (path) => {
+      const { env } = fixture();
+      const response = await worker.fetch(new Request(`${origin}${path}`), {
+        ...env,
+        ADMIN_AUTH_MODE: "google-oauth",
+        GOOGLE_OAUTH_CLIENT_ID: "fixture-client-id",
+        GOOGLE_OAUTH_CLIENT_SECRET: "fixture-client-secret",
+      } as never);
+      expect(response.status).toBe(302);
+      const location = new URL(response.headers.get("location")!, origin);
+      expect(location.pathname).toBe("/auth/google/login");
+      expect(location.searchParams.get("returnTo")).toBe(path);
+    },
+  );
+
   it("lists archived drafts for operations and restricts an editor to their subject", async () => {
     const { request, archive } = fixture();
     archive(fileA, "mathematics");

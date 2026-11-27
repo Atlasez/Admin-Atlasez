@@ -23267,6 +23267,11 @@ const adminReturnPath = (value: string | null) => {
   }
   if (parsed.origin !== "https://admin.local") return fallback;
   if (!isAdminPagePath(parsed.pathname)) return fallback;
+  if (/^\/admin\/articles\/?$/.test(parsed.pathname) && parsed.searchParams.get("trash") === "1")
+    return "/admin/articles/?trash=1";
+  const document = parsed.searchParams.get("document");
+  if (/^\/admin\/editor\/?$/.test(parsed.pathname) && document && /^[0-9a-f-]{36}$/i.test(document))
+    return `/admin/editor/?document=${document}`;
   const project = parsed.searchParams.get("project");
   const keepProject =
     (parsed.pathname === "/admin/operations" ||
