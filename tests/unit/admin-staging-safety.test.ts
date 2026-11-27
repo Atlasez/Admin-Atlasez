@@ -62,6 +62,40 @@ describe("ADMIN staging isolation preflight", () => {
     expect(validateAdminStagingConfig(config)).toEqual([]);
   });
 
+  it("isolates the release staging Worker from the existing staging Worker and both existing databases", () => {
+    const config = safeStagingConfig();
+    const releaseOrigin =
+      "https://atlasez-admin-release-staging.synthetic-account.workers.dev";
+    config.name = "atlasez-admin-release-staging";
+    config.vars.ADMIN_PUBLIC_ORIGIN = releaseOrigin;
+    config.vars.PUBLIC_ANALYTICS_ORIGIN = releaseOrigin;
+    config.vars.PUBLIC_SITE_ORIGIN = releaseOrigin;
+    config.d1_databases[0].database_name =
+      "atlasez-admin-release-staging-reports";
+    expect(validateAdminStagingConfig(config)).toEqual([]);
+    expect(
+      isStagingDiscordDisabled({ ADMIN_PUBLIC_ORIGIN: releaseOrigin }),
+    ).toBe(true);
+
+    config.d1_databases[0].database_id = "1A01E2A8-C89C-4B3E-8C72-8110A12F1F75";
+    expect(validateAdminStagingConfig(config)).toContain(
+      "legacy staging D1 ID is forbidden for release staging",
+    );
+    config.d1_databases[0].database_id = "D5112A62-7ED6-49C8-B6A2-18EE2DBAB678";
+    expect(validateAdminStagingConfig(config)).toContain(
+      "production D1 ID is forbidden",
+    );
+    config.d1_databases[0].database_name = "atlasez-admin-staging-reports";
+    expect(validateAdminStagingConfig(config)).toContain(
+      "database_name must be the dedicated staging D1 name",
+    );
+    config.vars.ADMIN_PUBLIC_ORIGIN =
+      "https://atlasez-admin-staging.synthetic-account.workers.dev";
+    expect(validateAdminStagingConfig(config)).toContain(
+      "origin must be the staging Worker workers.dev hostname",
+    );
+  });
+
   it("requires explicit STG-08 approval and verified test-only Discord identities", () => {
     const config = safeStagingConfig();
     config.vars.ATLASEZ_STAGING_DISCORD_MODE = "test-guild";

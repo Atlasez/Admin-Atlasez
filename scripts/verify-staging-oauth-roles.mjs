@@ -1,10 +1,11 @@
 import { chromium } from "@playwright/test";
 import { createInterface } from "node:readline/promises";
+import { isAdminStagingOrigin } from "../src/lib/admin-staging-origin.mjs";
 
 const rawOrigin = process.env.ADMIN_STAGING_BASE_URL;
 if (!rawOrigin) {
   throw new Error(
-    "Set ADMIN_STAGING_BASE_URL to the exact dedicated atlasez-admin-staging workers.dev origin.",
+    "Set ADMIN_STAGING_BASE_URL to the exact dedicated ADMIN staging workers.dev origin.",
   );
 }
 
@@ -15,19 +16,17 @@ try {
   throw new Error("ADMIN_STAGING_BASE_URL must be a valid HTTPS origin.");
 }
 
-const allowedHost = /^atlasez-admin-staging\.[a-z0-9-]+\.workers\.dev$/i;
 if (
-  stagingUrl.protocol !== "https:" ||
+  !isAdminStagingOrigin(stagingUrl) ||
   stagingUrl.username ||
   stagingUrl.password ||
   stagingUrl.port ||
   stagingUrl.pathname !== "/" ||
   stagingUrl.search ||
-  stagingUrl.hash ||
-  !allowedHost.test(stagingUrl.hostname)
+  stagingUrl.hash
 ) {
   throw new Error(
-    "Target rejected. Use only the dedicated atlasez-admin-staging.<account>.workers.dev origin; production and custom routes are forbidden.",
+    "Target rejected. Use only an approved ADMIN staging workers.dev origin.",
   );
 }
 

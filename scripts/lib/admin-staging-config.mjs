@@ -2,6 +2,11 @@ import {
   isApprovedStagingAddress,
   isApprovedStagingRecipient,
 } from "../../src/lib/admin-staging-email-policy.mjs";
+import {
+  ADMIN_RELEASE_STAGING_WORKER,
+  ADMIN_STAGING_WORKER,
+  isAdminStagingOrigin,
+} from "../../src/lib/admin-staging-origin.mjs";
 
 export const ADMIN_STAGING_TEMPLATE_PATH =
   "wrangler.admin.staging.example.jsonc";
@@ -16,8 +21,11 @@ const PRODUCTION_IDENTIFIERS = [
   "1359062450028282017",
   "1537142952210464868",
 ];
-const STAGING_WORKER = "atlasez-admin-staging";
-const STAGING_D1 = "atlasez-admin-staging-reports";
+const STAGING_DATABASES = new Map([
+  [ADMIN_STAGING_WORKER, "atlasez-admin-staging-reports"],
+  [ADMIN_RELEASE_STAGING_WORKER, "atlasez-admin-release-staging-reports"],
+]);
+const LEGACY_STAGING_D1_ID = "1a01e2a8-c89c-4b3e-8c72-8110a12f1f75";
 const ALLOWED_TOP_LEVEL_KEYS = new Set([
   "$schema",
   "account_id",
@@ -182,7 +190,9 @@ export function validateAdminStagingConfig(
 
   add(
     failures,
-    config.name === STAGING_WORKER,
+    allowExample
+      ? config.name === ADMIN_STAGING_WORKER
+      : STAGING_DATABASES.has(config.name),
     "name must be the dedicated staging Worker name",
   );
   add(failures, config.preview_urls === false, "preview_urls must be disabled");
@@ -356,8 +366,8 @@ export function validateAdminStagingConfig(
     );
     add(
       failures,
-      origin.hostname.startsWith(`${STAGING_WORKER}.`) &&
-        origin.hostname.endsWith(".workers.dev"),
+      isAdminStagingOrigin(origin) &&
+        origin.hostname.split(".")[0] === config.name,
       "origin must be the staging Worker workers.dev hostname",
     );
     add(
@@ -387,7 +397,7 @@ export function validateAdminStagingConfig(
     );
     add(
       failures,
-      database.database_name === STAGING_D1,
+      database.database_name === STAGING_DATABASES.get(config.name),
       "database_name must be the dedicated staging D1 name",
     );
     if (allowExample) {
@@ -397,16 +407,25 @@ export function validateAdminStagingConfig(
         "example D1 ID placeholder changed unexpectedly",
       );
     } else {
+      const databaseId =
+        typeof database.database_id === "string"
+          ? database.database_id.toLowerCase()
+          : "";
       add(
         failures,
-        typeof database.database_id === "string" &&
-          UUID_PATTERN.test(database.database_id),
+        UUID_PATTERN.test(databaseId),
         "database_id must be a real D1 UUID",
       );
       add(
         failures,
-        database.database_id !== "d5112a62-7ed6-49c8-b6a2-18ee2dbab678",
+        databaseId !== "d5112a62-7ed6-49c8-b6a2-18ee2dbab678",
         "production D1 ID is forbidden",
+      );
+      add(
+        failures,
+        config.name !== ADMIN_RELEASE_STAGING_WORKER ||
+          databaseId !== LEGACY_STAGING_D1_ID,
+        "legacy staging D1 ID is forbidden for release staging",
       );
     }
   }

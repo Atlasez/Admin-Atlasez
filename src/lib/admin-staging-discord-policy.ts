@@ -1,3 +1,5 @@
+import { isAdminStagingOrigin } from "./admin-staging-origin.mjs";
+
 type StagingDiscordEnvironment = {
   ATLASEZ_STAGING_MODE?: string;
   ATLASEZ_STAGING_DISCORD_MODE?: string;
@@ -48,15 +50,13 @@ const stagingDiscordIdentityIsComplete = (env: StagingDiscordEnvironment) => {
     Boolean(env.DISCORD_BOT_TOKEN?.trim()) &&
     Boolean(env.DISCORD_OAUTH_CLIENT_SECRET?.trim()) &&
     encryptionKeyIsValid &&
-    originUrl.protocol === "https:" &&
+    isAdminStagingOrigin(originUrl) &&
     !originUrl.username &&
     !originUrl.password &&
     !originUrl.port &&
     originUrl.pathname === "/" &&
     !originUrl.search &&
     !originUrl.hash &&
-    originUrl.hostname.startsWith("atlasez-admin-staging.") &&
-    originUrl.hostname.endsWith(".workers.dev") &&
     (!redirect || redirect === `${originUrl.origin}/auth/discord/callback`)
   );
 };
@@ -67,16 +67,7 @@ export const isAdminStagingEnvironment = (env: StagingDiscordEnvironment) => {
     env.ATLASEZ_STAGING_DISCORD_MODE !== undefined
   )
     return true;
-  try {
-    const origin = new URL(env.ADMIN_PUBLIC_ORIGIN ?? "");
-    return (
-      origin.protocol === "https:" &&
-      origin.hostname.startsWith("atlasez-admin-staging.") &&
-      origin.hostname.endsWith(".workers.dev")
-    );
-  } catch {
-    return false;
-  }
+  return isAdminStagingOrigin(env.ADMIN_PUBLIC_ORIGIN);
 };
 
 /** Production keeps its existing Discord behavior. Staging opts in only as a complete, approved test-guild profile. */

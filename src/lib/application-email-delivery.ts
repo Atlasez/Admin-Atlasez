@@ -2,6 +2,7 @@ import {
   isApprovedStagingAddress,
   isApprovedStagingRecipient,
 } from "./admin-staging-email-policy.mjs";
+import { isAdminStagingOrigin } from "./admin-staging-origin.mjs";
 
 type D1Statement = {
   bind(...values: unknown[]): D1Statement;
@@ -47,19 +48,6 @@ const RETRY_DELAY_MS = 5 * 60_000;
 const CLAIM_LEASE_MS = 15 * 60_000;
 const IDEMPOTENCY_WINDOW_MS = 24 * 60 * 60_000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function isAdminStagingOrigin(value?: string) {
-  try {
-    const origin = new URL(value ?? "");
-    return (
-      origin.protocol === "https:" &&
-      origin.hostname.startsWith("atlasez-admin-staging.") &&
-      origin.hostname.endsWith(".workers.dev")
-    );
-  } catch {
-    return false;
-  }
-}
 
 const safeLog = (
   logger: Pick<Console, "info" | "error">,

@@ -39,6 +39,8 @@
 
 以下の新規Worker/D1作成・空DB migration手順は、**新たな使い捨て環境が必要と判断され、個別変更承認が得られた場合のみ**の条件付き手順です。現在のstagingには適用しません。作業中に本番 `atlasez-admin`、本番D1、`admin.atlasez.org` のroute/secretを参照・変更しないでください。
 
+新規の組は Worker `atlasez-admin-release-staging` と D1 `atlasez-admin-release-staging-reports` を使います。専用の `workers.dev` origin に3つの公開originを揃え、`REPORTS` に新規D1のUUIDを指定します。検証スクリプトは既存ステージングとの組み合わせや、本番・既存ステージングのD1 UUIDを拒否します。Cloudflare管理画面で新規D1の名前とUUIDが一致することも確認します。
+
 ### 1. Cloudflare WorkerとD1
 
 1. Cloudflare管理者はまず既存Worker/D1の名前・匿名resource ID・owner・cleanup担当をread-onlyで記録する。現在確認済みのWorker/D1を再作成しない。欠落またはproductionとの混在が見つかった場合は、対象を使わず個別変更承認を待つ。

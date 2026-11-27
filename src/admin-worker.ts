@@ -64,6 +64,7 @@ import {
   isDiscordOperationPath,
   isStagingDiscordDisabled,
 } from "./lib/admin-staging-discord-policy";
+import { isAdminStagingOrigin } from "./lib/admin-staging-origin.mjs";
 import { purgeExpiredPersonalData } from "./lib/personal-data-retention";
 import { normalizeArticleReferences } from "./lib/article-references.mjs";
 import { tikzPackageHelp } from "./lib/tikz-policy.mjs";
@@ -27813,18 +27814,8 @@ export default {
       "cron" in controller
         ? String((controller as { cron?: unknown }).cron ?? "")
         : "";
-    let stagingOrigin = false;
-    try {
-      const origin = new URL(env.ADMIN_PUBLIC_ORIGIN ?? "");
-      stagingOrigin =
-        origin.protocol === "https:" &&
-        origin.hostname.startsWith("atlasez-admin-staging.") &&
-        origin.hostname.endsWith(".workers.dev");
-    } catch {
-      // A missing or malformed origin is handled by the normal config checks.
-    }
     const stagingModeConfigured =
-      stagingOrigin ||
+      isAdminStagingOrigin(env.ADMIN_PUBLIC_ORIGIN) ||
       env.ATLASEZ_STAGING_MODE !== undefined ||
       env.ATLASEZ_STAGING_CRON_MODE !== undefined ||
       env.ATLASEZ_STAGING_EMAIL_DELIVERY !== undefined ||
