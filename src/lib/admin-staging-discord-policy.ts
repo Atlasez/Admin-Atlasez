@@ -4,6 +4,8 @@ type StagingDiscordEnvironment = {
   ATLASEZ_STAGING_MODE?: string;
   ATLASEZ_STAGING_DISCORD_MODE?: string;
   ATLASEZ_STAGING_DISCORD_POLICY_APPROVED?: string;
+  ATLASEZ_PRODUCTION_DISCORD_GUILD_ID?: string;
+  ATLASEZ_PRODUCTION_DISCORD_CLIENT_ID?: string;
   ADMIN_PUBLIC_ORIGIN?: string;
   DISCORD_GUILD_ID?: string;
   DISCORD_GUILD_NAME?: string;
@@ -14,17 +16,16 @@ type StagingDiscordEnvironment = {
   DISCORD_OAUTH_TOKEN_ENCRYPTION_KEY?: string;
 };
 
-const KNOWN_PRODUCTION_DISCORD_IDS = new Set([
-  "1359062450028282017",
-  "1537142952210464868",
-]);
-
 const stagingDiscordIdentityIsComplete = (env: StagingDiscordEnvironment) => {
   const guildId = env.DISCORD_GUILD_ID?.trim() ?? "";
   const clientId = env.DISCORD_OAUTH_CLIENT_ID?.trim() ?? "";
   const name = env.DISCORD_GUILD_NAME?.trim() ?? "";
   const origin = env.ADMIN_PUBLIC_ORIGIN?.trim() ?? "";
   const redirect = env.DISCORD_OAUTH_REDIRECT_URI?.trim() ?? "";
+  const productionGuildId =
+    env.ATLASEZ_PRODUCTION_DISCORD_GUILD_ID?.trim() ?? "";
+  const productionClientId =
+    env.ATLASEZ_PRODUCTION_DISCORD_CLIENT_ID?.trim() ?? "";
   let originUrl: URL;
   try {
     originUrl = new URL(origin);
@@ -44,8 +45,14 @@ const stagingDiscordIdentityIsComplete = (env: StagingDiscordEnvironment) => {
   return (
     /^\d{17,20}$/.test(guildId) &&
     /^\d{17,20}$/.test(clientId) &&
-    !KNOWN_PRODUCTION_DISCORD_IDS.has(guildId) &&
-    !KNOWN_PRODUCTION_DISCORD_IDS.has(clientId) &&
+    /^\d{17,20}$/.test(productionGuildId) &&
+    /^\d{17,20}$/.test(productionClientId) &&
+    productionGuildId !== productionClientId &&
+    guildId !== clientId &&
+    guildId !== productionGuildId &&
+    guildId !== productionClientId &&
+    clientId !== productionGuildId &&
+    clientId !== productionClientId &&
     /staging|test/i.test(name) &&
     Boolean(env.DISCORD_BOT_TOKEN?.trim()) &&
     Boolean(env.DISCORD_OAUTH_CLIENT_SECRET?.trim()) &&
