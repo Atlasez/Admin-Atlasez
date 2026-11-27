@@ -34,7 +34,10 @@ import {
   isSeminarReviewPath,
   SEMINAR_REVIEW_PATH,
 } from "./lib/admin-routes";
-import { getAdminApiAccessPolicy } from "./lib/admin-api-access-policy";
+import {
+  adminOperationTaskPath,
+  getAdminApiAccessPolicy,
+} from "./lib/admin-api-access-policy";
 import { applicationInterviewPath } from "./lib/application-attention";
 import { applicationAcceptanceEmail } from "./lib/application-acceptance-email";
 import {
@@ -57,6 +60,14 @@ import {
   deliverProgressDiscordNotification,
   dispatchDueDiscordNotifications,
 } from "./lib/discord-notifications";
+import {
+  isDiscordOperationPath,
+  isStagingDiscordDisabled,
+} from "./lib/admin-staging-discord-policy";
+import {
+  isAdminReleaseStagingOrigin,
+  isAdminStagingOrigin,
+} from "./lib/admin-staging-origin.mjs";
 import { purgeExpiredPersonalData } from "./lib/personal-data-retention";
 import { normalizeArticleReferences } from "./lib/article-references.mjs";
 import { tikzPackageHelp } from "./lib/tikz-policy.mjs";
@@ -99,6 +110,16 @@ interface Env {
   ADMIN_PUBLIC_ORIGIN?: string;
   GOOGLE_OAUTH_CLIENT_ID?: string;
   GOOGLE_OAUTH_CLIENT_SECRET?: string;
+  ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST?: string;
+  /** Staging-only switch. Its scheduled handler is restricted to intake reconciliation. */
+  ATLASEZ_STAGING_MODE?: string;
+  ATLASEZ_STAGING_CRON_MODE?: string;
+  /** Enables only explicitly allowlisted synthetic email deliveries in staging. */
+  ATLASEZ_STAGING_EMAIL_DELIVERY?: string;
+  ATLASEZ_STAGING_EMAIL_ALLOWLIST?: string;
+  /** Discord remains unavailable in staging unless STG-08 is explicitly approved. */
+  ATLASEZ_STAGING_DISCORD_MODE?: string;
+  ATLASEZ_STAGING_DISCORD_POLICY_APPROVED?: string;
   /** localhostの開発時だけ使う、ログイン不要のテスト用メールアドレス。 */
   ADMIN_LOCAL_EMAIL?: string;
   /** 任意。D1の初期権限行を復旧するための主管理者メール。コードへ直書きしない。 */
@@ -1058,12 +1079,21 @@ async function googleIdentityByEmail(
     .first();
 }
 
+function isGoogleEmailAllowed(env: Env, email: string) {
+  if (!isAdminReleaseStagingOrigin(env.ADMIN_PUBLIC_ORIGIN)) return true;
+  const normalized = email.trim().toLowerCase();
+  const allowlist = env.ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST ?? "";
+  return normalized !== "" && allowlist.toLowerCase().split(/[\s,]+/).includes(normalized);
+}
+
 async function resolveGoogleAccount(
   env: Env,
   subject: string,
   email: string,
   expectedAccountId?: string,
 ): Promise<{ id: string; canonical_email: string }> {
+  if (!isGoogleEmailAllowed(env, email))
+    throw new Error("受入環境で許可されていないGoogleアカウントです。");
   const [bySubject, byEmail] = await Promise.all([
     googleIdentityBySubject(env, subject),
     googleIdentityByEmail(env, email),
@@ -1090,6 +1120,8 @@ async function resolveGoogleAccount(
       ? await accountById(env, bySubject.account_id)
       : await ensureAtlasezAccount(env, email);
   if (!account) throw new Error("Atlasezアカウントが見つかりません。");
+  if (!isGoogleEmailAllowed(env, account.canonical_email))
+    throw new Error("受入環境で許可されていないAtlasezアカウントです。");
   const now = new Date().toISOString();
   if (bySubject) {
     await env.REPORTS.prepare(
@@ -1139,8 +1171,14 @@ async function getAuthenticatedEmail(
       )
         .bind(await hash(token), new Date().toISOString())
         .first<{ email: string; canonical_email: string | null }>();
-      if (session?.email)
-        return (session.canonical_email ?? session.email).trim().toLowerCase();
+      if (session?.email) {
+        const canonicalEmail = session.canonical_email ?? session.email;
+        if (
+          isGoogleEmailAllowed(env, session.email) &&
+          isGoogleEmailAllowed(env, canonicalEmail)
+        )
+          return canonicalEmail.trim().toLowerCase();
+      }
     }
   }
 
@@ -8671,6 +8709,7 @@ async function notifyAtlasDiscordWebhook(
   env: Env,
   input: { dedupeKey: string; kind: string; content: string },
 ) {
+  if (isStagingDiscordDisabled(env)) return;
   if (!env.DISCORD_ATLAS_WEBHOOK_URL?.trim()) return;
   try {
     await deliverDiscordNotifications(env, [
@@ -8724,7 +8763,18 @@ async function applicationOperatorEmails(env: Env) {
   ];
 }
 
-async function queueApplicationEmails(
+async function authorizedApplicationRepairRecipients(
+  env: Env,
+  expectedRecipients: string[] | null,
+) {
+  if (!expectedRecipients) return [];
+  const currentlyConfigured = new Set(await applicationOperatorEmails(env));
+  return expectedRecipients.filter((recipient) =>
+    currentlyConfigured.has(recipient.trim().toLowerCase()),
+  );
+}
+
+async function applicationEmailDeliveryStatements(
   env: Env,
   application: {
     id: string;
@@ -8734,8 +8784,13 @@ async function queueApplicationEmails(
     projectSlug: string;
     createdAt: string;
   },
+  operatorEmails: string[],
 ) {
-  const operatorEmails = await applicationOperatorEmails(env);
+  const normalizedOperatorEmails = [...new Set(
+    operatorEmails
+      .map((value) => value.trim().toLowerCase())
+      .filter((value) => EMAIL_PATTERN.test(value)),
+  )];
   const applicantText = [
     "Atlasez運営です。",
     "",
@@ -8763,7 +8818,7 @@ async function queueApplicationEmails(
       textBody: applicantText,
       htmlBody: `<h2>応募を受け付けました</h2><p>${emailSafe(application.projectLabel)}への応募を受け付けました。</p><p>内容を確認のうえ、運営から必要な連絡をお送りします。</p>`,
     },
-    ...operatorEmails.map((email) => ({
+    ...normalizedOperatorEmails.map((email) => ({
       kind: "operator_notification",
       email,
       subject: operatorSubject,
@@ -8771,14 +8826,14 @@ async function queueApplicationEmails(
       htmlBody: `<h2>新しい応募が届きました</h2><p><b>プロジェクト:</b> ${emailSafe(application.projectLabel)}<br><b>応募者:</b> ${emailSafe(application.name)}<br><b>メール:</b> ${emailSafe(application.email)}<br><b>応募日時:</b> ${emailSafe(application.createdAt)}</p><p><a href="https://admin.atlasez.org/admin/applications/?project=${encodeURIComponent(application.projectSlug)}">管理画面で確認する</a></p>`,
     })),
   ];
-  if (!rows.length) return { queued: 0, operatorCount: 0 };
-  await env.REPORTS.batch(
-    rows.map((row) =>
-      env.REPORTS.prepare(
-        `INSERT OR IGNORE INTO atlasez_application_email_deliveries
-         (id,application_id,recipient_email,kind,subject,text_body,html_body,status,attempt_count,next_attempt_at,created_at,updated_at)
-         VALUES (?,?,?,?,?,?,?,'pending',0,?,?,?)`,
-      ).bind(
+  return rows.map((row) =>
+    env.REPORTS.prepare(
+      `INSERT INTO atlasez_application_email_deliveries
+       (id,application_id,recipient_email,kind,subject,text_body,html_body,status,attempt_count,next_attempt_at,created_at,updated_at)
+       SELECT ?,?,?,?,?,?,?,'pending',0,?,?,?
+       WHERE EXISTS (SELECT 1 FROM atlasez_member_applications WHERE id=?)
+       ON CONFLICT(application_id,recipient_email,kind) DO NOTHING`,
+    ).bind(
         crypto.randomUUID(),
         application.id,
         row.email,
@@ -8789,10 +8844,9 @@ async function queueApplicationEmails(
         application.createdAt,
         application.createdAt,
         application.createdAt,
+      application.id,
       ),
-    ),
   );
-  return { queued: rows.length, operatorCount: operatorEmails.length };
 }
 
 async function queueApplicationAcceptanceEmail(
@@ -8833,6 +8887,30 @@ async function queueApplicationAcceptanceEmail(
     .run();
 }
 
+async function interviewNotificationDeliveryId(
+  applicationId: string,
+  notificationRevision: number,
+  subject: string,
+  textBody: string,
+  htmlBody: string,
+) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(
+      JSON.stringify([
+        applicationId,
+        notificationRevision,
+        subject,
+        textBody,
+        htmlBody,
+      ]),
+    ),
+  );
+  return `interview-${[...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
 async function queueApplicationInterviewEmail(
   env: Env,
   application: {
@@ -8842,11 +8920,13 @@ async function queueApplicationInterviewEmail(
     formLanguage: string;
   },
   interview: {
+    id: string;
     scheduledAt: string;
     timezone: string;
     mode: "in_person" | "online";
     zoomUrl: string;
     location: string;
+    notificationRevision: number;
   },
   sentAt: string,
 ) {
@@ -8890,17 +8970,36 @@ async function queueApplicationInterviewEmail(
   const htmlBody = english
     ? `<h2>Interview details</h2><p>Your interview for ${emailSafe(projectLabel)} is scheduled for ${emailSafe(date)} (${emailSafe(interview.timezone)}).</p><p><b>Format:</b> ${emailSafe(mode)}${access ? `<br><b>${interview.mode === "online" ? "Zoom link" : "Location"}:</b> ${interview.mode === "online" ? `<a href="${emailSafe(access)}">${emailSafe(access)}</a>` : emailSafe(access)}` : ""}</p>`
     : `<h2>面談日時のお知らせ</h2><p>${emailSafe(projectLabel)}の面談日時が設定されました。</p><p><b>日時：</b>${emailSafe(date)}（${emailSafe(interview.timezone)}）<br><b>形式：</b>${emailSafe(mode)}${access ? `<br><b>${interview.mode === "online" ? "Zoomリンク" : "場所"}：</b>${interview.mode === "online" ? `<a href="${emailSafe(access)}">${emailSafe(access)}</a>` : emailSafe(access)}` : ""}</p>`;
-  await env.REPORTS.prepare(
+  const deliveryId = await interviewNotificationDeliveryId(
+    application.id,
+    interview.notificationRevision,
+    subject,
+    textBody,
+    htmlBody,
+  );
+  const statement = env.REPORTS.prepare(
     `INSERT INTO atlasez_application_email_deliveries
      (id,application_id,recipient_email,kind,subject,text_body,html_body,status,attempt_count,next_attempt_at,created_at,updated_at)
-     VALUES (?,?,?,?,?,?,?,'pending',0,?,?,?)
+     SELECT ?,?,?,?,?,?,?,'pending',0,?,?,?
+     WHERE EXISTS (
+       SELECT 1 FROM atlasez_application_interviews
+        WHERE id=? AND application_id=? AND status='scheduled'
+          AND scheduled_at=? AND timezone=? AND mode=? AND zoom_url=? AND location=?
+     )
      ON CONFLICT(application_id,recipient_email,kind) DO UPDATE SET
-       subject=excluded.subject,text_body=excluded.text_body,html_body=excluded.html_body,
+       id=excluded.id,subject=excluded.subject,text_body=excluded.text_body,html_body=excluded.html_body,
        status='pending',attempt_count=0,next_attempt_at=excluded.next_attempt_at,
-       claim_token=NULL,claimed_at=NULL,sent_at=NULL,last_error='',updated_at=excluded.updated_at`,
+       first_attempt_at=NULL,claim_token=NULL,claimed_at=NULL,sent_at=NULL,last_error='',updated_at=excluded.updated_at
+     WHERE atlasez_application_email_deliveries.status!='sending'
+       AND atlasez_application_email_deliveries.id!=excluded.id
+       AND (
+         atlasez_application_email_deliveries.subject IS NOT excluded.subject
+         OR atlasez_application_email_deliveries.text_body IS NOT excluded.text_body
+         OR atlasez_application_email_deliveries.html_body IS NOT excluded.html_body
+       )`,
   )
     .bind(
-      crypto.randomUUID(),
+      deliveryId,
       application.id,
       application.email,
       "applicant_interview_invitation",
@@ -8910,8 +9009,15 @@ async function queueApplicationInterviewEmail(
       sentAt,
       sentAt,
       sentAt,
-    )
-    .run();
+      interview.id,
+      application.id,
+      interview.scheduledAt,
+      interview.timezone,
+      interview.mode,
+      interview.zoomUrl,
+      interview.location,
+    );
+  return { statement, id: deliveryId, subject, textBody, htmlBody };
 }
 
 async function queueApplicationDiscordEmail(
@@ -8948,7 +9054,7 @@ async function queueApplicationDiscordEmail(
     .run();
 }
 
-async function createApplicationResponseTask(
+function applicationResponseTaskStatement(
   env: Env,
   application: {
     id: string;
@@ -8959,28 +9065,413 @@ async function createApplicationResponseTask(
     createdAt: string;
   },
 ) {
+  const taskId = `application-response:${application.id}`;
+  const applicationReference = `応募ID: ${application.id}`;
   const title = `応募対応：${application.projectLabel} / ${application.name}`;
   const details = [
-    `応募ID: ${application.id}`,
+    applicationReference,
     `応募者: ${application.name}`,
     `メール: ${application.email}`,
     `プロジェクト: ${application.projectLabel}`,
     "応募管理で内容を確認し、応募者への対応を進めてください。",
   ].join("\n");
-  await env.REPORTS.prepare(
+  return env.REPORTS.prepare(
     `INSERT INTO editorial_tasks
      (id,project_id,subject,assignee_email,title,details,status,due_at,due_timezone,reminder_at,reminder_repeat,reminder_email,created_by,created_at,updated_at)
-     VALUES (?, 'secretariat', NULL, NULL, ?, ?, 'open', NULL, 'Asia/Tokyo', NULL, 'none', NULL, ?, ?, ?)`,
+     SELECT ?, 'secretariat', NULL, NULL, ?, ?, 'open', NULL, 'Asia/Tokyo', NULL, 'none', NULL, ?, ?, ?
+     WHERE EXISTS (SELECT 1 FROM atlasez_member_applications WHERE id=?)
+       AND NOT EXISTS (
+         SELECT 1 FROM editorial_tasks
+          WHERE id=? OR (instr(details,?)>0 AND id!=?)
+       )`,
   )
     .bind(
-      crypto.randomUUID(),
+      taskId,
       title,
       details,
       "応募フォーム",
       application.createdAt,
       application.createdAt,
+      application.id,
+      taskId,
+      applicationReference,
+      `application-recovery:${application.id}`,
     )
-    .run();
+}
+
+function applicationIntakeRecoveryTaskStatement(
+  env: Env,
+  input: {
+    applicationId: string;
+    correlationId: string;
+    detectedBy: "batch_error" | "write_count_mismatch" | "scheduled_reconciliation";
+    missing: string[];
+    repaired: boolean;
+    repairAttempted: boolean;
+    createdAt: string;
+  },
+) {
+  const taskId = `application-recovery:${input.applicationId}`;
+  const details = [
+    `応募ID: ${input.applicationId}`,
+    `相関ID: ${input.correlationId}`,
+    `検出区分: ${input.detectedBy}`,
+    `復旧結果: ${input.repaired ? (input.repairAttempted ? "repaired" : "verified_without_repair") : "operator_action_required"}`,
+    `初回batchで不足を確認した項目: ${input.missing.length ? input.missing.join(", ") : "none"}`,
+    "応募行、応募対応タスク、初回メールqueueの状態を照合してください。送信済みメールを再送しないでください。",
+  ].join("\n");
+  return env.REPORTS.prepare(
+    `INSERT INTO editorial_tasks
+     (id,project_id,subject,assignee_email,title,details,status,due_at,due_timezone,reminder_at,reminder_repeat,reminder_email,created_by,created_at,updated_at)
+     SELECT ?, 'secretariat', NULL, NULL, '応募処理の整合性を確認する', ?, 'open', NULL, 'Asia/Tokyo', NULL, 'none', NULL, '応募処理監視', ?, ?
+     WHERE EXISTS (SELECT 1 FROM atlasez_member_applications WHERE id=?)
+     ON CONFLICT(id) DO UPDATE SET
+       details=excluded.details,
+       status=CASE WHEN editorial_tasks.status='done' THEN 'open' ELSE editorial_tasks.status END,
+       updated_at=excluded.updated_at`,
+  ).bind(
+    taskId,
+    details,
+    input.createdAt,
+    input.createdAt,
+    input.applicationId,
+  );
+}
+
+function applicationIntakeRecoveryAuditStatement(
+  env: Env,
+  input: {
+    applicationId: string;
+    correlationId: string;
+    detectedBy: "batch_error" | "write_count_mismatch" | "scheduled_reconciliation";
+    missing: string[];
+    repaired: boolean;
+    repairAttempted: boolean;
+    createdAt: string;
+  },
+) {
+  const details = JSON.stringify({
+    correlationId: input.correlationId,
+    detectedBy: input.detectedBy,
+    missing: input.missing,
+    repaired: input.repaired,
+    repairAttempted: input.repairAttempted,
+  });
+  return env.REPORTS.prepare(
+    `INSERT INTO admin_audit_log
+     (id,actor_email,action,target_type,target_id,target_label,summary,details_json,created_at)
+     VALUES (?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(id) DO NOTHING`,
+  ).bind(
+    `application-recovery:${input.applicationId}:${input.correlationId}`,
+    "応募処理監視",
+    "application_intake_reconciliation_required",
+    "application",
+    input.applicationId,
+    "応募受付処理",
+    input.repaired
+      ? input.repairAttempted
+        ? "応募受付処理の一部を冪等に修復。運営による確認が必要です。"
+        : "応募受付処理のDB状態は揃っていますが、結果照合に不整合がありました。運営による確認が必要です。"
+      : "応募受付処理の一部を修復できません。運営による確認が必要です。",
+    details,
+    input.createdAt,
+  );
+}
+
+type ApplicationIntakeSnapshot = {
+  applicationExists: boolean;
+  responseTaskCount: number;
+  applicantConfirmationCount: number;
+  operatorNotificationCount: number;
+  expectedOperatorRecipients: string[] | null;
+  operatorRecipientSetMatches: boolean | null;
+  reconciliationRequired: boolean;
+  recoveryTaskOpen: boolean;
+};
+
+function parseApplicationOperatorRecipients(value: string | null | undefined) {
+  if (value == null) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (
+      !Array.isArray(parsed) ||
+      !parsed.every((entry) => typeof entry === "string" && EMAIL_PATTERN.test(entry))
+    )
+      return null;
+    return [...new Set(parsed.map((entry) => entry.trim().toLowerCase()))];
+  } catch {
+    return null;
+  }
+}
+
+async function inspectApplicationIntake(
+  env: Env,
+  applicationId: string,
+): Promise<ApplicationIntakeSnapshot> {
+  const taskId = `application-response:${applicationId}`;
+  const recoveryTaskId = `application-recovery:${applicationId}`;
+  const reference = `応募ID: ${applicationId}`;
+  const row = await env.REPORTS.prepare(
+    `SELECT
+       EXISTS(SELECT 1 FROM atlasez_member_applications WHERE id=?) AS application_exists,
+       (SELECT COUNT(*) FROM editorial_tasks WHERE id=? OR (instr(details,?)>0 AND id!=?)) AS response_task_count,
+       (SELECT COUNT(*) FROM atlasez_application_email_deliveries WHERE application_id=? AND kind='applicant_confirmation') AS applicant_confirmation_count,
+       (SELECT COUNT(*) FROM atlasez_application_email_deliveries WHERE application_id=? AND kind='operator_notification') AS operator_notification_count,
+       (SELECT operator_notification_recipients_json FROM atlasez_member_applications WHERE id=?) AS operator_notification_recipients_json,
+       (SELECT intake_reconciliation_required FROM atlasez_member_applications WHERE id=?) AS intake_reconciliation_required,
+       EXISTS(SELECT 1 FROM editorial_tasks WHERE id=? AND status!='done') AS recovery_task_open`,
+  )
+    .bind(applicationId, taskId, reference, recoveryTaskId, applicationId, applicationId, applicationId, applicationId, recoveryTaskId)
+    .first<{
+      application_exists: number;
+      response_task_count: number;
+      applicant_confirmation_count: number;
+      operator_notification_count: number;
+      operator_notification_recipients_json: string | null;
+      intake_reconciliation_required: number | null;
+      recovery_task_open: number;
+    }>();
+  const expectedOperatorRecipients = parseApplicationOperatorRecipients(
+    row?.operator_notification_recipients_json,
+  );
+  const actualOperatorRecipients = await env.REPORTS.prepare(
+    `SELECT lower(trim(recipient_email)) AS email
+       FROM atlasez_application_email_deliveries
+      WHERE application_id=? AND kind='operator_notification'`,
+  )
+    .bind(applicationId)
+    .all<{ email: string }>();
+  const actualRecipients = [...new Set(
+    (actualOperatorRecipients.results ?? []).map((entry) => entry.email.trim().toLowerCase()),
+  )].sort();
+  const expectedRecipients = expectedOperatorRecipients
+    ? [...expectedOperatorRecipients].sort()
+    : null;
+  return {
+    applicationExists: Number(row?.application_exists ?? 0) === 1,
+    responseTaskCount: Number(row?.response_task_count ?? 0),
+    applicantConfirmationCount: Number(row?.applicant_confirmation_count ?? 0),
+    operatorNotificationCount: Number(row?.operator_notification_count ?? 0),
+    expectedOperatorRecipients,
+    operatorRecipientSetMatches: expectedRecipients === null
+      ? null
+      : JSON.stringify(actualRecipients) === JSON.stringify(expectedRecipients),
+    reconciliationRequired: Number(row?.intake_reconciliation_required ?? 0) === 1,
+    recoveryTaskOpen: Number(row?.recovery_task_open ?? 0) === 1,
+  };
+}
+
+function missingApplicationIntakeComponents(
+  snapshot: ApplicationIntakeSnapshot,
+  expectedQueueCount: number | null,
+): string[] {
+  const missing: string[] = [];
+  if (!snapshot.applicationExists) missing.push("application");
+  if (snapshot.responseTaskCount !== 1) missing.push("response_task");
+  if (snapshot.applicantConfirmationCount !== 1)
+    missing.push("applicant_confirmation");
+  if (
+    expectedQueueCount !== null &&
+    (snapshot.operatorNotificationCount !== expectedQueueCount - 1 ||
+      snapshot.operatorRecipientSetMatches !== true)
+  )
+    missing.push("operator_notification");
+  return missing;
+}
+
+async function reconcilePendingApplicationIntakes(env: Env) {
+  const staleCutoff = new Date(Date.now() - 5 * 60_000).toISOString();
+  const pending = await env.REPORTS.prepare(
+    `SELECT id,name,email,project_slug,created_at,operator_notification_recipients_json
+       FROM atlasez_member_applications
+      WHERE intake_reconciliation_required=1 AND updated_at<=?
+      ORDER BY updated_at ASC,created_at ASC LIMIT 25`,
+  )
+    .bind(staleCutoff)
+    .all<{
+      id: string;
+      name: string;
+      email: string;
+      project_slug: string;
+      created_at: string;
+      operator_notification_recipients_json: string | null;
+    }>();
+  let repairedCount = 0;
+  let pendingCount = 0;
+  for (const application of pending.results ?? []) {
+    const correlationId = crypto.randomUUID();
+    const recoveryAuditKey = `scheduled:${application.id}`;
+    const safeLog = (category: string, details: Record<string, number | string | boolean> = {}) =>
+      console.error(JSON.stringify({
+        event: "application_intake_reconciliation",
+        correlationId,
+        category,
+        ...details,
+      }));
+    const deferRetry = async () => {
+      try {
+        // Reuse the row's generic last-updated timestamp as a retry watermark.
+        // This prevents an unrepairable oldest row from occupying every batch.
+        await env.REPORTS.prepare(
+          "UPDATE atlasez_member_applications SET updated_at=? WHERE id=? AND intake_reconciliation_required=1",
+        )
+          .bind(new Date().toISOString(), application.id)
+          .run();
+      } catch {
+        safeLog("retry_defer_failed");
+      }
+    };
+    let before: ApplicationIntakeSnapshot;
+    try {
+      before = await inspectApplicationIntake(env, application.id);
+    } catch {
+      pendingCount += 1;
+      safeLog("read_failed");
+      await deferRetry();
+      continue;
+    }
+    if (!before.applicationExists) continue;
+
+    const expectedRecipients = before.expectedOperatorRecipients;
+    const expectedQueueCount = expectedRecipients === null
+      ? null
+      : expectedRecipients.length + 1;
+    const missingBefore = missingApplicationIntakeComponents(
+      before,
+      expectedQueueCount,
+    );
+    if (expectedRecipients === null)
+      missingBefore.push("operator_notification_expectation_unknown");
+
+    const followup = {
+      id: application.id,
+      name: application.name,
+      email: application.email,
+      projectLabel: APPLICATION_FORM_LABELS[application.project_slug] ?? application.project_slug,
+      projectSlug: application.project_slug,
+      createdAt: application.created_at,
+    };
+    let repairAttempted = false;
+    let after = before;
+    let afterVerified = true;
+    const hasRepairableGap = missingBefore.some(
+      (component) => component !== "operator_notification_expectation_unknown",
+    );
+    if (hasRepairableGap) {
+      repairAttempted = true;
+      try {
+        const activeRecipients = await authorizedApplicationRepairRecipients(
+          env,
+          expectedRecipients,
+        );
+        const emailStatements = await applicationEmailDeliveryStatements(
+          env,
+          followup,
+          activeRecipients,
+        );
+        await env.REPORTS.batch([
+          applicationResponseTaskStatement(env, followup),
+          ...emailStatements,
+        ]);
+      } catch {
+        safeLog("repair_failed", { missingCount: missingBefore.length });
+      }
+      try {
+        after = await inspectApplicationIntake(env, application.id);
+      } catch {
+        afterVerified = false;
+        safeLog("post_repair_read_failed", { repairAttempted });
+      }
+    }
+
+    const missingAfter = missingApplicationIntakeComponents(
+      after,
+      after.expectedOperatorRecipients === null
+        ? null
+        : after.expectedOperatorRecipients.length + 1,
+    );
+    if (after.expectedOperatorRecipients === null)
+      missingAfter.push("operator_notification_expectation_unknown");
+    const repaired = afterVerified &&
+      after.applicationExists &&
+      after.expectedOperatorRecipients !== null &&
+      missingAfter.length === 0;
+    let recoveryRecordVerified = false;
+    try {
+      const recoveryInput = {
+        applicationId: application.id,
+        correlationId: recoveryAuditKey,
+        detectedBy: "scheduled_reconciliation" as const,
+        missing: missingBefore,
+        repaired,
+        repairAttempted,
+        createdAt: new Date().toISOString(),
+      };
+      await env.REPORTS.batch([
+        applicationIntakeRecoveryTaskStatement(env, recoveryInput),
+        applicationIntakeRecoveryAuditStatement(env, recoveryInput),
+      ]);
+      const [task, audit] = await Promise.all([
+        env.REPORTS.prepare(
+          "SELECT status FROM editorial_tasks WHERE id=? LIMIT 1",
+        )
+          .bind(`application-recovery:${application.id}`)
+          .first<{ status: string }>(),
+        env.REPORTS.prepare(
+          "SELECT 1 AS found FROM admin_audit_log WHERE id=? LIMIT 1",
+        )
+          .bind(`application-recovery:${application.id}:${recoveryAuditKey}`)
+          .first<{ found: number }>(),
+      ]);
+      recoveryRecordVerified = Boolean(task && task.status !== "done" && audit);
+    } catch {
+      safeLog("recovery_record_failed", {
+        missingCount: missingBefore.length,
+        repaired,
+      });
+    }
+
+    let finalized = false;
+    if (repaired && recoveryRecordVerified) {
+      try {
+        await env.REPORTS.prepare(
+          "UPDATE atlasez_member_applications SET intake_reconciliation_required=0,updated_at=? WHERE id=? AND intake_reconciliation_required=1",
+        )
+          .bind(new Date().toISOString(), application.id)
+          .run();
+        const current = await inspectApplicationIntake(env, application.id);
+        finalized = current.expectedOperatorRecipients !== null &&
+          !current.reconciliationRequired &&
+          missingApplicationIntakeComponents(
+            current,
+            current.expectedOperatorRecipients.length + 1,
+          ).length === 0;
+      } catch {
+        safeLog("finalize_failed");
+      }
+    }
+    if (finalized) {
+      repairedCount += 1;
+      safeLog("reconciled", {
+        missingBeforeCount: missingBefore.length,
+        repairAttempted,
+      });
+    } else {
+      pendingCount += 1;
+      safeLog("operator_followup_pending", {
+        missingAfterCount: missingAfter.length,
+        recoveryRecordVerified,
+        repaired,
+      });
+      await deferRetry();
+    }
+  }
+  return {
+    examined: pending.results?.length ?? 0,
+    repaired: repairedCount,
+    pending: pendingCount,
+  };
 }
 
 async function notifyProgressToDiscord(
@@ -8989,6 +9480,7 @@ async function notifyProgressToDiscord(
   subject: string | null,
   body: string,
 ) {
+  if (isStagingDiscordDisabled(env)) return false;
   let subjectChannelId: string | null = null;
   if (env.DISCORD_BOT_TOKEN?.trim() && subject) {
     try {
@@ -9468,6 +9960,13 @@ async function provisionApplicationDiscordRoles(
   },
   manualAssignmentsOverride?: DiscordManualRoleAssignment[],
 ): Promise<DiscordProvisioningResult> {
+  if (isStagingDiscordDisabled(env))
+    return {
+      status: "skipped",
+      applied: 0,
+      removed: 0,
+      warnings: ["stagingではDiscord連携が無効です。"],
+    };
   if (!env.DISCORD_BOT_TOKEN || !env.DISCORD_GUILD_ID)
     return {
       status: "skipped",
@@ -9852,6 +10351,10 @@ export async function syncDiscordRolesToAdmin(
     assignmentsRevoked: 0,
     warnings: [],
   };
+  if (isStagingDiscordDisabled(env)) {
+    report?.({ status: "skipped", code: "not_configured" });
+    return result;
+  }
   if (!env.DISCORD_BOT_TOKEN || !env.DISCORD_GUILD_ID) {
     report?.({ status: "skipped", code: "not_configured" });
     return result;
@@ -11641,2253 +12144,9 @@ async function createAtlasezProject(
   }
   const allMembers = [...new Set([scope.email, ...members])];
   for (const email of allMembers)
-    await env.REPORTS.prepare(
-      "INSERT OR IGNORE INTO atlasez_project_memberships (project_id,email,role,joined_at) VALUES (?,?,?,?)",
-    )
-      .bind(id, email, email === scope.email ? "manager" : "member", now)
-      .run();
-  return json({ ok: true, slug });
-}
-
-async function saveMyProfile(request: Request, env: Env): Promise<Response> {
-  const scope = await getMemberProfileScope(request, env);
-  if (isResponse(scope)) return scope;
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-  let payload: {
-    avatarUrl?: unknown;
-    displayName?: unknown;
-    university?: unknown;
-    year?: unknown;
-    affiliationType?: unknown;
-    country?: unknown;
-    timezone?: unknown;
-    bio?: unknown;
-  };
-  try {
-    payload = (await request.json()) as typeof payload;
-  } catch {
-    return json({ error: "入力内容を読み取れませんでした。" }, 400);
-  }
-  if (payload.avatarUrl !== undefined && typeof payload.avatarUrl !== "string")
-    return json({ error: "プロフィール画像を確認してください。" }, 400);
-  const suppliedAvatarUrl =
-    typeof payload.avatarUrl === "string" ? payload.avatarUrl.trim() : undefined;
-  if (
-    suppliedAvatarUrl !== undefined &&
-    suppliedAvatarUrl.length > profileImageMaxStoredUrlLength
-  )
-    return json(
-      {
-        error:
-          "画像の保存容量を超えています。切り抜きや縮小を調整してから保存してください。",
-      },
-      413,
-    );
-  const currentProfile = await env.REPORTS.prepare(
-    `SELECT display_name,bio,avatar_url,university,year,affiliation_type,country,timezone
-     FROM editorial_member_profiles WHERE lower(email)=lower(?)`,
-  )
-    .bind(scope.email)
-    .first<{
-      display_name: string;
-      bio: string;
-      avatar_url: string;
-      university: string;
-      year: string;
-      affiliation_type: string;
-      country: string;
-      timezone: string;
-    }>();
-  const avatarUrl =
-    payload.avatarUrl === undefined
-      ? (currentProfile?.avatar_url ?? "")
-      : (suppliedAvatarUrl ?? "");
-  const displayName =
-    payload.displayName === undefined ? null : text(payload.displayName, 120);
-  const university =
-    payload.university === undefined ? null : text(payload.university, 200);
-  const year = payload.year === undefined ? null : text(payload.year, 80);
-  const affiliationType =
-    payload.affiliationType === undefined
-      ? null
-      : text(payload.affiliationType, 80);
-  const country =
-    payload.country === undefined ? null : text(payload.country, 120);
-  const timezone =
-    payload.timezone === undefined ? null : text(payload.timezone, 80);
-  const bio = payload.bio === undefined ? null : text(payload.bio, 4_000);
-  const proposedDisplayName = displayName ?? currentProfile?.display_name ?? "";
-  const proposedUniversity = university ?? currentProfile?.university ?? "";
-  const proposedYear = year ?? currentProfile?.year ?? "";
-  const proposedAffiliationType =
-    affiliationType ?? currentProfile?.affiliation_type ?? "";
-  const proposedCountry = country ?? currentProfile?.country ?? "";
-  const proposedTimezone = timezone ?? currentProfile?.timezone ?? "Asia/Tokyo";
-  const proposedBio = bio ?? currentProfile?.bio ?? "";
-  if (
-    avatarUrl &&
-    ((!/^https:\/\//i.test(avatarUrl) &&
-      !isProfileImageDataUrl(avatarUrl)) ||
-      /["'<>]/.test(avatarUrl))
-  )
-    return json(
-      {
-        error:
-          "プロフィール画像はPNG・JPEG・WebP・GIFの画像ファイル、またはhttps://画像URLを指定してください。",
-      },
-      400,
-    );
-  if (timezone !== null && !validTimeZone(timezone))
-    return json({ error: "タイムゾーンを確認してください。" }, 400);
-  const requestsProfileChange = [
-    displayName,
-    university,
-    year,
-    affiliationType,
-    country,
-    timezone,
-    bio,
-  ].some((value) => value !== null);
-  if (requestsProfileChange && !proposedDisplayName)
-    return json({ error: "公開表示名を入力してください。" }, 400);
-  let updatedAt = new Date().toISOString();
-  const avatarStatement = env.REPORTS.prepare(
-    `INSERT INTO editorial_member_profiles (email, avatar_url, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(email) DO UPDATE SET avatar_url=excluded.avatar_url,updated_at=excluded.updated_at`,
-  ).bind(scope.email, avatarUrl, updatedAt);
-  if (!requestsProfileChange) {
-    try {
-      await avatarStatement.run();
-      return json({ ok: true, updatedAt, approvalRequired: false });
-    } catch {
-      return json({ error: "プロフィール画像を保存できませんでした。" }, 500);
-    }
-  }
-
-  const requestId = crypto.randomUUID();
-  const taskId = crypto.randomUUID();
-  const existing = await env.REPORTS.prepare(
-    "SELECT id,task_id,submitted_at FROM editorial_member_profile_change_requests WHERE lower(email)=lower(?) AND status='pending' ORDER BY submitted_at DESC LIMIT 1",
-  )
-    .bind(scope.email)
-    .first<{ id: string; task_id: string | null; submitted_at: string }>();
-  updatedAt = new Date(Math.max(Date.now(), (Date.parse(existing?.submitted_at ?? "") || 0) + 1)).toISOString();
-  const actualRequestId = existing?.id ?? requestId;
-  const actualTaskId = existing?.task_id ?? taskId;
-  const taskTitle = `メンバー情報変更の承認：${proposedDisplayName}`;
-  const taskDetails = [
-    `申請者: ${scope.email}`,
-    `公開表示名: ${proposedDisplayName}`,
-    `所属: ${proposedUniversity}`,
-    `学年等: ${proposedYear}`,
-    `所属区分: ${proposedAffiliationType}`,
-    `国・地域: ${proposedCountry}`,
-    `タイムゾーン: ${proposedTimezone}`,
-    "運営事務局の「メンバー情報の承認」から内容を確認してください。",
-  ].join("\n");
-  const requestStatements = existing
-    ? [
-        env.REPORTS.prepare(
-          `UPDATE editorial_member_profile_change_requests SET
-             proposed_display_name=?,proposed_university=?,proposed_year=?,
-             proposed_affiliation_type=?,proposed_country=?,proposed_timezone=?,
-             proposed_bio=?,submitted_at=?,review_note=''
-           WHERE id=? AND status='pending' AND submitted_at=?`,
-        ).bind(
-          proposedDisplayName,
-          proposedUniversity,
-          proposedYear,
-          proposedAffiliationType,
-          proposedCountry,
-          proposedTimezone,
-          proposedBio,
-          updatedAt,
-          actualRequestId,
-          existing.submitted_at,
-        ),
-        env.REPORTS.prepare(
-          "UPDATE editorial_tasks SET title=?,details=?,status='open',updated_at=? WHERE id=? AND changes()=1",
-        ).bind(taskTitle, taskDetails, updatedAt, actualTaskId),
-      ]
-    : [
-        env.REPORTS.prepare(
-          `INSERT INTO editorial_member_profile_change_requests
-           (id,email,proposed_display_name,proposed_university,proposed_year,
-            proposed_affiliation_type,proposed_country,proposed_timezone,proposed_bio,
-            status,task_id,submitted_at)
-           VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?)`,
-        ).bind(
-          actualRequestId,
-          scope.email,
-          proposedDisplayName,
-          proposedUniversity,
-          proposedYear,
-          proposedAffiliationType,
-          proposedCountry,
-          proposedTimezone,
-          proposedBio,
-          actualTaskId,
-          updatedAt,
-        ),
-        env.REPORTS.prepare(
-          `INSERT INTO editorial_tasks
-           (id,project_id,subject,assignee_email,title,details,status,due_at,due_timezone,
-            reminder_at,reminder_repeat,reminder_email,created_by,created_at,updated_at)
-           VALUES (?,'secretariat','member-profile-change',NULL,?,?,'open',NULL,'Asia/Tokyo',NULL,'none',NULL,?,?,?)`,
-        ).bind(
-          actualTaskId,
-          taskTitle,
-          taskDetails,
-          scope.email,
-          updatedAt,
-          updatedAt,
-        ),
-      ];
-  try {
-    const conditionalAvatar = payload.avatarUrl === undefined ? [] : [env.REPORTS.prepare(
-      `INSERT INTO editorial_member_profiles(email,avatar_url,updated_at) SELECT ?,?,? WHERE changes()=1
-       ON CONFLICT(email) DO UPDATE SET avatar_url=excluded.avatar_url,updated_at=excluded.updated_at`
-    ).bind(scope.email,avatarUrl,updatedAt)];
-    const results = await env.REPORTS.batch([requestStatements[0],...conditionalAvatar,...requestStatements.slice(1)]);
-    if (Number(results[0]?.meta?.changes ?? 0) !== 1)
-      return json({error:"プロフィールの申請が先に更新・審査されています。再読み込みしてから変更してください。"},409);
-  } catch {
-    return json({ error: "変更申請を運営事務局へ送れませんでした。" }, 500);
-  }
-  return json({
-    ok: true,
-    updatedAt,
-    approvalRequired: true,
-    requestId: actualRequestId,
-  });
-}
-
-type ProfileChangeRequestCursor = {
-  statusRank: number;
-  submittedAt: string;
-  id: string;
-};
-
-const parseProfileChangeRequestCursor = (
-  raw: string | null,
-): ProfileChangeRequestCursor | null => {
-  if (!raw) return null;
-  const parts = raw.split("|");
-  if (parts.length !== 3) return null;
-  const statusRank = Number(parts[0]);
-  const submittedAt = parts[1] ?? "";
-  const id = parts[2] ?? "";
-  if (
-    !Number.isInteger(statusRank) ||
-    statusRank < 0 ||
-    statusRank > 1 ||
-    !submittedAt ||
-    !id
-  )
-    return null;
-  return { statusRank, submittedAt, id };
-};
-
-const profileChangeRequestCursor = (
-  row: Record<string, unknown>,
-): string =>
-  `${row.status === "pending" ? 0 : 1}|${String(row.submitted_at ?? "")}|${String(row.id ?? "")}`;
-
-async function listProfileChangeRequests(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const scope = await getSecretariatReviewerScope(request, env);
-  if (isResponse(scope)) return scope;
-  const searchParams = new URL(request.url).searchParams;
-  const requestedStatus = searchParams.get("status") ?? "pending";
-  if (!new Set(["pending", "approved", "rejected", "all"]).has(requestedStatus))
-    return json({ error: "申請状態を確認してください。" }, 400);
-  const requestedLimit = Number(searchParams.get("limit") ?? "50");
-  const pageLimit = Number.isFinite(requestedLimit)
-    ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 100)
-    : 50;
-  const cursor = parseProfileChangeRequestCursor(searchParams.get("cursor"));
-  const atlasCursor = parseProfileChangeRequestCursor(
-    searchParams.get("atlasCursor"),
-  );
-  const statusRank = "CASE r.status WHEN 'pending' THEN 0 ELSE 1 END";
-  const cursorCondition = (value: ProfileChangeRequestCursor | null) =>
-    value
-      ? `(${statusRank} > ? OR (${statusRank} = ? AND (r.submitted_at < ? OR (r.submitted_at = ? AND r.id < ?))))`
-      : "";
-  const profileFilters: string[] = [];
-  const profileValues: unknown[] = [];
-  if (requestedStatus !== "all") {
-    profileFilters.push("r.status=?");
-    profileValues.push(requestedStatus);
-  }
-  const profileCursorFilter = cursorCondition(cursor);
-  if (profileCursorFilter) {
-    profileFilters.push(profileCursorFilter);
-    profileValues.push(
-      cursor?.statusRank,
-      cursor?.statusRank,
-      cursor?.submittedAt,
-      cursor?.submittedAt,
-      cursor?.id,
-    );
-  }
-  const profileWhere = profileFilters.length
-    ? `WHERE ${profileFilters.join(" AND ")}`
-    : "";
-  const atlasFilters = ["r.project_id='atlas'"];
-  const atlasValues: unknown[] = [];
-  if (requestedStatus !== "all") {
-    atlasFilters.push("r.status=?");
-    atlasValues.push(requestedStatus);
-  }
-  const atlasCursorFilter = cursorCondition(atlasCursor);
-  if (atlasCursorFilter) {
-    atlasFilters.push(atlasCursorFilter);
-    atlasValues.push(
-      atlasCursor?.statusRank,
-      atlasCursor?.statusRank,
-      atlasCursor?.submittedAt,
-      atlasCursor?.submittedAt,
-      atlasCursor?.id,
-    );
-  }
-  const profileStatement = env.REPORTS.prepare(
-    `SELECT r.*,COALESCE(p.avatar_url,'') AS avatar_url,
-      p.display_name AS current_display_name,p.university AS current_university,
-      p.year AS current_year,p.affiliation_type AS current_affiliation_type,
-      p.country AS current_country,p.timezone AS current_timezone,p.bio AS current_bio
-     FROM editorial_member_profile_change_requests r
-     LEFT JOIN editorial_member_profiles p ON p.email=r.email
-     ${profileWhere}
-     ORDER BY ${statusRank},r.submitted_at DESC,r.id DESC LIMIT ?`,
-  );
-  const atlasStatement = env.REPORTS.prepare(
-    `SELECT r.*,COALESCE(NULLIF(TRIM(p.display_name),''),r.email) AS display_name,
-      COALESCE(p.avatar_url,'') AS avatar_url,COALESCE(pp.internal_bio,'') AS current_internal_bio
-     FROM editorial_project_profile_change_requests r
-     LEFT JOIN editorial_member_profiles p ON p.email=r.email
-     LEFT JOIN editorial_project_member_profiles pp
-       ON pp.project_id=r.project_id AND pp.email=r.email
-     WHERE ${atlasFilters.join(" AND ")}
-     ORDER BY ${statusRank},r.submitted_at DESC,r.id DESC LIMIT ?`,
-  );
-  const [result, atlasResult] = await Promise.all([
-    profileStatement
-      .bind(...profileValues, pageLimit + 1)
-      .all<Record<string, unknown>>(),
-    atlasStatement
-      .bind(...atlasValues, pageLimit + 1)
-      .all<Record<string, unknown>>(),
-  ]);
-  const profileRows = result.results ?? [];
-  const atlasRows = atlasResult.results ?? [];
-  const requests = profileRows.slice(0, pageLimit);
-  const atlasInternalBioRequests = atlasRows.slice(0, pageLimit);
-  const profileHasMore = profileRows.length > pageLimit;
-  const atlasHasMore = atlasRows.length > pageLimit;
-  // この画面はメンバー情報とatlasの運営内自己紹介を同時に扱うため、
-  // Portal／Action Centerと同じ合算値を返す。
-  const pendingApprovals = await countPendingProfileApprovals(env, {
-    includeMemberRequests: true,
-    includeAllProjectRequests: true,
-  });
-  return json({
-    requests,
-    atlasInternalBioRequests,
-    pendingApprovals,
-    reviewer: scope.email,
-    pagination: {
-      limit: pageLimit,
-      nextCursor:
-        profileHasMore && requests.at(-1)
-          ? profileChangeRequestCursor(requests.at(-1) as Record<string, unknown>)
-          : null,
-      hasMore: profileHasMore,
-    },
-    atlasPagination: {
-      limit: pageLimit,
-      nextCursor:
-        atlasHasMore && atlasInternalBioRequests.at(-1)
-          ? profileChangeRequestCursor(
-              atlasInternalBioRequests.at(-1) as Record<string, unknown>,
-            )
-          : null,
-      hasMore: atlasHasMore,
-    },
-  });
-}
-
-async function reviewProfileChangeRequest(
-  request: Request,
-  env: Env,
-  requestId: string,
-): Promise<Response> {
-  const scope = await getSecretariatReviewerScope(request, env);
-  if (isResponse(scope)) return scope;
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-  let payload: { action?: unknown; reviewNote?: unknown; idempotencyKey?: unknown; expectedSubmittedAt?: unknown };
-  try {
-    payload = (await request.json()) as typeof payload;
-  } catch {
-    return json({ error: "入力内容を読み取れませんでした。" }, 400);
-  }
-  const action = text(payload.action, 20);
-  if (action !== "approve" && action !== "reject")
-    return json({ error: "承認または却下を選択してください。" }, 400);
-  const row = await env.REPORTS.prepare(
-    "SELECT * FROM editorial_member_profile_change_requests WHERE id=?",
-  )
-    .bind(requestId)
-    .first<Record<string, unknown>>();
-  if (!row) return json({ error: "変更申請が見つかりません。" }, 404);
-  const idempotencyKey = text(payload.idempotencyKey, 120) || crypto.randomUUID();
-  const replay = await env.REPORTS.prepare(
-    "SELECT entity_type,entity_id,from_state,to_state,metadata_json,created_at FROM workflow_transition_events WHERE actor_email=? AND idempotency_key=?",
-  ).bind(scope.email, idempotencyKey).first<{ entity_type: string; entity_id: string; from_state: string; to_state: string; metadata_json: string; created_at: string }>().catch(() => null);
-  const status = action === "approve" ? "approved" : "rejected";
-  let replayRequestType: string | null = null;
-  try { replayRequestType = replay ? String((JSON.parse(replay.metadata_json) as { requestType?: unknown }).requestType ?? "") || null : null; } catch { /* malformed historical metadata is not a valid replay */ }
-  if (replay && (replay.entity_type !== "approval" || replay.entity_id !== requestId || replay.to_state !== status || replayRequestType !== "member-profile"))
-    return json({ error: "この操作キーは別の状態変更に使われています。", code: "IDEMPOTENCY_KEY_REUSED" }, 409);
-  if (replay) return json({ ok: true, status: replay.to_state, replayed: true, transition: { entityType: "approval", entityId: requestId, fromState: replay.from_state, toState: replay.to_state, createdAt: replay.created_at } });
-  if (payload.expectedSubmittedAt !== undefined && text(payload.expectedSubmittedAt,80) !== String(row.submitted_at ?? ""))
-    return json({error:"申請内容が表示後に更新されています。再読み込みして確認してください。"},409);
-  if (row.status !== "pending")
-    return json({ error: "この変更申請は既に処理済みです。" }, 409);
-  const now = new Date().toISOString();
-  const statements = [
-    env.REPORTS.prepare(
-      "UPDATE editorial_member_profile_change_requests SET status=?,reviewed_by=?,reviewed_at=?,review_note=? WHERE id=? AND status='pending' AND submitted_at IS ? AND proposed_display_name IS ? AND proposed_university IS ? AND proposed_year IS ? AND proposed_affiliation_type IS ? AND proposed_country IS ? AND proposed_timezone IS ? AND proposed_bio IS ?",
-    ).bind(
-      status,
-      scope.email,
-      now,
-      text(payload.reviewNote, 2_000),
-      requestId,
-      row.submitted_at,row.proposed_display_name,row.proposed_university,row.proposed_year,
-      row.proposed_affiliation_type,row.proposed_country,row.proposed_timezone,row.proposed_bio,
-    ),
-    workflowEventStatement(
-      env,
-      {
-        entityType: "approval",
-        entityId: requestId,
-        fromState: "pending",
-        toState: status,
-        actorEmail: scope.email,
-        idempotencyKey,
-        metadata: {
-          requestType: "member-profile",
-          applicantEmail: String(row.email ?? ""),
-        },
-        createdAt: now,
-      },
-      true,
-    ),
-  ];
-  if (action === "approve")
-    statements.push(
-      env.REPORTS.prepare(
-        `INSERT INTO editorial_member_profiles
-         (email,display_name,university,year,affiliation_type,country,timezone,bio,updated_at)
-         SELECT ?,?,?,?,?,?,?,?,? WHERE changes()=1
-         ON CONFLICT(email) DO UPDATE SET display_name=excluded.display_name,
-           university=excluded.university,year=excluded.year,
-           affiliation_type=excluded.affiliation_type,country=excluded.country,
-           timezone=excluded.timezone,bio=excluded.bio,updated_at=excluded.updated_at`,
-      ).bind(
-        row.email,
-        row.proposed_display_name,
-        row.proposed_university,
-        row.proposed_year,
-        row.proposed_affiliation_type,
-        row.proposed_country,
-        row.proposed_timezone,
-        row.proposed_bio,
-        now,
-      ),
-    );
-  if (row.task_id)
-    statements.push(
-      env.REPORTS.prepare(
-        "UPDATE editorial_tasks SET status='done',updated_at=? WHERE id=? AND changes()=1",
-      ).bind(now, row.task_id),
-    );
-  const [approvalUpdate, workflowEvent] = await env.REPORTS.batch(statements);
-  if (!Number(approvalUpdate?.meta?.changes ?? 0))
-    return json({ error: "この変更申請は先に処理されています。" }, 409);
-  if (Number(workflowEvent?.meta?.changes ?? 0) !== 1)
-    throw new Error("Profile approval event was not recorded with its state update.");
-  await recordAdminAudit(env, scope.email, "workflow_transition", "workflow", requestId, String(row.proposed_display_name ?? row.email ?? requestId), `メンバー情報申請を${status === "approved" ? "承認" : "却下"}`, { entityType: "approval", fromState: "pending", toState: status });
-  return json({ ok: true, status });
-}
-
-async function getProjectMemberProfile(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const scope = await getProjectMemberScope(request, env);
-  if (isResponse(scope)) return scope;
-  const requestedProject =
-    new URL(request.url).searchParams.get("project") ?? "atlas";
-  const project = await resolveOperationProject(env, scope, requestedProject);
-  if (isResponse(project)) return project;
-  const role = await operationProjectRole(env, scope, project.id);
-  if (!role)
-    return json({ error: "このプロジェクトのメンバーではありません。" }, 403);
-  const [memberProfile, projectProfile, latestRequest] = await Promise.all([
-    env.REPORTS.prepare(
-      `SELECT display_name,avatar_url,university,year
-       FROM editorial_member_profiles WHERE email=?`,
-    )
-      .bind(scope.email)
-      .first<Record<string, unknown>>(),
-    env.REPORTS.prepare(
-      `SELECT internal_bio,updated_at FROM editorial_project_member_profiles
-       WHERE project_id=? AND email=?`,
-    )
-      .bind(project.id, scope.email)
-      .first<Record<string, unknown>>(),
-    env.REPORTS.prepare(
-      `SELECT id,proposed_internal_bio,status,submitted_at,reviewed_at,review_note
-       FROM editorial_project_profile_change_requests
-       WHERE project_id=? AND email=? ORDER BY submitted_at DESC LIMIT 1`,
-    )
-      .bind(project.id, scope.email)
-      .first<Record<string, unknown>>(),
-  ]);
-  const assignments = await projectAssignmentLabels(
-    env,
-    project.id,
-    scope.email,
-    role,
-  );
-  const canReview =
-    project.id === "atlas"
-      ? role === "manager" || (await operationProjectRole(env, scope, "secretariat")) === "manager"
-      : role === "manager";
-  return json({
-    email: scope.email,
-    project: { ...project, role },
-    canReview,
-    canEditArticles: !scope.memberAccess && (scope.allSubjects || scope.subjects.length > 0),
-    assignments,
-    memberProfile: memberProfile ?? {
-      display_name: "",
-      avatar_url: "",
-      university: "",
-      year: "",
-    },
-    projectProfile: projectProfile ?? { internal_bio: "", updated_at: null },
-    profileChangeRequest: latestRequest ?? null,
-  });
-}
-
-async function saveProjectMemberProfile(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const scope = await getProjectMemberScope(request, env);
-  if (isResponse(scope)) return scope;
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-  if (!request.headers.get("content-type")?.includes("application/json"))
-    return json({ error: "JSON形式で送信してください。" }, 415);
-  let payload: { projectId?: unknown; internalBio?: unknown };
-  try {
-    payload = (await request.json()) as typeof payload;
-  } catch {
-    return json({ error: "入力内容を読み取れませんでした。" }, 400);
-  }
-  const requestedProject = text(payload.projectId, 80) || "atlas";
-  const project = await resolveOperationProject(env, scope, requestedProject);
-  if (isResponse(project)) return project;
-  const internalBio = text(payload.internalBio, 4_000);
-  const [approved, pending, memberProfile] = await Promise.all([
-    env.REPORTS.prepare(
-      `SELECT internal_bio FROM editorial_project_member_profiles
-       WHERE project_id=? AND email=?`,
-    )
-      .bind(project.id, scope.email)
-      .first<{ internal_bio: string }>(),
-    env.REPORTS.prepare(
-      `SELECT id,task_id,submitted_at FROM editorial_project_profile_change_requests
-       WHERE project_id=? AND email=? AND status='pending'
-       ORDER BY submitted_at DESC LIMIT 1`,
-    )
-      .bind(project.id, scope.email)
-      .first<{ id: string; task_id: string | null; submitted_at: string }>(),
-    env.REPORTS.prepare(
-      "SELECT display_name FROM editorial_member_profiles WHERE email=?",
-    )
-      .bind(scope.email)
-      .first<{ display_name: string }>(),
-  ]);
-  if (!pending && internalBio === (approved?.internal_bio ?? ""))
-    return json({ ok: true, approvalRequired: false, noChange: true });
-
-  const now = new Date(Math.max(Date.now(), (Date.parse(pending?.submitted_at ?? "") || 0) + 1)).toISOString();
-  const requestId = pending?.id ?? crypto.randomUUID();
-  const taskId = pending?.task_id ?? crypto.randomUUID();
-  const displayName = memberProfile?.display_name?.trim() || scope.email;
-  const taskTitle = `運営内自己紹介変更の承認：${displayName}`;
-  const taskDetails = [
-    `申請者: ${scope.email}`,
-    `プロジェクト: ${project.name}`,
-    project.id === "atlas"
-      ? "運営事務局の「メンバー情報の承認」から内容を確認してください。"
-      : "プロジェクト管理の「運営内自己紹介の承認」から内容を確認してください。",
-  ].join("\n");
-  const statements = pending
-    ? [
-        env.REPORTS.prepare(
-          `UPDATE editorial_project_profile_change_requests
-           SET proposed_internal_bio=?,submitted_at=?,review_note=''
-           WHERE id=? AND status='pending' AND submitted_at=?`,
-        ).bind(internalBio, now, requestId, pending.submitted_at),
-        env.REPORTS.prepare(
-          `UPDATE editorial_tasks SET title=?,details=?,status='open',updated_at=?
-           WHERE id=? AND changes()=1`,
-        ).bind(taskTitle, taskDetails, now, taskId),
-      ]
-    : [
-        env.REPORTS.prepare(
-          `INSERT INTO editorial_project_profile_change_requests
-           (id,project_id,email,proposed_internal_bio,status,task_id,submitted_at)
-           VALUES (?,?,?,?,'pending',?,?)`,
-        ).bind(requestId, project.id, scope.email, internalBio, taskId, now),
-        env.REPORTS.prepare(
-          `INSERT INTO editorial_tasks
-           (id,project_id,subject,assignee_email,title,details,status,due_at,due_timezone,
-            reminder_at,reminder_repeat,reminder_email,created_by,created_at,updated_at)
-           VALUES (?,?, 'project-profile-change',NULL,?,?,'open',NULL,'Asia/Tokyo',
-            NULL,'none',NULL,?,?,?)`,
-        ).bind(
-          taskId,
-          project.id,
-          taskTitle,
-          taskDetails,
-          scope.email,
-          now,
-          now,
-        ),
-      ];
-  try {
-    const results = await env.REPORTS.batch(statements);
-    if (Number(results[0]?.meta?.changes ?? 0) !== 1)
-      return json({error:"自己紹介の申請が先に更新・審査されています。再読み込みしてから変更してください。"},409);
-  } catch {
-    return json(
-      { error: "変更申請をプロジェクトの運営へ送れませんでした。" },
-      500,
-    );
-  }
-  return json({
-    ok: true,
-    approvalRequired: true,
-    requestId,
-    taskId,
-    submittedAt: now,
-  });
-}
-
-async function listProjectIntroductions(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const scope = await getProjectMemberScope(request, env);
-  if (isResponse(scope)) return scope;
-  const requestedProject =
-    new URL(request.url).searchParams.get("project") ?? "atlas";
-  const project = await resolveOperationProject(env, scope, requestedProject);
-  if (isResponse(project)) return project;
-  const searchParams = new URL(request.url).searchParams;
-  const requestedLimit = Number(searchParams.get("limit") ?? "100");
-  const limit = Number.isFinite(requestedLimit)
-    ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 200)
-    : 100;
-  const rawCursor = searchParams.get("cursor") ?? "";
-  const separator = rawCursor.lastIndexOf("|");
-  let cursorName = "";
-  let cursorPosition = 0;
-  try {
-    cursorName = separator > 0 ? decodeURIComponent(rawCursor.slice(0, separator)) : "";
-    cursorPosition = separator > 0 ? Number(rawCursor.slice(separator + 1)) : 0;
-  } catch { return json({ error: "一覧の続き情報を確認してください。" }, 400); }
-  if (rawCursor && (!cursorName || !Number.isSafeInteger(cursorPosition) || cursorPosition < 1))
-    return json({ error: "一覧の続き情報を確認してください。" }, 400);
-  const filters = ["m.project_id=?", `(m.project_id!='atlas' OR NOT EXISTS (
-    SELECT 1 FROM admin_member_lifecycle lifecycle
-    WHERE lower(lifecycle.email)=lower(m.email) AND lifecycle.status='archived'
-  ))`, `NOT EXISTS (
-    SELECT 1 FROM atlasez_project_member_lifecycle state
-    WHERE state.project_id=m.project_id AND lower(state.email)=lower(m.email) AND state.state!='active'
-  )`];
-  const bindings: unknown[] = [project.id];
-  const displayNameExpression = "COALESCE(NULLIF(TRIM(p.display_name),''),'表示名未設定')";
-  if (cursorName && cursorPosition) {
-    filters.push(`(${displayNameExpression} > ? OR (${displayNameExpression} = ? AND m.rowid > ?))`);
-    bindings.push(cursorName, cursorName, cursorPosition);
-  }
-  const members = await env.REPORTS.prepare(
-    `SELECT m.rowid AS cursor_position,m.email,m.role,
-      ${displayNameExpression} AS display_name,
-      COALESCE(p.university,'') AS university,COALESCE(p.year,'') AS year,
-      COALESCE(p.avatar_url,'') AS avatar_url,
-      COALESCE(pp.internal_bio,'') AS internal_bio,pp.updated_at
-     FROM atlasez_project_memberships m
-     LEFT JOIN editorial_member_profiles p ON p.email=m.email
-      LEFT JOIN editorial_project_member_profiles pp
-       ON pp.project_id=m.project_id AND pp.email=m.email
-     WHERE ${filters.join(" AND ")}
-     ORDER BY display_name,m.rowid
-     LIMIT ?`,
-  )
-    .bind(...bindings, limit + 1)
-    .all<Record<string, unknown>>();
-  const fetchedMembers = members.results ?? [];
-  const hasMore = fetchedMembers.length > limit;
-  const memberRows = fetchedMembers.slice(0, limit);
-  const entries: Array<Record<string, unknown>> = await Promise.all(
-    memberRows.map(async (member) => ({
-      ...member,
-      assignments: await projectAssignmentLabels(
-        env,
-        project.id,
-        String(member.email ?? ""),
-        String(member.role ?? "member"),
-      ),
-    })),
-  );
-  const lastEntry = memberRows.at(-1);
-  const nextCursor = hasMore && lastEntry
-    ? `${encodeURIComponent(String(lastEntry.display_name ?? ""))}|${String(lastEntry.cursor_position)}`
-    : null;
-  const canSeeMemberEmails = (await operationProjectRole(env, scope, project.id)) === "manager";
-  const safeEntries = entries.map(({ cursor_position: _position, ...entry }) => {
-    if (canSeeMemberEmails) return entry;
-    delete entry.email;
-    return entry;
-  });
-  return json({ project, entries: safeEntries, pagination: { limit, nextCursor, hasMore } });
-}
-
-async function listProjectProfileChangeRequests(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const parsed = new URL(request.url);
-  const requestedProject = parsed.searchParams.get("project") ?? "atlas";
-  const reviewer = await getProjectProfileReviewerScope(
-    request,
-    env,
-    requestedProject,
-  );
-  if (isResponse(reviewer)) return reviewer;
-  const requestedStatus = parsed.searchParams.get("status") ?? "pending";
-  if (!new Set(["pending", "approved", "rejected", "all"]).has(requestedStatus))
-    return json({ error: "申請状態を確認してください。" }, 400);
-  const requestedLimit = Number(parsed.searchParams.get("limit") ?? "50");
-  const pageLimit = Number.isFinite(requestedLimit)
-    ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 100)
-    : 50;
-  const cursor = parseProfileChangeRequestCursor(
-    parsed.searchParams.get("cursor"),
-  );
-  const statusRank = "CASE r.status WHEN 'pending' THEN 0 ELSE 1 END";
-  const statusFilter = requestedStatus === "all" ? "" : "AND r.status=?";
-  const cursorFilter = cursor
-    ? `AND (${statusRank} > ? OR (${statusRank} = ? AND (r.submitted_at < ? OR (r.submitted_at = ? AND r.id < ?))))`
-    : "";
-  const statement = env.REPORTS.prepare(
-    `SELECT r.*,COALESCE(NULLIF(TRIM(p.display_name),''),r.email) AS display_name,
-      COALESCE(pp.internal_bio,'') AS current_internal_bio
-     FROM editorial_project_profile_change_requests r
-     LEFT JOIN editorial_member_profiles p ON p.email=r.email
-     LEFT JOIN editorial_project_member_profiles pp
-       ON pp.project_id=r.project_id AND pp.email=r.email
-     WHERE r.project_id=? ${statusFilter} ${cursorFilter}
-     ORDER BY ${statusRank},r.submitted_at DESC,r.id DESC
-     LIMIT ?`,
-  );
-  const values: unknown[] = [reviewer.project.id];
-  if (requestedStatus !== "all") values.push(requestedStatus);
-  if (cursor)
-    values.push(
-      cursor.statusRank,
-      cursor.statusRank,
-      cursor.submittedAt,
-      cursor.submittedAt,
-      cursor.id,
-    );
-  const result = await statement
-    .bind(...values, pageLimit + 1)
-    .all<Record<string, unknown>>();
-  const rows = result.results ?? [];
-  const requests = rows.slice(0, pageLimit);
-  const hasMore = rows.length > pageLimit;
-  return json({
-    project: reviewer.project,
-    reviewer: reviewer.scope.email,
-    requests,
-    pagination: {
-      limit: pageLimit,
-      nextCursor:
-        hasMore && requests.at(-1)
-          ? profileChangeRequestCursor(requests.at(-1) as Record<string, unknown>)
-          : null,
-      hasMore,
-    },
-  });
-}
-
-async function reviewProjectProfileChangeRequest(
-  request: Request,
-  env: Env,
-  requestId: string,
-): Promise<Response> {
-  const scope = await getProjectMemberScope(request, env);
-  if (isResponse(scope)) return scope;
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-  const row = await env.REPORTS.prepare(
-    "SELECT * FROM editorial_project_profile_change_requests WHERE id=?",
-  )
-    .bind(requestId)
-    .first<Record<string, unknown>>();
-  if (!row) return json({ error: "変更申請が見つかりません。" }, 404);
-  let project: OperationProject;
-  const isAtlasSecretariatReviewer =
-    String(row.project_id ?? "") === "atlas" &&
-    (await operationProjectRole(env, scope, "secretariat")) === "manager";
-  if (isAtlasSecretariatReviewer) {
-    const atlasProject = await env.REPORTS.prepare(
-      "SELECT id,slug,name,description FROM atlasez_projects WHERE id='atlas' OR slug='atlas' LIMIT 1",
-    ).first<OperationProject>();
-    if (!atlasProject)
-      return json({ error: "指定したプロジェクトが見つかりません。" }, 404);
-    project = atlasProject;
-  } else {
-    const resolvedProject = await resolveOperationProject(
-      env,
-      scope,
-      String(row.project_id ?? ""),
-    );
-    if (isResponse(resolvedProject)) return resolvedProject;
-    const role = await operationProjectRole(env, scope, resolvedProject.id);
-    if (role !== "manager")
-      return json(
-        { error: "このプロジェクトの運営内運営のみ利用できます。" },
-        403,
-      );
-    project = resolvedProject;
-  }
-  let payload: { action?: unknown; reviewNote?: unknown; idempotencyKey?: unknown; expectedSubmittedAt?: unknown };
-  try {
-    payload = (await request.json()) as typeof payload;
-  } catch {
-    return json({ error: "入力内容を読み取れませんでした。" }, 400);
-  }
-  const action = text(payload.action, 20);
-  if (action !== "approve" && action !== "reject")
-    return json({ error: "承認または却下を選択してください。" }, 400);
-  const idempotencyKey = text(payload.idempotencyKey, 120) || crypto.randomUUID();
-  const replay = await env.REPORTS.prepare(
-    "SELECT entity_type,entity_id,from_state,to_state,metadata_json,created_at FROM workflow_transition_events WHERE actor_email=? AND idempotency_key=?",
-  ).bind(scope.email, idempotencyKey).first<{ entity_type: string; entity_id: string; from_state: string; to_state: string; metadata_json: string; created_at: string }>().catch(() => null);
-  const status = action === "approve" ? "approved" : "rejected";
-  let replayRequestType: string | null = null;
-  try { replayRequestType = replay ? String((JSON.parse(replay.metadata_json) as { requestType?: unknown }).requestType ?? "") || null : null; } catch { /* malformed historical metadata is not a valid replay */ }
-  if (replay && (replay.entity_type !== "approval" || replay.entity_id !== requestId || replay.to_state !== status || replayRequestType !== "project-profile"))
-    return json({ error: "この操作キーは別の状態変更に使われています。", code: "IDEMPOTENCY_KEY_REUSED" }, 409);
-  if (replay) return json({ ok: true, status: replay.to_state, replayed: true, transition: { entityType: "approval", entityId: requestId, fromState: replay.from_state, toState: replay.to_state, createdAt: replay.created_at } });
-  if (payload.expectedSubmittedAt !== undefined && text(payload.expectedSubmittedAt,80) !== String(row.submitted_at ?? ""))
-    return json({error:"申請内容が表示後に更新されています。再読み込みして確認してください。"},409);
-  if (row.status !== "pending")
-    return json({ error: "この変更申請は既に処理済みです。" }, 409);
-  const now = new Date().toISOString();
-  const statements = [
-    env.REPORTS.prepare(
-      `UPDATE editorial_project_profile_change_requests
-       SET status=?,reviewed_by=?,reviewed_at=?,review_note=?
-       WHERE id=? AND status='pending' AND submitted_at IS ? AND proposed_internal_bio IS ?`,
-    ).bind(
-      status,
-      scope.email,
-      now,
-      text(payload.reviewNote, 2_000),
-      requestId,
-      row.submitted_at,row.proposed_internal_bio,
-    ),
-    workflowEventStatement(
-      env,
-      {
-        entityType: "approval",
-        entityId: requestId,
-        fromState: "pending",
-        toState: status,
-        actorEmail: scope.email,
-        idempotencyKey,
-        metadata: {
-          requestType: "project-profile",
-          projectId: project.id,
-          applicantEmail: String(row.email ?? ""),
-        },
-        createdAt: now,
-      },
-      true,
-    ),
-  ];
-  if (action === "approve")
-    statements.push(
-      env.REPORTS.prepare(
-        `INSERT INTO editorial_project_member_profiles
-         (project_id,email,internal_bio,updated_at)
-         SELECT ?,?,?,? WHERE changes()=1
-         ON CONFLICT(project_id,email) DO UPDATE SET
-           internal_bio=excluded.internal_bio,updated_at=excluded.updated_at`,
-      ).bind(project.id, row.email, row.proposed_internal_bio, now),
-    );
-  if (row.task_id)
-    statements.push(
-      env.REPORTS.prepare(
-        "UPDATE editorial_tasks SET status='done',updated_at=? WHERE id=? AND changes()=1",
-      ).bind(now, row.task_id),
-    );
-  const [approvalUpdate, workflowEvent] = await env.REPORTS.batch(statements);
-  if (!Number(approvalUpdate?.meta?.changes ?? 0))
-    return json({ error: "この変更申請は先に処理されています。" }, 409);
-  if (Number(workflowEvent?.meta?.changes ?? 0) !== 1)
-    throw new Error("Project profile approval event was not recorded with its state update.");
-  await recordAdminAudit(env, scope.email, "workflow_transition", "workflow", requestId, String(row.email ?? requestId), `運営内自己紹介申請を${status === "approved" ? "承認" : "却下"}`, { entityType: "approval", fromState: "pending", toState: status, projectId: project.id });
-  return json({ ok: true, status });
-}
-
-async function listApplications(request: Request, env: Env): Promise<Response> {
-  const requestedProject =
-    new URL(request.url).searchParams.get("project")?.trim().toLowerCase() ??
-    "";
-  if (!APPLICATION_FORM_SLUGS.has(requestedProject))
-    return json(
-      { error: "応募管理を表示するプロジェクトを指定してください。" },
-      400,
-    );
-  const access = await getProjectReviewerScope(request, env, requestedProject);
-  if (isResponse(access)) return access;
-  const projectSlug = canonicalApplicationProjectSlug(access.project.slug);
-  const searchParams = new URL(request.url).searchParams;
-  const requestedLimit = Number(searchParams.get("limit") ?? "50");
-  const pageLimit = Number.isFinite(requestedLimit)
-    ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 100)
-    : 50;
-  const filters = ["a.project_slug = ?"];
-  const bindings: unknown[] = [projectSlug];
-  const requestedApplicationId = searchParams.get("applicationId")?.trim() ?? "";
-  if (requestedApplicationId) {
-    filters.push("a.id = ?");
-    bindings.push(requestedApplicationId);
-  }
-  const rawCursor = searchParams.get("cursor") ?? "";
-  const separator = rawCursor.lastIndexOf("|");
-  const cursorCreatedAt = separator > 0 ? rawCursor.slice(0, separator) : "";
-  const cursorId = separator > 0 ? rawCursor.slice(separator + 1) : "";
-  if (cursorCreatedAt && cursorId) {
-    filters.push("(a.created_at < ? OR (a.created_at = ? AND a.id < ?))");
-    bindings.push(cursorCreatedAt, cursorCreatedAt, cursorId);
-  }
-  const where = filters.join(" AND ");
-  const [rows, summaryRows] = await Promise.all([
-    env.REPORTS.prepare(
-    `SELECT a.id,a.name,a.email,a.affiliation_email,a.family_name,a.given_name,a.middle_name,a.nickname,a.family_name_kana,a.given_name_kana,a.form_language,a.interests,a.message,a.status,a.created_at,a.updated_at,a.project_slug,a.project_answers,
-      a.affiliation_type,a.institution,a.grade,a.country,a.timezone,
-      a.birth_date,a.residence_city,a.current_organizations,a.referral_source,a.motivation_reasons,a.desired_roles,a.interview_availability,a.applicant_questions,
-      a.desired_subjects,a.article_ideas,a.availability_note,a.provisioning_status,a.provisioning_error,a.provisioned_at,a.accepted_by,
-      a.provisioning_attempt_count,a.provisioning_next_attempt_at,a.provisioning_last_attempt_at,
-      i.scheduled_at AS interview_scheduled_at,i.timezone AS interview_timezone,
-      i.mode AS interview_mode,i.zoom_url AS interview_zoom_url,i.location AS interview_location,
-      i.status AS interview_status,i.notified_at AS interview_notified_at,
-      i.notification_count AS interview_notification_count,i.completed_at AS interview_completed_at,
-      r.decision AS interview_decision,r.finalized_at AS interview_finalized_at,
-      COALESCE(d.discord_user_id, '') AS verified_discord_user_id,
-      COALESCE(d.oauth_connected_at, '') AS discord_oauth_connected_at,
-      COALESCE(d.oauth_scope, '') AS discord_oauth_scope
-     FROM atlasez_member_applications a
-     LEFT JOIN atlasez_member_discord_accounts d ON d.email = a.email
-     LEFT JOIN atlasez_application_interviews i ON i.application_id = a.id
-     LEFT JOIN atlasez_application_interview_reviews r ON r.application_id = a.id
-     WHERE ${where}
-     ORDER BY a.created_at DESC,a.id DESC LIMIT ?`,
-    )
-      .bind(...bindings, pageLimit + 1)
-      .all<Record<string, unknown>>(),
-    env.REPORTS.prepare(
-      `SELECT status,COUNT(*) AS count
-       FROM atlasez_member_applications
-       WHERE project_slug=?
-       GROUP BY status`,
-    )
-      .bind(projectSlug)
-      .all<{ status: string; count: number }>(),
-  ]);
-  const fetchedRows = rows.results ?? [];
-  const hasMore = fetchedRows.length > pageLimit;
-  const applications = fetchedRows.slice(0, pageLimit);
-  type ApplicationEmailDeliverySummary = {
-    kind: string;
-    total: number;
-    sent: number;
-    pending: number;
-    sending: number;
-    retry: number;
-    failed: number;
-    attemptCount: number;
-    nextAttemptAt: string | null;
-    updatedAt: string;
-    lastError: string | null;
-  };
-  const emailDeliveriesByApplication = new Map<
-    string,
-    ApplicationEmailDeliverySummary[]
-  >();
-  if (applications.length) {
-    const applicationIds = applications.map((application) => String(application.id));
-    const deliveryRows = await env.REPORTS.prepare(
-      `SELECT application_id,kind,status,attempt_count,next_attempt_at,last_error,updated_at
-       FROM atlasez_application_email_deliveries
-       WHERE application_id IN (${applicationIds.map(() => "?").join(",")})
-       ORDER BY updated_at DESC,id DESC`,
-    )
-      .bind(...applicationIds)
-      .all<{
-        application_id: string;
-        kind: string;
-        status: string;
-        attempt_count: number;
-        next_attempt_at: string | null;
-        last_error: string | null;
-        updated_at: string;
-      }>();
-    const summaries = new Map<
-      string,
-      Map<string, ApplicationEmailDeliverySummary>
-    >();
-    const safeEmailError = (value: string | null) => {
-      if (value === "invalid_recipient") return value;
-      if (
-        value === "provider_idempotency_window_expired" ||
-        value === "claim_expired_max_attempts" ||
-        value === "timeout" ||
-        value === "network_or_provider"
-      )
-        return value;
-      const providerStatus = value?.match(/^provider_(408|409|425|429|5\d\d)$/);
-      return providerStatus ? providerStatus[0] : value ? "delivery_error" : null;
-    };
-    for (const row of deliveryRows.results ?? []) {
-      let applicationSummaries = summaries.get(row.application_id);
-      if (!applicationSummaries) {
-        applicationSummaries = new Map();
-        summaries.set(row.application_id, applicationSummaries);
-      }
-      let summary = applicationSummaries.get(row.kind);
-      if (!summary) {
-        summary = {
-          kind: row.kind,
-          total: 0,
-          sent: 0,
-          pending: 0,
-          sending: 0,
-          retry: 0,
-          failed: 0,
-          attemptCount: 0,
-          nextAttemptAt: null,
-          updatedAt: row.updated_at,
-          lastError: null,
-        };
-        applicationSummaries.set(row.kind, summary);
-      }
-      summary.total += 1;
-      if (row.status === "sent") summary.sent += 1;
-      else if (row.status === "pending") summary.pending += 1;
-      else if (row.status === "sending") summary.sending += 1;
-      else if (row.status === "retry") summary.retry += 1;
-      else if (row.status === "failed") summary.failed += 1;
-      summary.attemptCount = Math.max(summary.attemptCount, Number(row.attempt_count) || 0);
-      if (
-        (row.status === "pending" || row.status === "retry") &&
-        row.next_attempt_at &&
-        (!summary.nextAttemptAt || row.next_attempt_at < summary.nextAttemptAt)
-      )
-        summary.nextAttemptAt = row.next_attempt_at;
-      if (!summary.lastError && (row.status === "failed" || row.status === "retry"))
-        summary.lastError = safeEmailError(row.last_error);
-    }
-    for (const [applicationId, applicationSummaries] of summaries)
-      emailDeliveriesByApplication.set(
-        applicationId,
-        [...applicationSummaries.values()],
-      );
-  }
-  const lastApplication = applications.at(-1);
-  const nextCursor = hasMore && lastApplication
-    ? `${String(lastApplication.created_at ?? "")}|${String(lastApplication.id ?? "")}`
-    : null;
-  const summary = { total: 0, new: 0, reviewing: 0, accepted: 0, rejected: 0 };
-  for (const row of summaryRows.results ?? []) {
-    const count = Number(row.count ?? 0);
-    summary.total += Number.isFinite(count) ? count : 0;
-    if (row.status === "new" || row.status === "reviewing" || row.status === "accepted" || row.status === "rejected")
-      summary[row.status] = Number.isFinite(count) ? count : 0;
-  }
-  return json({
-    project: { slug: projectSlug, name: access.project.name },
-    applications: applications.map((application) => ({
-      ...application,
-      email_deliveries: emailDeliveriesByApplication.get(String(application.id)) ?? [],
-    })),
-    pagination: { limit: pageLimit, nextCursor, hasMore, total: summary.total },
-    summary,
-    subjectLabels: APPLICATION_SUBJECT_LABELS,
-    formLabels: APPLICATION_FORM_LABELS,
-  });
-}
-
-const intakeContactStatuses = new Set(["not_contacted", "contacted", "replied"]);
-
-async function memberIntakeTracking(
-  request: Request,
-  env: Env,
-): Promise<Response> {
-  const url = new URL(request.url);
-  const requestedProject = url.searchParams.get("project")?.trim().toLowerCase() ?? "";
-  const access = await getProjectReviewerScope(request, env, requestedProject);
-  if (isResponse(access)) return access;
-  if (!isSameOrigin(request) && request.method !== "GET")
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-
-  if (request.method === "GET") {
-    const projectSlug = canonicalApplicationProjectSlug(access.project.slug);
-    const requestedApplicationId = url.searchParams.get("applicationId")?.trim() ?? "";
-    let filterEmail = "";
-    if (requestedApplicationId) {
-      const application = await env.REPORTS.prepare(
-        "SELECT email FROM atlasez_member_applications WHERE id=? AND project_slug=?",
-      ).bind(requestedApplicationId, projectSlug).first<{ email: string }>();
-      if (!application) return json({ error: "応募が見つかりません。" }, 404);
-      filterEmail = application.email.toLowerCase();
-    }
-    const [rows, responsibleRows] = await Promise.all([
-      env.REPORTS.prepare(
-        `WITH latest_applications AS (
-          SELECT a.id AS application_id,lower(a.email) AS email,a.status AS application_status,
-            COALESCE(NULLIF(TRIM(p.display_name),''),a.name) AS display_name,a.created_at,
-            ROW_NUMBER() OVER(PARTITION BY lower(a.email) ORDER BY a.created_at DESC,a.id DESC) AS row_number
-          FROM atlasez_member_applications a
-          LEFT JOIN editorial_member_profiles p ON lower(p.email)=lower(a.email)
-          WHERE a.project_slug=? AND (?='' OR lower(a.email)=?)
-        ), candidates AS (
-          SELECT lower(m.email) AS email,MAX(m.email) AS original_email,MAX(m.role) AS role
-          FROM atlasez_project_memberships m
-          WHERE m.project_id=? AND (?='' OR lower(m.email)=?) AND (m.project_id!='atlas' OR NOT EXISTS (
-            SELECT 1 FROM admin_member_lifecycle l
-            WHERE lower(l.email)=lower(m.email) AND l.status='archived'
-          )) AND NOT EXISTS (
-            SELECT 1 FROM atlasez_project_member_lifecycle lifecycle
-            WHERE lifecycle.project_id=m.project_id AND lower(lifecycle.email)=lower(m.email) AND lifecycle.state!='active'
-          ) GROUP BY lower(m.email)
-          UNION
-          SELECT email,email,'applicant' FROM latest_applications WHERE row_number=1
-          UNION
-          SELECT lower(email),MAX(email),'tracked' FROM editorial_member_intake_tracking
-          WHERE project_id=? AND (?='' OR lower(email)=?) GROUP BY lower(email)
-        )
-        SELECT c.email,COALESCE(NULLIF(TRIM(p.display_name),''),MAX(a.display_name),MAX(c.original_email)) AS display_name,
-          MAX(COALESCE(c.role,'')) AS role,MAX(CASE WHEN c.role IN ('member','manager') THEN 1 ELSE 0 END) AS is_member,
-          MAX(COALESCE(a.application_id,t.application_id)) AS application_id,MAX(a.application_status) AS application_status,
-          MAX(t.responsible_email) AS responsible_email,MAX(t.contact_status) AS contact_status,
-          MAX(t.consultation_email) AS consultation_email,
-          MAX(t.contact_note) AS contact_note,MAX(t.contacted_at) AS contacted_at,
-          MAX(t.first_task_id) AS first_task_id,MAX(t.first_task_title) AS first_task_title,
-          MAX(t.first_task_type) AS first_task_type,
-          MAX(task.status) AS first_task_status,MAX(t.follow_up_at) AS follow_up_at,
-          MAX(t.follow_up_completed_at) AS follow_up_completed_at,MAX(t.updated_by) AS updated_by,MAX(t.updated_at) AS updated_at,MAX(t.revision) AS revision
-        FROM candidates c
-        LEFT JOIN latest_applications a ON a.email=c.email AND a.row_number=1
-        LEFT JOIN editorial_member_profiles p ON lower(p.email)=c.email
-        LEFT JOIN editorial_member_intake_tracking t ON t.project_id=? AND lower(t.email)=c.email
-        LEFT JOIN editorial_tasks task ON task.id=t.first_task_id
-        GROUP BY c.email
-        ORDER BY CASE WHEN MAX(t.follow_up_completed_at) IS NULL AND MAX(t.follow_up_at) IS NOT NULL THEN 0 ELSE 1 END,
-          MAX(t.follow_up_at),display_name,c.email LIMIT 500`,
-      ).bind(
-        projectSlug, filterEmail, filterEmail,
-        access.project.id, filterEmail, filterEmail,
-        access.project.id, filterEmail, filterEmail,
-        access.project.id,
-      ).all<Record<string, unknown>>(),
-      env.REPORTS.prepare(
-        `SELECT lower(membership.email) AS email,COALESCE(NULLIF(TRIM(profile.display_name),''),membership.email) AS display_name
-         FROM atlasez_project_memberships membership
-         LEFT JOIN editorial_member_profiles profile ON lower(profile.email)=lower(membership.email)
-         WHERE membership.project_id=? AND membership.role='manager'
-           AND (membership.project_id!='atlas' OR NOT EXISTS (SELECT 1 FROM admin_member_lifecycle l WHERE lower(l.email)=lower(membership.email) AND l.status='archived'))
-           AND NOT EXISTS (SELECT 1 FROM atlasez_project_member_lifecycle lifecycle WHERE lifecycle.project_id=membership.project_id AND lower(lifecycle.email)=lower(membership.email) AND lifecycle.state!='active')
-         ORDER BY display_name,membership.email`,
-      ).bind(access.project.id).all<{ email: string; display_name: string }>(),
-    ]);
-    const responsibleCandidates = new Map<string, string>();
-    responsibleCandidates.set(access.scope.email.toLowerCase(), access.scope.email.toLowerCase());
-    for (const row of responsibleRows.results ?? [])
-      responsibleCandidates.set(row.email.toLowerCase(), row.display_name);
-    return json({
-      project: { id: access.project.id, slug: projectSlug, name: access.project.name },
-      entries: rows.results ?? [],
-      responsibleCandidates: [...responsibleCandidates].map(([email, displayName]) => ({ email, displayName })),
-    });
-  }
-
-  if (request.method !== "PUT")
-    return json({ error: "GET、PUTのみ利用できます。" }, 405);
-  if (!request.headers.get("content-type")?.includes("application/json"))
-    return json({ error: "JSON形式で送信してください。" }, 415);
-  let payload: {
-    email?: unknown;
-    expectedRevision?: unknown;
-    applicationId?: unknown;
-    responsibleEmail?: unknown;
-    contactStatus?: unknown;
-    contactNote?: unknown;
-    consultationEmail?: unknown;
-    firstTaskTitle?: unknown;
-    followUpAt?: unknown;
-    followUpCompleted?: unknown;
-  };
-  try {
-    const body = await request.json();
-    if (!body || typeof body !== "object" || Array.isArray(body))
-      return json({ error: "入力内容をオブジェクト形式で送信してください。" }, 400);
-    payload = body as typeof payload;
-  } catch {
-    return json({ error: "入力内容を読み取れませんでした。" }, 400);
-  }
-  const email = text(payload.email, 254).trim().toLowerCase();
-  const projectSlug = canonicalApplicationProjectSlug(access.project.slug);
-  const applicationId = text(payload.applicationId, 100).trim();
-  const responsibleEmail = text(payload.responsibleEmail, 254).trim().toLowerCase();
-  const consultationEmail = text(payload.consultationEmail, 254).trim().toLowerCase();
-  const contactStatus = text(payload.contactStatus, 24);
-  const contactNote = text(payload.contactNote, 2_000);
-  const firstTaskTitle = text(payload.firstTaskTitle, 200).trim();
-  const followUpAt = payload.followUpAt === null || payload.followUpAt === ""
-    ? null
-    : text(payload.followUpAt, 40).trim();
-  if (!EMAIL_PATTERN.test(email))
-    return json({ error: "対象メンバーのメールアドレスを確認してください。" }, 400);
-  if (!intakeContactStatuses.has(contactStatus))
-    return json({ error: "連絡状況を確認してください。" }, 400);
-  if (responsibleEmail && !EMAIL_PATTERN.test(responsibleEmail))
-    return json({ error: "担当運営者を確認してください。" }, 400);
-  if (consultationEmail && !EMAIL_PATTERN.test(consultationEmail))
-    return json({ error: "相談先を確認してください。" }, 400);
-  if (followUpAt && (!Number.isFinite(Date.parse(followUpAt)) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(followUpAt)))
-    return json({ error: "次回確認予定日時を指定してください。" }, 400);
-  if (typeof payload.followUpCompleted !== "boolean")
-    return json({ error: "確認の完了状態を指定してください。" }, 400);
-  if (!Number.isInteger(payload.expectedRevision) || Number(payload.expectedRevision) < 0)
-    return json({ error: "記録の更新番号を確認してください。再読み込みしてから保存してください。" }, 400);
-  const expectedRevision = Number(payload.expectedRevision);
-
-  const currentApp = applicationId
-    ? await env.REPORTS.prepare(
-        "SELECT id,email FROM atlasez_member_applications WHERE id=? AND project_slug=?",
-      ).bind(applicationId, projectSlug).first<{ id: string; email: string }>()
-    : await env.REPORTS.prepare(
-        "SELECT id,email FROM atlasez_member_applications WHERE lower(email)=? AND project_slug=? ORDER BY created_at DESC,id DESC LIMIT 1",
-      ).bind(email, projectSlug).first<{ id: string; email: string }>();
-  const existing = await env.REPORTS.prepare(
-    "SELECT * FROM editorial_member_intake_tracking WHERE project_id=? AND email=?",
-  ).bind(access.project.id, email).first<Record<string, unknown>>();
-  if (applicationId && ((!currentApp || currentApp.email.toLowerCase() !== email) && existing?.application_id !== applicationId))
-    return json({ error: "応募IDと対象メンバーが一致しません。" }, 404);
-  const membership = await env.REPORTS.prepare(
-      `SELECT email FROM atlasez_project_memberships m WHERE project_id=? AND lower(email)=?
-      AND (m.project_id!='atlas' OR NOT EXISTS (SELECT 1 FROM admin_member_lifecycle l WHERE lower(l.email)=lower(m.email) AND l.status='archived'))
-      AND NOT EXISTS (SELECT 1 FROM atlasez_project_member_lifecycle lifecycle WHERE lifecycle.project_id=m.project_id AND lower(lifecycle.email)=lower(m.email) AND lifecycle.state!='active')`,
-  ).bind(access.project.id, email).first<{ email: string }>();
-  if (Number(existing?.revision ?? 0) !== expectedRevision)
-    return json({ error: "記録が別の運営者によって更新されています。再読み込みしてから保存してください。", code: "STALE_INTAKE" }, 409);
-  if (!currentApp && !membership && !existing)
-    return json({ error: "このプロジェクトの応募者またはメンバーが見つかりません。" }, 404);
-  for (const operatorEmail of [responsibleEmail, consultationEmail].filter(Boolean)) {
-    const responsibleMember = await env.REPORTS.prepare(
-      `SELECT 1 AS found FROM atlasez_project_memberships m WHERE project_id=? AND lower(email)=?
-        AND (m.role='manager' OR lower(m.email)=lower(?))
-        AND (m.project_id!='atlas' OR NOT EXISTS (SELECT 1 FROM admin_member_lifecycle l WHERE lower(l.email)=lower(m.email) AND l.status='archived'))
-        AND NOT EXISTS (SELECT 1 FROM atlasez_project_member_lifecycle lifecycle WHERE lifecycle.project_id=m.project_id AND lower(lifecycle.email)=lower(m.email) AND lifecycle.state!='active')`,
-    ).bind(access.project.id, operatorEmail, access.scope.email).first<{ found: number }>();
-    if (!responsibleMember && operatorEmail !== access.scope.email.toLowerCase())
-      return json({ error: "担当者はこのプロジェクトの運営内運営から選択してください。" }, 403);
-  }
-  if (payload.followUpCompleted && !followUpAt && !existing?.follow_up_at)
-    return json({ error: "確認済みにする前に次回確認予定日時を入力してください。" }, 400);
-  if (firstTaskTitle && existing?.first_task_id)
-    return json({ error: "初回タスクは作成済みです。状態はタスク管理から更新してください。" }, 409);
-  if (firstTaskTitle && !membership && !responsibleEmail)
-    return json({ error: "参加前の準備タスクを作る場合は担当運営者を選択してください。" }, 400);
-
-  const now = new Date().toISOString();
-  const contactAt = contactStatus === "not_contacted"
-    ? null
-    : String(existing?.contacted_at ?? now);
-  const followUpCompletedAt = payload.followUpCompleted
-    ? String(existing?.follow_up_completed_at ?? now)
-    : null;
-  const taskId = firstTaskTitle ? crypto.randomUUID() : null;
-  const firstTaskType = membership ? "member" : "operator";
-  const taskAssigneeEmail = membership ? email : responsibleEmail;
-  const taskStatements: D1PreparedStatement[] = [
-    env.REPORTS.prepare(
-      `INSERT INTO editorial_tasks
-        (id,project_id,subject,assignee_email,title,details,status,due_at,due_timezone,reminder_at,reminder_repeat,reminder_email,created_by,created_at,updated_at,is_test_data)
-       SELECT ?,?,?,?, ?,?,'open',NULL,'Asia/Tokyo',NULL,'none',NULL,?,?,?,0
-       WHERE ?<>'' AND (
-         (?=0 AND NOT EXISTS (SELECT 1 FROM editorial_member_intake_tracking WHERE project_id=? AND email=?))
-         OR (? > 0 AND EXISTS (SELECT 1 FROM editorial_member_intake_tracking WHERE project_id=? AND email=? AND revision=? AND first_task_id IS NULL))
-       )`,
-    ).bind(taskId ?? crypto.randomUUID(), access.project.id, null, taskAssigneeEmail, firstTaskTitle,
-      membership ? `初回参加タスク：${email}\n参加後の小さな最初のタスクです。` : `参加前の準備タスク：${email}\n参加前の案内・準備に関する運営タスクです。`,
-      access.scope.email, now, now, firstTaskTitle, expectedRevision, access.project.id, email,
-      expectedRevision, access.project.id, email, expectedRevision),
-  ];
-  taskStatements.push(env.REPORTS.prepare(
-    `INSERT INTO editorial_member_intake_tracking
-      (project_id,email,application_id,responsible_email,consultation_email,contact_status,contact_note,contacted_at,first_task_id,first_task_title,first_task_type,follow_up_at,follow_up_completed_at,created_by,created_at,updated_by,updated_at)
-     SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE (?=0 AND NOT EXISTS (
-       SELECT 1 FROM editorial_member_intake_tracking WHERE project_id=? AND email=?
-     )) OR (? > 0 AND EXISTS (
-       SELECT 1 FROM editorial_member_intake_tracking WHERE project_id=? AND email=? AND revision=?
-     ))
-     ON CONFLICT(project_id,email) DO UPDATE SET
-      application_id=COALESCE(excluded.application_id,editorial_member_intake_tracking.application_id),
-      responsible_email=excluded.responsible_email,consultation_email=excluded.consultation_email,contact_status=excluded.contact_status,
-      contact_note=excluded.contact_note,contacted_at=excluded.contacted_at,
-      first_task_id=COALESCE(editorial_member_intake_tracking.first_task_id,excluded.first_task_id),
-      first_task_title=CASE WHEN editorial_member_intake_tracking.first_task_id IS NULL THEN excluded.first_task_title ELSE editorial_member_intake_tracking.first_task_title END,
-      first_task_type=CASE WHEN editorial_member_intake_tracking.first_task_id IS NULL THEN excluded.first_task_type ELSE editorial_member_intake_tracking.first_task_type END,
-      follow_up_at=excluded.follow_up_at,follow_up_completed_at=excluded.follow_up_completed_at,
-      updated_by=excluded.updated_by,updated_at=excluded.updated_at,
-      revision=editorial_member_intake_tracking.revision+1
-     WHERE editorial_member_intake_tracking.revision=?`,
-  ).bind(access.project.id, email, currentApp?.id ?? (applicationId || null), responsibleEmail, consultationEmail,
-    contactStatus, contactNote, contactAt, taskId, firstTaskTitle, firstTaskType, followUpAt,
-    followUpCompletedAt, existing?.created_by ?? access.scope.email,
-    existing?.created_at ?? now, access.scope.email, now,
-    expectedRevision, access.project.id, email, expectedRevision, access.project.id, email, expectedRevision, expectedRevision));
-  const auditId = crypto.randomUUID();
-  taskStatements.push(env.REPORTS.prepare(
-    `INSERT INTO admin_audit_log (id,actor_email,action,target_type,target_id,target_label,summary,details_json,created_at)
-     SELECT ?,?,'member_intake_updated','member',?,?,?, ?,? WHERE changes()=1`,
-  ).bind(auditId, access.scope.email, `${access.project.id}:${email}`, email,
-    `応募者・メンバー対応記録を更新：${email}`,
-    JSON.stringify({ projectId: access.project.id, projectSlug, applicationId: currentApp?.id ?? null, contactStatus, responsibleEmail, consultationEmail,
-      firstTaskCreated: Boolean(taskId), firstTaskType: taskId ? firstTaskType : null, followUpAt, followUpCompleted: Boolean(followUpCompletedAt) }), now));
-  try {
-    const results = await env.REPORTS.batch(taskStatements);
-    const changes = (results[1] as { meta?: { changes?: number } } | undefined)?.meta?.changes;
-    if (changes !== 1)
-      return json({ error: "記録が別の運営者によって更新されています。再読み込みしてから保存してください。", code: "STALE_INTAKE" }, 409);
-  } catch {
-    return json({ error: "応募者・メンバー対応記録を保存できませんでした。" }, 500);
-  }
-  const updated = await env.REPORTS.prepare(
-    `SELECT first_task_id,first_task_title,first_task_type,updated_at FROM editorial_member_intake_tracking WHERE project_id=? AND email=?`,
-  ).bind(access.project.id, email).first<{ first_task_id: string | null; first_task_title: string; first_task_type: string; updated_at: string }>();
-  return json({ ok: true, projectId: access.project.id, email, firstTaskId: updated?.first_task_id ?? null,
-    firstTaskTitle: updated?.first_task_title ?? "", firstTaskType: updated?.first_task_type ?? "member", updatedAt: updated?.updated_at ?? now });
-}
-
-async function getMyIntakeTracking(request: Request, env: Env): Promise<Response> {
-  if (request.method !== "GET") return json({ error: "GETのみ利用できます。" }, 405);
-  const scope = await getProjectMemberScope(request, env);
-  if (isResponse(scope)) return scope;
-  const rows = await env.REPORTS.prepare(
-    `SELECT project.id AS project_id,project.name AS project_name,
-       intake.contact_status,intake.responsible_email,
-       COALESCE(NULLIF(TRIM(responsible.display_name),''),intake.responsible_email) AS responsible_name,
-       intake.consultation_email,
-       COALESCE(NULLIF(TRIM(consultation.display_name),''),intake.consultation_email) AS consultation_name,
-       CASE WHEN task.is_test_data=1 THEN NULL ELSE intake.first_task_id END AS first_task_id,
-       CASE WHEN task.is_test_data=1 THEN '' ELSE intake.first_task_title END AS first_task_title,
-       intake.first_task_type,CASE WHEN task.is_test_data=1 THEN NULL ELSE task.status END AS first_task_status,
-       intake.follow_up_at,intake.follow_up_completed_at
-     FROM editorial_member_intake_tracking intake
-     JOIN atlasez_project_memberships membership ON membership.project_id=intake.project_id AND lower(membership.email)=lower(intake.email)
-     JOIN atlasez_projects project ON project.id=intake.project_id
-     LEFT JOIN editorial_member_profiles responsible ON lower(responsible.email)=lower(intake.responsible_email)
-     LEFT JOIN editorial_member_profiles consultation ON lower(consultation.email)=lower(intake.consultation_email)
-     LEFT JOIN editorial_tasks task ON task.id=intake.first_task_id
-     WHERE lower(intake.email)=lower(?)
-       AND NOT EXISTS (SELECT 1 FROM atlasez_project_member_lifecycle lifecycle WHERE lifecycle.project_id=membership.project_id AND lower(lifecycle.email)=lower(membership.email) AND lifecycle.state!='active')
-       AND (membership.project_id!='atlas' OR NOT EXISTS (SELECT 1 FROM admin_member_lifecycle lifecycle WHERE lower(lifecycle.email)=lower(membership.email) AND lifecycle.status='archived'))
-     ORDER BY project.name,project.id`,
-  ).bind(scope.email).all<Record<string, unknown>>();
-  return json({ entries: rows.results ?? [] });
-}
-
-type ApplicationInterviewFinalization = {
-  applicationId: string;
-  interviewId: string;
-  reviewId: string;
-  review: ApplicationInterviewReviewRow | null;
-  note: string;
-  assignedSubjects: string[];
-  decision: "accepted" | "rejected";
-  completedAt: string;
-};
-
-async function updateApplication(
-  request: Request,
-  env: Env,
-  id: string,
-  ctx?: WorkerExecutionContext,
-  interviewFinalization?: ApplicationInterviewFinalization,
-): Promise<Response> {
-  const requestedProject =
-    new URL(request.url).searchParams.get("project")?.trim().toLowerCase() ??
-    "";
-  if (!APPLICATION_FORM_SLUGS.has(requestedProject))
-    return json(
-      { error: "応募管理を表示するプロジェクトを指定してください。" },
-      400,
-    );
-  const access = await getProjectReviewerScope(request, env, requestedProject);
-  if (isResponse(access)) return access;
-  const scope = access.scope;
-  const applicationProjectSlug = canonicalApplicationProjectSlug(
-    access.project.slug,
-  );
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-  let payload: {
-    status?: unknown;
-    expectedStatus?: unknown;
-    desiredSubjects?: unknown;
-    idempotencyKey?: unknown;
-    expectedUpdatedAt?: unknown;
-    reminderAction?: unknown;
-    reminders?: unknown;
-    reminderEmail?: unknown;
-    isTestData?: unknown;
-  };
-  try {
-    payload = (await request.json()) as typeof payload;
-  } catch {
-    return json({ error: "入力内容を読み取れませんでした。" }, 400);
-  }
-  const status = text(payload.status, 20);
-  if (!["new", "reviewing", "accepted", "rejected"].includes(status))
-    return json({ error: "状態を確認してください。" }, 400);
-  const application = await env.REPORTS.prepare(
-    `SELECT name,nickname,email,status,project_slug,family_name,given_name,middle_name,family_name_kana,given_name_kana,form_language,institution,grade,affiliation_type,country,timezone,desired_subjects,availability_note,updated_at
-     FROM atlasez_member_applications WHERE id=? AND project_slug=?`,
-  )
-    .bind(id, applicationProjectSlug)
-    .first<{
-      name: string;
-      nickname: string;
-      email: string;
-      status: string;
-      project_slug: string;
-      family_name: string;
-      given_name: string;
-      middle_name: string;
-      family_name_kana: string;
-      given_name_kana: string;
-      form_language: string;
-      institution: string;
-      grade: string;
-      affiliation_type: string;
-      country: string;
-      timezone: string;
-      desired_subjects: string;
-      availability_note: string;
-      updated_at: string;
-    }>();
-  if (!application) return json({ error: "応募が見つかりません。" }, 404);
-  if (status === "accepted" && applicationProjectSlug === "atlas" && !(await isAtlasMemberActive(env, application.email)))
-    return json({ error: "休止・退会済みのアトラスメンバーは、所属状態を復元してから受け入れてください。", code: "MEMBER_INACTIVE" }, 409);
-  const idempotencyKey = text(payload.idempotencyKey, 120) || crypto.randomUUID();
-  const replay = await env.REPORTS.prepare(
-    "SELECT entity_type,entity_id,from_state,to_state,created_at FROM workflow_transition_events WHERE actor_email=? AND idempotency_key=?",
-  ).bind(scope.email, idempotencyKey).first<{ entity_type: string; entity_id: string; from_state: string; to_state: string; created_at: string }>().catch(() => null);
-  if (replay && (replay.entity_type !== "application" || replay.entity_id !== id || replay.to_state !== status || (payload.expectedStatus !== undefined && replay.from_state !== text(payload.expectedStatus, 20))))
-    return json({ error: "この操作キーは別の状態変更に使われています。", code: "IDEMPOTENCY_KEY_REUSED" }, 409);
-  if (replay) return json({ ok: true, status: replay.to_state, replayed: true, transition: { entityType: "application", entityId: replay.entity_id, fromState: replay.from_state, toState: replay.to_state, createdAt: replay.created_at } });
-  const expectedUpdatedAt = text(payload.expectedUpdatedAt, 80);
-  const expectedStatus = payload.expectedStatus === undefined ? "" : text(payload.expectedStatus, 20);
-  if (expectedStatus && expectedStatus !== application.status)
-    return json({ error: "応募の状態が先に更新されています。再読み込みしてください。", code: "STALE_STATE", currentState: application.status }, 409);
-  if (expectedUpdatedAt && expectedUpdatedAt !== application.updated_at)
-    return json({ error: "応募の情報が先に更新されています。再読み込みしてから再試行してください。", code: "STALE_STATE", currentState: application.status, updatedAt: application.updated_at }, 409);
-  if (application.status === "accepted" && status !== "accepted")
-    return json(
-      {
-        error:
-          "登録済み運営者との不整合を防ぐため、受け入れ済み応募の状態は戻せません。権限変更は権限管理から行ってください。",
-      },
-      409,
-    );
-  const now = interviewFinalization?.completedAt ?? new Date().toISOString();
-  const interviewGuardSql = interviewFinalization
-    ? ` AND EXISTS (
-         SELECT 1 FROM atlasez_application_interviews
-         WHERE id=? AND application_id=? AND status='scheduled'
-       )`
-    : "";
-  const interviewGuardValues = interviewFinalization
-    ? [interviewFinalization.interviewId, id]
-    : [];
-  if (status !== "accepted") {
-    const statements: D1PreparedStatement[] = [
-      env.REPORTS.prepare(
-        `UPDATE atlasez_member_applications SET status=?,updated_at=?
-         WHERE id=? AND status=? AND updated_at=?${interviewGuardSql}`,
-      ).bind(status, now, id, application.status, application.updated_at, ...interviewGuardValues),
-      workflowEventStatement(
-        env,
-        {
-          entityType: "application",
-          entityId: id,
-          fromState: application.status,
-          toState: status,
-          actorEmail: scope.email,
-          idempotencyKey,
-          expectedUpdatedAt: expectedUpdatedAt || null,
-          metadata: { projectSlug: application.project_slug },
-          createdAt: now,
-        },
-        true,
-      ),
-    ];
-    if (interviewFinalization)
-      statements.push(
-        ...applicationInterviewFinalizationStatements(
-          env,
-          interviewFinalization,
-          scope.email,
-          now,
-        ),
-      );
-    const [updated, workflowEvent] = await env.REPORTS.batch(statements);
-    if (!Number(updated?.meta?.changes ?? 0))
-      return json({ error: "応募の状態が先に更新されています。再読み込みしてください。", code: "STALE_STATE" }, 409);
-    if (Number(workflowEvent?.meta?.changes ?? 0) !== 1)
-      throw new Error("Application transition event was not recorded with its state update.");
-    await recordAdminAudit(env, scope.email, "workflow_transition", "workflow", id, application.name || application.email, `応募の状態を変更：${application.name || application.email}`, { entityType: "application", fromState: application.status, toState: status, projectSlug: application.project_slug });
-    return json({ ok: true, status });
-  }
-
-  // 旧形式の応募は追加列が空でも受け入れ可能にし、自由記述から権限を推測しない。
-  const requestedSubjects =
-    payload.desiredSubjects === undefined
-      ? null
-      : interviewSubjects(payload.desiredSubjects);
-  if (payload.desiredSubjects !== undefined && !requestedSubjects)
-    return json({ error: "担当分野を確認してください。" }, 400);
-  const subjects = requestedSubjects ?? [
-    ...new Set(
-      application.desired_subjects
-        .split(",")
-        .map((value) => value.trim())
-        .filter((value) => APPLICATION_SUBJECT_LABELS[value]),
-    ),
-  ];
-  const projectSlug = APPLICATION_FORM_SLUGS.has(application.project_slug)
-    ? application.project_slug
-    : "atlas";
-  const membershipProjectId =
-    projectSlug === "seminar-platform" ? "semi-platform" : projectSlug;
-  const interestLabels = subjects
-    .map((subject) => APPLICATION_SUBJECT_LABELS[subject])
-    .filter(Boolean);
-  const affiliationType = normalizeAffiliationType(
-    application.affiliation_type,
-  );
-  const institution = normalizeInstitution(application.institution);
-  const grade = normalizeGrade(application.grade);
-  const country = normalizedText(application.country, 100);
-  const timezone = validTimeZone(application.timezone)
-    ? application.timezone
-    : "Asia/Tokyo";
-  // Discord IDは応募者入力を信用せず、運営内運営が参加者一覧で確認・登録した値だけを使う。
-  const verifiedDiscord = await env.REPORTS.prepare(
-    "SELECT discord_user_id FROM atlasez_member_discord_accounts WHERE email = ?",
-  )
-    .bind(application.email)
-    .first<{ discord_user_id: string }>();
-  const legalDisplayName =
-    [
-      application.form_language === "en"
-        ? application.given_name
-        : application.family_name,
-      application.form_language === "en" ? application.middle_name : "",
-      application.form_language === "en"
-        ? application.family_name
-        : application.given_name,
-    ]
-      .filter(Boolean)
-      .join(" ") || application.name;
-  const displayName = application.nickname?.trim() || legalDisplayName;
-  const statements: D1PreparedStatement[] = [
-    env.REPORTS.prepare(
-      `UPDATE atlasez_member_applications
-       SET status='accepted',provisioning_status=?,provisioning_error='',accepted_by=?,updated_at=?
-       WHERE id=? AND status=? AND updated_at=?${interviewGuardSql}`,
-    ).bind(verifiedDiscord ? "pending" : "skipped", scope.email, now, id, application.status, application.updated_at, ...interviewGuardValues),
-    workflowEventStatement(
-      env,
-      {
-        entityType: "application",
-        entityId: id,
-        fromState: application.status,
-        toState: "accepted",
-        actorEmail: scope.email,
-        idempotencyKey,
-        expectedUpdatedAt: expectedUpdatedAt || null,
-        metadata: { projectSlug: application.project_slug },
-        createdAt: now,
-      },
-      true,
-    ),
-    env.REPORTS.prepare(
-      `INSERT INTO editorial_member_profiles (email,display_name,availability_note,university,year,interests,affiliation_type,country,timezone,updated_at)
-       SELECT ?,?,?,?,?,?,?,?,?,? WHERE changes()=1
-       ON CONFLICT(email) DO UPDATE SET
-       display_name=CASE WHEN trim(editorial_member_profiles.display_name)='' THEN excluded.display_name ELSE editorial_member_profiles.display_name END,
-       availability_note=CASE WHEN trim(editorial_member_profiles.availability_note)='' THEN excluded.availability_note ELSE editorial_member_profiles.availability_note END,
-       university=excluded.university,year=excluded.year,interests=excluded.interests,affiliation_type=excluded.affiliation_type,
-       country=excluded.country,timezone=excluded.timezone,updated_at=excluded.updated_at`,
-    ).bind(
-      application.email,
-      displayName,
-      "",
-      institution,
-      grade,
-      interestLabels.join(","),
-      affiliationType,
-      country,
-      timezone,
-      now,
-    ),
-    env.REPORTS.prepare(
-      `INSERT INTO atlasez_project_memberships (project_id,email,role,joined_at)
-       SELECT ?,?,'member',? WHERE EXISTS (
-         SELECT 1 FROM atlasez_member_applications
-         WHERE id=? AND status='accepted' AND updated_at=?
-       )
-       ON CONFLICT(project_id,email) DO NOTHING`,
-    ).bind(membershipProjectId, application.email, now, id, now),
-  ];
-  if (interviewFinalization)
-    statements.push(
-      ...applicationInterviewFinalizationStatements(
-        env,
-        interviewFinalization,
-        scope.email,
-        now,
-      ),
-    );
-  // D1 batchは一括トランザクション。所属・プロフィール・応募状態の一部だけが残るのを防ぐ。
-  try {
-    const batchResults = await env.REPORTS.batch(statements);
-    const applicationUpdate = batchResults[0] as { meta?: { changes?: number } } | undefined;
-    const workflowEvent = batchResults[1] as { meta?: { changes?: number } } | undefined;
-    if (typeof applicationUpdate?.meta?.changes === "number" && applicationUpdate.meta.changes !== 1)
-      return json({ error: "応募の状態が先に更新されています。再読み込みしてください。", code: "STALE_STATE" }, 409);
-    if (Number(workflowEvent?.meta?.changes ?? 0) !== 1)
-      throw new Error("Accepted application event was not recorded with its state update.");
-  } catch {
-    return json(
-      {
-        error: "運営者登録を完了できませんでした。データは変更されていません。",
-      },
-      500,
-    );
-  }
-
-  await recordAdminAudit(env, scope.email, "workflow_transition", "workflow", id, application.name || application.email, `応募の状態を変更：${application.name || application.email}`, { entityType: "application", fromState: application.status, toState: "accepted", projectSlug: application.project_slug });
-
-  const discord = await provisionAcceptedApplication(env, id);
-  let acceptanceEmailQueued = false;
-  try {
-    await queueApplicationAcceptanceEmail(
-      env,
-      {
-        id,
-        email: application.email,
-        projectSlug,
-        formLanguage: application.form_language,
-      },
-      now,
-    );
-    acceptanceEmailQueued = true;
-    ctx?.waitUntil(dispatchApplicationEmails(env));
-  } catch {
-    console.error("application acceptance email queue failed");
-  }
-  return json({
-    ok: true,
-    status: "accepted",
-    provisioning: discord,
-    legacyApplication: !subjects.length,
-    acceptanceEmailQueued,
-  });
-}
-
-async function retryApplicationDiscordProvisioning(
-  request: Request,
-  env: Env,
-  id: string,
-): Promise<Response> {
-  const requestedProject =
-    new URL(request.url).searchParams.get("project")?.trim().toLowerCase() ?? "";
-  if (!APPLICATION_FORM_SLUGS.has(requestedProject))
-    return json({ error: "応募管理を表示するプロジェクトを指定してください。" }, 400);
-  const access = await getProjectReviewerScope(request, env, requestedProject);
-  if (isResponse(access)) return access;
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-  const application = await env.REPORTS.prepare(
-    "SELECT status,project_slug,email FROM atlasez_member_applications WHERE id=?",
-  )
-    .bind(id)
-    .first<{ status: string; project_slug: string; email: string }>();
-  if (!application || application.project_slug !== canonicalApplicationProjectSlug(access.project.slug))
-    return json({ error: "応募が見つかりません。" }, 404);
-  if (application.status !== "accepted")
-    return json({ error: "受け入れ済みの応募だけDiscord情報の確認を再試行できます。" }, 409);
-  if (application.project_slug === "atlas" && !(await isAtlasMemberActive(env, application.email)))
-    return json({ error: "休止・退会済みのアトラスメンバーのDiscord同期は再試行できません。", code: "MEMBER_INACTIVE" }, 409);
-  const now = new Date().toISOString();
-  await env.REPORTS.prepare(
-    `UPDATE atlasez_member_applications
-        SET provisioning_status='pending',provisioning_error='',provisioning_attempt_count=0,
-            provisioning_next_attempt_at=NULL,provisioning_last_attempt_at=NULL,updated_at=?
-      WHERE id=? AND status='accepted'`,
-  )
-    .bind(now, id)
-    .run();
-  const provisioning = await provisionAcceptedApplication(env, id);
-  if (provisioning.status === "synced") return json({ ok: true, provisioning });
-  if (provisioning.status === "skipped") return json({ ok: true, provisioning });
-  return json({ error: provisioning.warnings.join(" "), provisioning }, 502);
-}
-
-type ApplicationInterviewRow = {
-  id: string;
-  application_id: string;
-  scheduled_at: string;
-  timezone: string;
-  mode: "in_person" | "online";
-  zoom_url: string;
-  location: string;
-  status: "scheduled" | "completed" | "cancelled";
-  notified_at: string | null;
-  notification_count: number;
-  completed_at: string | null;
-  created_by: string;
-  created_at: string;
-  updated_by: string;
-  updated_at: string;
-};
-
-type ApplicationInterviewReviewRow = {
-  id: string;
-  application_id: string;
-  interview_id: string | null;
-  note: string;
-  assigned_subjects: string;
-  decision: "pending" | "hold" | "accepted" | "rejected";
-  finalized_at: string | null;
-  finalized_by: string | null;
-  created_by: string;
-  created_at: string;
-  updated_by: string;
-  updated_at: string;
-};
-
-const interviewApplicationAccess = async (
-  request: Request,
-  env: Env,
-  id: string,
-): Promise<
-  | {
-      access: ProjectReviewerScope;
-      application: {
-        id: string;
-        name: string;
-        email: string;
-        project_slug: string;
-        form_language: string;
-        status: string;
-      };
-    }
-  | Response
-> => {
-  const requestedProject =
-    new URL(request.url).searchParams.get("project")?.trim().toLowerCase() ?? "";
-  if (!APPLICATION_FORM_SLUGS.has(requestedProject))
-    return json({ error: "応募管理を表示するプロジェクトを指定してください。" }, 400);
-  const access = await getProjectReviewerScope(request, env, requestedProject);
-  if (isResponse(access)) return access;
-  const projectSlug = canonicalApplicationProjectSlug(access.project.slug);
-  const application = await env.REPORTS.prepare(
-    `SELECT id,name,email,project_slug,form_language,status
-       FROM atlasez_member_applications WHERE id=? AND project_slug=?`,
-  )
-    .bind(id, projectSlug)
-    .first<{
-      id: string;
-      name: string;
-      email: string;
-      project_slug: string;
-      form_language: string;
-      status: string;
-    }>();
-  if (!application) return json({ error: "応募が見つかりません。" }, 404);
-  return { access, application };
-};
-
-const interviewSubjects = (value: unknown): string[] | null => {
-  const raw = Array.isArray(value)
-    ? value
-    : typeof value === "string"
-      ? value.split(",")
-      : null;
-  if (!raw) return null;
-  const subjects = [...new Set(raw.map((item) => text(item, 80).trim()).filter(Boolean))];
-  return subjects.every((subject) => APPLICATION_SUBJECT_LABELS[subject])
-    ? subjects
-    : null;
-};
-
-const interviewHistory = (
-  env: Env,
-  applicationId: string,
-  interviewId: string | null,
-  reviewId: string | null,
-  eventType: string,
-  before: unknown,
-  after: unknown,
-  actorEmail: string,
-  createdAt: string,
-) =>
-  env.REPORTS.prepare(
-    `INSERT INTO atlasez_application_interview_history
-      (id,application_id,interview_id,review_id,event_type,before_json,after_json,actor_email,created_at)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
-  ).bind(
-    crypto.randomUUID(),
-    applicationId,
-    interviewId,
-    reviewId,
-    eventType,
-    JSON.stringify(before ?? null),
-    JSON.stringify(after ?? null),
-    actorEmail,
-    createdAt,
-  );
-
-const applicationInterviewFinalizationStatements = (
-  env: Env,
-  finalization: ApplicationInterviewFinalization,
-  actorEmail: string,
-  completedAt: string,
-): D1PreparedStatement[] => {
-  const assignedSubjects = finalization.assignedSubjects.join(",");
-  const nextReview = {
-    note: finalization.note,
-    assigned_subjects: assignedSubjects,
-    decision: finalization.decision,
-  };
-  const reviewStatement = finalization.review
-    ? env.REPORTS.prepare(
-        `UPDATE atlasez_application_interview_reviews
-            SET note=?,assigned_subjects=?,decision=?,finalized_at=?,finalized_by=?,updated_by=?,updated_at=?
-          WHERE id=? AND application_id=?
-            AND EXISTS (
-              SELECT 1 FROM atlasez_application_interviews
-               WHERE id=? AND application_id=? AND status='completed' AND completed_at=?
-            )`,
-      ).bind(
-        nextReview.note,
-        nextReview.assigned_subjects,
-        nextReview.decision,
-        completedAt,
-        actorEmail,
-        actorEmail,
-        completedAt,
-        finalization.reviewId,
-        finalization.applicationId,
-        finalization.interviewId,
-        finalization.applicationId,
-        completedAt,
-      )
-    : env.REPORTS.prepare(
-        `INSERT INTO atlasez_application_interview_reviews
-          (id,application_id,interview_id,note,assigned_subjects,decision,finalized_at,finalized_by,created_by,created_at,updated_by,updated_at)
-         SELECT ?,?,?,?,?,?,?,?,?,?,?,?
-         WHERE EXISTS (
-           SELECT 1 FROM atlasez_application_interviews
-            WHERE id=? AND application_id=? AND status='completed' AND completed_at=?
-         )`,
-      ).bind(
-        finalization.reviewId,
-        finalization.applicationId,
-        finalization.interviewId,
-        nextReview.note,
-        nextReview.assigned_subjects,
-        nextReview.decision,
-        completedAt,
-        actorEmail,
-        actorEmail,
-        completedAt,
-        actorEmail,
-        completedAt,
-        finalization.interviewId,
-        finalization.applicationId,
-        completedAt,
-      );
-  return [
-    env.REPORTS.prepare(
-      `UPDATE atlasez_application_interviews
-          SET status='completed',completed_at=?,updated_by=?,updated_at=?
-        WHERE id=? AND application_id=? AND status='scheduled'
-          AND EXISTS (
-            SELECT 1 FROM atlasez_member_applications
-             WHERE id=? AND status=? AND updated_at=?
-          )`,
-    ).bind(
-      completedAt,
-      actorEmail,
-      completedAt,
-      finalization.interviewId,
-      finalization.applicationId,
-      finalization.applicationId,
-      finalization.decision,
-      completedAt,
-    ),
-    reviewStatement,
-    env.REPORTS.prepare(
-      `INSERT INTO atlasez_application_interview_history
-        (id,application_id,interview_id,review_id,event_type,before_json,after_json,actor_email,created_at)
-       SELECT ?,?,?,?,?,?,?,?,?
-       WHERE EXISTS (
-         SELECT 1 FROM atlasez_application_interviews
-          WHERE id=? AND application_id=? AND status='completed' AND completed_at=?
-       ) AND EXISTS (
-         SELECT 1 FROM atlasez_application_interview_reviews
-          WHERE id=? AND application_id=? AND decision=? AND finalized_at=?
-       )`,
-    ).bind(
-      crypto.randomUUID(),
-      finalization.applicationId,
-      finalization.interviewId,
-      finalization.reviewId,
-      "interview_completed",
-      JSON.stringify(
-        finalization.review
-          ? {
-              id: finalization.review.id,
-              note: finalization.review.note,
-              assigned_subjects: finalization.review.assigned_subjects,
-              decision: finalization.review.decision,
-            }
-          : null,
-      ),
-      JSON.stringify({
-        note: finalization.note,
-        assigned_subjects: finalization.assignedSubjects,
-        decision: finalization.decision,
-      }),
-      actorEmail,
-      completedAt,
-      finalization.interviewId,
-      finalization.applicationId,
-      completedAt,
-      finalization.reviewId,
-      finalization.applicationId,
-      finalization.decision,
-      completedAt,
-    ),
-  ];
-};
-
-async function getApplicationInterview(
-  request: Request,
-  env: Env,
-  id: string,
-): Promise<Response> {
-  const access = await interviewApplicationAccess(request, env, id);
-  if (isResponse(access)) return access;
-  const [interview, review, history] = await Promise.all([
-    env.REPORTS.prepare(
-      "SELECT id,application_id,scheduled_at,timezone,mode,zoom_url,location,status,notified_at,notification_count,completed_at,created_by,created_at,updated_by,updated_at FROM atlasez_application_interviews WHERE application_id=?",
-    ).bind(id).first<ApplicationInterviewRow>(),
-    env.REPORTS.prepare(
-      "SELECT id,application_id,interview_id,note,assigned_subjects,decision,finalized_at,finalized_by,created_by,created_at,updated_by,updated_at FROM atlasez_application_interview_reviews WHERE application_id=?",
-    ).bind(id).first<ApplicationInterviewReviewRow>(),
-    env.REPORTS.prepare(
-      "SELECT id,application_id,interview_id,review_id,event_type,before_json,after_json,actor_email,created_at FROM atlasez_application_interview_history WHERE application_id=? ORDER BY created_at DESC LIMIT 100",
-    ).bind(id).all<Record<string, unknown>>(),
-  ]);
-  return json({
-    application: access.application,
-    subjectLabels: APPLICATION_SUBJECT_LABELS,
-    interview: interview
-      ? {
-          ...interview,
-          scheduledAt: interview.scheduled_at,
-          zoomUrl: interview.zoom_url,
-          notificationCount: interview.notification_count,
-          completedAt: interview.completed_at,
-        }
-      : null,
-    review: review
-      ? {
-          ...review,
-          assignedSubjects: review.assigned_subjects
-            .split(",")
-            .map((subject) => subject.trim())
-            .filter(Boolean),
-        }
-      : null,
-    history: history.results ?? [],
-  });
-}
-
-async function saveApplicationInterview(
-  request: Request,
-  env: Env,
-  id: string,
-): Promise<Response> {
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-  const access = await interviewApplicationAccess(request, env, id);
-  if (isResponse(access)) return access;
-  if (!request.headers.get("content-type")?.includes("application/json"))
-    return json({ error: "JSON形式で送信してください。" }, 415);
-  const payload = (await request.json().catch(() => null)) as Record<string, unknown> | null;
-  const scheduledAt = text(payload?.scheduledAt, 80).trim();
-  const timezone = text(payload?.timezone, 80).trim() || "Asia/Tokyo";
-  const mode = text(payload?.mode, 20).trim() as "in_person" | "online";
-  const zoomUrl = text(payload?.zoomUrl, MAX_INTERVIEW_URL_LENGTH).trim();
-  const location = text(payload?.location, MAX_INTERVIEW_LOCATION_LENGTH).trim();
-  if (!scheduledAt || !Number.isFinite(Date.parse(scheduledAt)) || !isValidTimeZone(timezone))
-    return json({ error: "面談日時またはタイムゾーンを確認してください。" }, 400);
-  if (mode !== "in_person" && mode !== "online")
-    return json({ error: "面談形式を選択してください。" }, 400);
-  if (mode === "online") {
-    try {
-      const url = new URL(zoomUrl);
-      if (url.protocol !== "https:") throw new Error();
-    } catch {
-      return json({ error: "オンライン面談にはHTTPSのZoomリンクを設定してください。" }, 400);
-    }
-  }
-  if (mode === "in_person" && !location)
-    return json({ error: "対面面談の場所を入力してください。" }, 400);
-  const current = await env.REPORTS.prepare(
-    "SELECT id,application_id,scheduled_at,timezone,mode,zoom_url,location,status,notified_at,notification_count,completed_at,created_by,created_at,updated_by,updated_at FROM atlasez_application_interviews WHERE application_id=?",
-  ).bind(id).first<ApplicationInterviewRow>();
-  if (current?.status === "completed")
-    return json({ error: "終了済みの面談は変更できません。" }, 409);
-  const now = new Date().toISOString();
-  const interviewId = current?.id ?? crypto.randomUUID();
-  const next = {
-    scheduled_at: scheduledAt,
-    timezone,
-    mode,
-    zoom_url: mode === "online" ? zoomUrl : "",
-    location: mode === "in_person" ? location : "",
-    status: "scheduled",
-  };
-  const statement = current
-    ? env.REPORTS.prepare(
-        `UPDATE atlasez_application_interviews
-            SET scheduled_at=?,timezone=?,mode=?,zoom_url=?,location=?,status='scheduled',updated_by=?,updated_at=?
-          WHERE id=? AND application_id=?`,
-      ).bind(
-        next.scheduled_at,
-        next.timezone,
-        next.mode,
-        next.zoom_url,
-        next.location,
-        access.access.scope.email,
-        now,
-        interviewId,
-        id,
-      )
-    : env.REPORTS.prepare(
-        `INSERT INTO atlasez_application_interviews
-          (id,application_id,scheduled_at,timezone,mode,zoom_url,location,status,created_by,created_at,updated_by,updated_at)
-         VALUES (?,?,?,?,? ,?,?, 'scheduled',?,?,?,?)`,
-      ).bind(
-        interviewId,
-        id,
-        next.scheduled_at,
-        next.timezone,
-        next.mode,
-        next.zoom_url,
-        next.location,
-        access.access.scope.email,
-        now,
-        access.access.scope.email,
-        now,
-      );
-  await env.REPORTS.batch([
-    statement,
-    interviewHistory(
-      env,
-      id,
-      interviewId,
-      null,
-      current ? "schedule_updated" : "schedule_created",
-      current,
-      next,
-      access.access.scope.email,
-      now,
-    ),
-  ]);
-  return json({ ok: true, interview: { id: interviewId, ...next, notified_at: null } });
-}
-
-async function notifyApplicationInterview(
-  request: Request,
-  env: Env,
-  id: string,
-  ctx?: WorkerExecutionContext,
-): Promise<Response> {
-  if (request.method !== "POST" || !isSameOrigin(request))
-    return json({ error: "POSTのみ利用できます。" }, 405);
-  const access = await interviewApplicationAccess(request, env, id);
-  if (isResponse(access)) return access;
-  const interview = await env.REPORTS.prepare(
-    "SELECT id,application_id,scheduled_at,timezone,mode,zoom_url,location,status FROM atlasez_application_interviews WHERE application_id=?",
-  ).bind(id).first<ApplicationInterviewRow>();
-  if (!interview || interview.status !== "scheduled")
-    return json({ error: "通知できる面談予定がありません。" }, 409);
-  const now = new Date().toISOString();
-  try {
-    await queueApplicationInterviewEmail(
-      env,
-      {
-        id: access.application.id,
-        email: access.application.email,
-        projectSlug: access.application.project_slug,
-        formLanguage: access.application.form_language,
-      },
-      {
-        scheduledAt: interview.scheduled_at,
-        timezone: interview.timezone,
-        mode: interview.mode,
-        zoomUrl: interview.zoom_url,
-        location: interview.location,
-      },
-      now,
-    );
-  } catch {
-    console.error("application interview email queue failed");
-    return json({ error: "面談通知を準備できませんでした。" }, 500);
-  }
-  await env.REPORTS.prepare(
-    "UPDATE atlasez_application_interviews SET notified_at=?,notification_count=notification_count+1,updated_by=?,updated_at=? WHERE id=?",
-  ).bind(now, access.access.scope.email, now, interview.id).run();
-  await env.REPORTS.prepare(
-    "INSERT INTO atlasez_application_interview_history (id,application_id,interview_id,review_id,event_type,before_json,after_json,actor_email,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-  ).bind(
-    crypto.randomUUID(), id, interview.id, null, "notification_queued", "", JSON.stringify({ notifiedAt: now }), access.access.scope.email, now,
-  ).run();
-  ctx?.waitUntil(dispatchApplicationEmails(env));
-  return json({ ok: true, notifiedAt: now, notificationQueued: true });
-}
-
-async function saveApplicationInterviewReview(
-  request: Request,
-  env: Env,
-  id: string,
-): Promise<Response> {
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-  const access = await interviewApplicationAccess(request, env, id);
-  if (isResponse(access)) return access;
-  if (!request.headers.get("content-type")?.includes("application/json"))
-    return json({ error: "JSON形式で送信してください。" }, 415);
-  const payload = (await request.json().catch(() => null)) as Record<string, unknown> | null;
-  const note = text(payload?.note, MAX_INTERVIEW_NOTE_LENGTH);
-  const assignedSubjects = interviewSubjects(payload?.assignedSubjects);
-  const decision = text(payload?.decision, 20) as ApplicationInterviewReviewRow["decision"];
-  if (!assignedSubjects || !["pending", "hold", "accepted", "rejected"].includes(decision))
-    return json({ error: "担当分野または採否を確認してください。" }, 400);
-  const current = await env.REPORTS.prepare(
-    "SELECT id,application_id,interview_id,note,assigned_subjects,decision,finalized_at,finalized_by,created_by,created_at,updated_by,updated_at FROM atlasez_application_interview_reviews WHERE application_id=?",
-  ).bind(id).first<ApplicationInterviewReviewRow>();
-  const interview = await env.REPORTS.prepare(
-    "SELECT id,status FROM atlasez_application_interviews WHERE application_id=?",
-  ).bind(id).first<{ id: string; status: string }>();
-  const now = new Date().toISOString();
-  const reviewId = current?.id ?? crypto.randomUUID();
-  const next = { note, assigned_subjects: assignedSubjects.join(","), decision };
-  const statement = current
-    ? env.REPORTS.prepare(
-        `UPDATE atlasez_application_interview_reviews
-            SET note=?,assigned_subjects=?,decision=?,updated_by=?,updated_at=?
-          WHERE id=? AND application_id=?`,
-      ).bind(note, next.assigned_subjects, decision, access.access.scope.email, now, reviewId, id)
-    : env.REPORTS.prepare(
-        `INSERT INTO atlasez_application_interview_reviews
-          (id,application_id,interview_id,note,assigned_subjects,decision,created_by,created_at,updated_by,updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      ).bind(reviewId, id, interview?.id ?? null, note, next.assigned_subjects, decision, access.access.scope.email, now, access.access.scope.email, now);
-  await env.REPORTS.batch([
-    statement,
-    interviewHistory(env, id, interview?.id ?? null, reviewId, "review_saved", current, next, access.access.scope.email, now),
-  ]);
-  return json({ ok: true, review: { id: reviewId, ...next, assignedSubjects } });
-}
-
-async function completeApplicationInterview(
-  request: Request,
-  env: Env,
-  id: string,
-  ctx?: WorkerExecutionContext,
-): Promise<Response> {
-  if (!isSameOrigin(request))
-    return json({ error: "この送信元からは受け付けられません。" }, 403);
-  const access = await interviewApplicationAccess(request, env, id);
-  if (isResponse(access)) return access;
-  if (!request.headers.get("content-type")?.includes("application/json"))
-    return json({ error: "JSON形式で送信してください。" }, 415);
-  const payload = (await request.json().catch(() => null)) as Record<string, unknown> | null;
-  const decision = text(payload?.decision, 20) as "accepted" | "rejected";
-  const assignedSubjects = interviewSubjects(payload?.assignedSubjects);
-  if ((decision !== "accepted" && decision !== "rejected") || !assignedSubjects)
-    return json({ error: "採否と担当分野を確認してください。" }, 400);
-  const interview = await env.REPORTS.prepare(
-    "SELECT id,status FROM atlasez_application_interviews WHERE application_id=?",
-  ).bind(id).first<{ id: string; status: string }>();
-  if (!interview || interview.status !== "scheduled")
-    return json({ error: "予定済みの面談だけ完了できます。" }, 409);
-  const current = await env.REPORTS.prepare(
-    "SELECT id,application_id,interview_id,note,assigned_subjects,decision,finalized_at,finalized_by,created_by,created_at,updated_by,updated_at FROM atlasez_application_interview_reviews WHERE application_id=?",
-  ).bind(id).first<ApplicationInterviewReviewRow>();
-  const note = text(payload?.note, MAX_INTERVIEW_NOTE_LENGTH) || current?.note || "";
-  const finalizedAt = new Date().toISOString();
-  const reviewId = current?.id ?? crypto.randomUUID();
+    await env.RE
+... 114740 bytes omitted ...
+.id ?? crypto.randomUUID();
   const finalization: ApplicationInterviewFinalization = {
     applicationId: id,
     interviewId: interview.id,
@@ -15208,6 +13467,31 @@ async function submitMemberApplication(
   source: "same-origin" | "public-worker" = "same-origin",
   ctx?: WorkerExecutionContext,
 ): Promise<Response> {
+  const correlationId = crypto.randomUUID();
+  const alreadyApplied = () =>
+    json(
+      {
+        error:
+          "このプロジェクトの応募または参加情報はすでに登録されています。応募状況を確認してください。",
+        code: "APPLICATION_ALREADY_EXISTS",
+        ...(source === "same-origin"
+          ? { statusUrl: "/applicant/?submission=already-received" }
+          : {}),
+      },
+      409,
+    );
+  const logSubmissionFailure = (
+    category: string,
+    details: Record<string, string | number | boolean> = {},
+  ) =>
+    console.error(
+      JSON.stringify({
+        event: "application_submission_failed",
+        correlationId,
+        category,
+        ...details,
+      }),
+    );
   let authenticatedEmail = "";
   if (source === "public-worker") {
     const configuredToken = env.PUBLIC_APPLICATION_INGEST_TOKEN?.trim();
@@ -15392,8 +13676,7 @@ async function submitMemberApplication(
     )
       .bind(authenticatedEmail, projectSlug, authenticatedEmail, onboardingProjectId(projectSlug))
       .first<{ found: number }>();
-    if (existingProject)
-      return json({ error: "このプロジェクトにはすでに応募済み、または参加中です。" }, 409);
+    if (existingProject) return alreadyApplied();
   }
   const projectAnswerRecord: Record<string, string> = {};
   if (
@@ -15536,15 +13819,40 @@ async function submitMemberApplication(
   )
     .bind(email, projectSlug)
     .first<{ id: string }>();
-  if (duplicate)
+  if (duplicate) return alreadyApplied();
+  const now = new Date().toISOString();
+  let operatorEmails: string[];
+  try {
+    operatorEmails = await applicationOperatorEmails(env);
+  } catch {
+    logSubmissionFailure("notification_recipient_lookup_failed");
+    return json(
+      {
+        error: "応募の受付準備を確認できませんでした。時間をおいて応募状況をご確認ください。",
+        code: "APPLICATION_RESULT_UNCONFIRMED",
+        applicationSaved: false,
+        applicationState: "not_saved",
+        correlationId,
+        statusUrl: "/applicant/?submission=check",
+      },
+      503,
+    );
+  }
+  if (operatorEmails.length === 0) {
+    logSubmissionFailure("notification_recipients_missing");
     return json(
       {
         error:
-          "このメールアドレスの応募はすでに確認中です。結果の連絡をお待ちください。",
+          "応募を受け付ける運営担当者を確認できません。運営が設定後、もう一度お試しください。",
+        code: "APPLICATION_RESULT_UNCONFIRMED",
+        applicationSaved: false,
+        applicationState: "not_saved",
+        correlationId,
+        statusUrl: "/applicant/?submission=check",
       },
-      409,
+      503,
     );
-  const now = new Date().toISOString();
+  }
   if (authenticatedEmail) {
     await env.REPORTS.prepare(
       `INSERT INTO atlasez_applicant_profiles
@@ -15587,10 +13895,10 @@ async function submitMemberApplication(
       )
       .run();
   }
-  const applicationInsert = await env.REPORTS.prepare(
+  const applicationInsert = env.REPORTS.prepare(
     `INSERT INTO atlasez_member_applications
-     (id,name,email,affiliation_email,family_name,given_name,middle_name,nickname,family_name_kana,given_name_kana,form_language,interests,message,status,created_at,updated_at,project_slug,project_answers,affiliation_type,institution,grade,country,timezone,desired_subjects,article_ideas,discord_user_id,availability_note,birth_date,residence_city,current_organizations,referral_source,motivation_reasons,desired_roles,interview_availability,applicant_questions)
-     SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?, 'new',?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?
+     (id,name,email,affiliation_email,family_name,given_name,middle_name,nickname,family_name_kana,given_name_kana,form_language,interests,message,status,created_at,updated_at,project_slug,project_answers,affiliation_type,institution,grade,country,timezone,desired_subjects,article_ideas,discord_user_id,availability_note,birth_date,residence_city,current_organizations,referral_source,motivation_reasons,desired_roles,interview_availability,applicant_questions,operator_notification_recipients_json,intake_reconciliation_required)
+     SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?, 'new',?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?,?,1
      WHERE NOT EXISTS (
        SELECT 1 FROM atlasez_member_applications
        WHERE lower(email)=lower(?) AND project_slug=? AND status IN ('new','reviewing')
@@ -15630,17 +13938,9 @@ async function submitMemberApplication(
       desiredRoles,
       interviewAvailability,
       applicantQuestions,
+      JSON.stringify(operatorEmails),
       email,
       projectSlug,
-    )
-    .run();
-  if (applicationInsert.meta?.changes !== 1)
-    return json(
-      {
-        error:
-          "このメールアドレスの応募はすでに確認中です。結果の連絡をお待ちください。",
-      },
-      409,
     );
   const followup = {
     id: applicationId,
@@ -15650,20 +13950,368 @@ async function submitMemberApplication(
     projectSlug,
     createdAt: now,
   };
+  let emailStatements: Awaited<ReturnType<Env["REPORTS"]["prepare"]>>[];
   try {
-    await createApplicationResponseTask(env, followup);
-    await queueApplicationEmails(env, followup);
+    emailStatements = await applicationEmailDeliveryStatements(
+      env,
+      followup,
+      operatorEmails,
+    );
   } catch {
-    // 応募本文の保存を巻き戻さず、運営側の自動処理だけを再試行対象にする。
-    console.error("application follow-up setup failed");
+    logSubmissionFailure("notification_queue_prepare_failed");
+    return json(
+      {
+        error:
+          "応募の処理を完了できませんでした。時間をおいて応募状況を確認してください。",
+        code: "APPLICATION_RESULT_UNCONFIRMED",
+        applicationSaved: false,
+        applicationState: "not_saved",
+        correlationId,
+        statusUrl: "/applicant/?submission=check",
+      },
+      503,
+    );
+  }
+
+  const reconcileUnconfirmedSubmission = async (
+    detectedBy: "batch_error" | "write_count_mismatch",
+    observedCounts: Record<string, number> = {},
+  ) => {
+    let before: ApplicationIntakeSnapshot;
+    try {
+      before = await inspectApplicationIntake(env, applicationId);
+    } catch {
+      logSubmissionFailure("application_reconciliation_read_failed", {
+        detectedBy,
+      });
+      return json(
+        {
+          error:
+            "応募の保存結果を確認できませんでした。重複送信を避けるため、応募状況をご確認ください。",
+          code: "APPLICATION_RESULT_UNCONFIRMED",
+          // Backward compatibility: older clients interpret this boolean as
+          // "not confirmed". New clients must use applicationState to tell
+          // a confirmed absence from a read whose result is unknown.
+          applicationSaved: false,
+          applicationState: "unknown",
+          correlationId,
+          statusUrl: "/applicant/?submission=check",
+        },
+        503,
+      );
+    }
+
+    if (!before.applicationExists) {
+      try {
+        const existingProject = await env.REPORTS.prepare(
+          `SELECT 1 AS found FROM atlasez_member_applications
+           WHERE lower(email)=lower(?) AND project_slug=? AND status IN ('new','reviewing','accepted')
+           UNION ALL
+           SELECT 1 AS found FROM atlasez_project_memberships
+           WHERE lower(email)=lower(?) AND project_id=? LIMIT 1`,
+        )
+          .bind(email, projectSlug, email, onboardingProjectId(projectSlug))
+          .first<{ found: number }>();
+        if (existingProject) return alreadyApplied();
+      } catch {
+        logSubmissionFailure("application_duplicate_recheck_failed", {
+          detectedBy,
+        });
+        return json(
+          {
+            error:
+              "応募状況を照合できませんでした。重複送信を避けるため、時間をおいて応募状況をご確認ください。",
+            code: "APPLICATION_RESULT_UNCONFIRMED",
+            applicationSaved: false,
+            applicationState: "unknown",
+            correlationId,
+            statusUrl: "/applicant/?submission=check",
+          },
+          503,
+        );
+      }
+    }
+
+    const missingBefore = missingApplicationIntakeComponents(
+      before,
+      emailStatements.length,
+    );
+    let after = before;
+    let afterVerified = true;
+    let repairAttempted = false;
+    if (before.applicationExists && missingBefore.length > 0) {
+      repairAttempted = true;
+      try {
+        const activeRecipients = await authorizedApplicationRepairRecipients(
+          env,
+          before.expectedOperatorRecipients,
+        );
+        const repairEmailStatements = await applicationEmailDeliveryStatements(
+          env,
+          followup,
+          activeRecipients,
+        );
+        // Stable task identity, a NOT EXISTS guard, and the queue's narrow
+        // logical-key conflict target make this repair safe to retry.
+        await env.REPORTS.batch([
+          applicationResponseTaskStatement(env, followup),
+          ...repairEmailStatements,
+        ]);
+      } catch {
+        logSubmissionFailure("application_intake_repair_failed", {
+          detectedBy,
+        });
+      }
+      try {
+        after = await inspectApplicationIntake(env, applicationId);
+      } catch {
+        afterVerified = false;
+        logSubmissionFailure("application_reconciliation_read_failed", {
+          detectedBy,
+          repairAttempted,
+        });
+      }
+    }
+
+    const missingAfter = missingApplicationIntakeComponents(
+      after,
+      emailStatements.length,
+    );
+    const repaired = afterVerified && after.applicationExists && missingAfter.length === 0;
+    let operatorFollowupRecorded = false;
+    if (after.applicationExists) {
+      const recoveryInput = {
+        applicationId,
+        correlationId,
+        detectedBy,
+        missing: missingBefore,
+        repaired,
+        repairAttempted,
+        createdAt: new Date().toISOString(),
+      } as const;
+      try {
+        await env.REPORTS.batch([
+          applicationIntakeRecoveryTaskStatement(env, recoveryInput),
+          applicationIntakeRecoveryAuditStatement(env, recoveryInput),
+        ]);
+        const task = await env.REPORTS.prepare(
+          "SELECT status FROM editorial_tasks WHERE id=? LIMIT 1",
+        )
+          .bind(`application-recovery:${applicationId}`)
+          .first<{ status: string }>();
+        const audit = await env.REPORTS.prepare(
+          "SELECT 1 AS found FROM admin_audit_log WHERE id=? LIMIT 1",
+        )
+          .bind(`application-recovery:${applicationId}:${correlationId}`)
+          .first<{ found: number }>();
+        operatorFollowupRecorded = Boolean(
+          task && task.status !== "done" && audit,
+        );
+      } catch {
+        logSubmissionFailure("application_recovery_record_failed", {
+          detectedBy,
+          repaired,
+        });
+      }
+    }
+
+    let reconciliationMarkerCleared = !after.reconciliationRequired;
+    if (
+      afterVerified &&
+      after.applicationExists &&
+      repaired &&
+      operatorFollowupRecorded &&
+      after.reconciliationRequired
+    ) {
+      try {
+        await env.REPORTS.prepare(
+          "UPDATE atlasez_member_applications SET intake_reconciliation_required=0,updated_at=? WHERE id=? AND intake_reconciliation_required=1",
+        )
+          .bind(new Date().toISOString(), applicationId)
+          .run();
+        const finalized = await inspectApplicationIntake(env, applicationId);
+        reconciliationMarkerCleared = !finalized.reconciliationRequired;
+        after = finalized;
+      } catch {
+        reconciliationMarkerCleared = false;
+        logSubmissionFailure("application_reconciliation_finalize_failed", {
+          detectedBy,
+        });
+      }
+    }
+
+    logSubmissionFailure(
+      detectedBy === "batch_error"
+        ? "application_batch_result_unconfirmed"
+        : "application_write_count_mismatch",
+      {
+        applicationSaved: after.applicationExists,
+        responseTaskCount: after.responseTaskCount,
+        applicantConfirmationCount: after.applicantConfirmationCount,
+        operatorNotificationCount: after.operatorNotificationCount,
+        expectedEmailQueueCount: emailStatements.length,
+        repairAttempted,
+        repaired,
+        operatorFollowupRecorded,
+        ...observedCounts,
+      },
+    );
+
+    const applicationSaved = before.applicationExists || after.applicationExists;
+    const applicationState = !afterVerified && !before.applicationExists
+      ? "unknown"
+      : applicationSaved
+        ? "saved"
+        : "not_saved";
+    return json(
+      {
+        error: applicationSaved
+          ? repaired
+            ? repairAttempted
+              ? "応募内容は保存され、受付処理の不足分を修復しました。処理記録に不整合があったため運営確認中です。再送せず、応募状況をご確認ください。"
+              : "応募内容は保存されています。受付処理の結果照合に不整合があったため運営確認中です。再送せず、応募状況をご確認ください。"
+            : reconciliationMarkerCleared
+              ? "応募内容は保存されています。受付状態を照合し、運営確認用の記録を作成しました。再送せず、応募状況をご確認ください。"
+              : "応募内容は保存済みですが、受付処理の一部を修復できませんでした。再送せず、応募状況をご確認ください。"
+          : "応募の保存結果を確認できませんでした。再送せず、応募状況をご確認ください。",
+        code: applicationSaved
+          ? "APPLICATION_SETUP_REQUIRES_REVIEW"
+          : "APPLICATION_RESULT_UNCONFIRMED",
+        applicationSaved,
+        applicationState,
+        ...(applicationSaved
+          ? {
+              setupRepairStatus: repaired
+                ? repairAttempted
+                  ? "repaired"
+                  : "verified"
+                : "operator_action_required",
+              operatorFollowupRecorded,
+            }
+          : {}),
+        correlationId,
+        statusUrl: "/applicant/?submission=check",
+      },
+      503,
+    );
+  };
+
+  let applicationResults: Awaited<ReturnType<Env["REPORTS"]["batch"]>>;
+  try {
+    applicationResults = await env.REPORTS.batch([
+      applicationInsert,
+      applicationResponseTaskStatement(env, followup),
+      ...emailStatements,
+    ]);
+  } catch {
+    // SQL error時のbatch transactionはrollbackされるが、Workerが応答を
+    // 受け取れなかった場合までrollback済みとは仮定しない。commit状態を再読込する。
+    return reconcileUnconfirmedSubmission("batch_error");
+  }
+  const applicationChangeCount = applicationResults[0]?.meta?.changes;
+  const responseTaskChangeCount = applicationResults[1]?.meta?.changes;
+  const emailQueueChangeCounts = applicationResults
+    .slice(2)
+    .map((result) => result.meta?.changes);
+  const emailQueueCount = applicationResults
+    .slice(2)
+    .reduce((count, result) => count + (result.meta?.changes ?? 0), 0);
+  const writeCountsMatch =
+    applicationChangeCount === 1 &&
+    responseTaskChangeCount === 1 &&
+    emailStatements.length > 0 &&
+    emailQueueChangeCounts.length === emailStatements.length &&
+    emailQueueChangeCounts.every((changes) => changes === 1);
+  if (writeCountsMatch) {
+    try {
+      const persisted = await inspectApplicationIntake(env, applicationId);
+      const inconsistent = missingApplicationIntakeComponents(
+        persisted,
+        emailStatements.length,
+      );
+      if (inconsistent.length > 0)
+        return reconcileUnconfirmedSubmission("write_count_mismatch", {
+          applicationChanges: 1,
+          responseTaskChanges: 1,
+          emailQueueReportedChanges: emailQueueCount,
+          persistedResponseTaskCount: persisted.responseTaskCount,
+          persistedApplicantConfirmationCount:
+            persisted.applicantConfirmationCount,
+          persistedOperatorNotificationCount:
+            persisted.operatorNotificationCount,
+        });
+    } catch {
+      return reconcileUnconfirmedSubmission("write_count_mismatch", {
+        applicationChanges: 1,
+        responseTaskChanges: 1,
+        emailQueueReportedChanges: emailQueueCount,
+        persistenceReadFailed: 1,
+      });
+    }
+  }
+  // 201 only means the application, operator task and all initial queue rows committed.
+  // Provider delivery runs asynchronously and is reported separately by the queue worker.
+  if (!writeCountsMatch) {
+    return reconcileUnconfirmedSubmission("write_count_mismatch", {
+      applicationChanges: Number(applicationChangeCount ?? -1),
+      responseTaskChanges: Number(responseTaskChangeCount ?? -1),
+      emailQueueReportedChanges: emailQueueChangeCounts.reduce<number>(
+        (total, changes) => total + Number(changes ?? -1),
+        0,
+      ),
+    });
+  }
+  try {
+    // The initial batch leaves a durable marker. Clear it only after both the
+    // batch metadata and the committed rows agree, so Cron can recover even if
+    // this request loses its response or its recovery-task write also fails.
+    await env.REPORTS.prepare(
+      "UPDATE atlasez_member_applications SET intake_reconciliation_required=0,updated_at=? WHERE id=? AND intake_reconciliation_required=1",
+    )
+      .bind(new Date().toISOString(), applicationId)
+      .run();
+    const finalized = await inspectApplicationIntake(env, applicationId);
+    const finalMissing = missingApplicationIntakeComponents(
+      finalized,
+      emailStatements.length,
+    );
+    if (
+      !finalized.applicationExists ||
+      finalized.reconciliationRequired ||
+      finalMissing.length > 0
+    )
+      return reconcileUnconfirmedSubmission("write_count_mismatch", {
+        applicationChanges: Number(applicationChangeCount ?? -1),
+        responseTaskChanges: Number(responseTaskChangeCount ?? -1),
+        emailQueueReportedChanges: emailQueueCount,
+        persistedResponseTaskCount: finalized.responseTaskCount,
+        persistedApplicantConfirmationCount:
+          finalized.applicantConfirmationCount,
+        persistedOperatorNotificationCount:
+          finalized.operatorNotificationCount,
+        reconciliationMarker: finalized.reconciliationRequired ? 1 : 0,
+      });
+  } catch {
+    return reconcileUnconfirmedSubmission("write_count_mismatch", {
+      applicationChanges: Number(applicationChangeCount ?? -1),
+      responseTaskChanges: Number(responseTaskChangeCount ?? -1),
+      emailQueueReportedChanges: emailQueueCount,
+      persistenceFinalizeFailed: 1,
+    });
   }
   if (ctx) ctx.waitUntil(dispatchApplicationEmails(env));
   // 応募は個人情報を含むため、Discordへは一切転送しない。運営内運営が管理画面でのみ閲覧する。
   return json(
     {
       ok: true,
+      applicationCreated: true,
+      applicationState: "saved",
       turnstileRequired: Boolean(env.TURNSTILE_SECRET_KEY),
-      emailQueued: Boolean(
+      responseTaskCreated: true,
+      emailQueued: emailQueueCount > 0,
+      emailQueueCount,
+      emailDeliveryStatus: "queued",
+      emailProviderConfigured: Boolean(
         env.RESEND_API_KEY?.trim() && env.EMAIL_FROM?.trim(),
       ),
     },
@@ -15713,24 +14361,54 @@ async function applicantSummary(request: Request, env: Env): Promise<Response> {
   const profile = await getApplicantProfile(env, current.email);
   const basicProfileComplete = Boolean(applicantBasicProfileComplete(profile));
   const applicationRows = await env.REPORTS.prepare(
-    `SELECT a.project_slug, a.created_at, a.status, a.provisioning_status,
+    `SELECT a.id, a.project_slug, a.created_at, a.status, a.provisioning_status,
             a.provisioning_error, a.provisioned_at,
+            a.operator_notification_recipients_json,
+            a.intake_reconciliation_required,
             COALESCE(d.discord_user_id, '') AS discord_user_id,
-            COALESCE(d.oauth_connected_at, '') AS oauth_connected_at
+            COALESCE(d.oauth_connected_at, '') AS oauth_connected_at,
+            (SELECT COUNT(*) FROM editorial_tasks t
+              WHERE t.id='application-response:' || a.id
+                 OR (instr(t.details,'応募ID: ' || a.id)>0
+                     AND t.id!='application-recovery:' || a.id)) AS response_task_count,
+            (SELECT COUNT(*) FROM atlasez_application_email_deliveries e
+              WHERE e.application_id=a.id AND e.kind='applicant_confirmation') AS confirmation_email_count,
+            EXISTS(SELECT 1 FROM atlasez_application_email_deliveries e
+                    WHERE e.application_id=a.id
+                      AND e.kind IN ('applicant_confirmation','applicant_acceptance',
+                        'applicant_discord_success','applicant_discord_failure',
+                        'applicant_interview_invitation')
+                      AND e.status='failed') AS applicant_notification_failed,
+            (SELECT COUNT(*) FROM atlasez_application_email_deliveries e
+              WHERE e.application_id=a.id AND e.kind='operator_notification') AS operator_email_count,
+            (SELECT json_group_array(lower(trim(e.recipient_email)))
+               FROM atlasez_application_email_deliveries e
+              WHERE e.application_id=a.id AND e.kind='operator_notification') AS actual_operator_recipients_json,
+            EXISTS(SELECT 1 FROM editorial_tasks t
+                    WHERE t.id='application-recovery:' || a.id AND t.status!='done') AS recovery_task_open
      FROM atlasez_member_applications a
      LEFT JOIN atlasez_member_discord_accounts d ON lower(d.email)=lower(a.email)
      WHERE lower(a.email) = lower(?) ORDER BY a.created_at DESC LIMIT 20`,
   )
     .bind(current.email)
     .all<{
+      id: string;
       project_slug: string;
       created_at: string;
       status: string;
       provisioning_status: string;
       provisioning_error: string;
       provisioned_at: string | null;
+      operator_notification_recipients_json: string | null;
+      intake_reconciliation_required: number;
       discord_user_id: string;
       oauth_connected_at: string;
+      response_task_count: number;
+      confirmation_email_count: number;
+      applicant_notification_failed: number;
+      operator_email_count: number;
+      actual_operator_recipients_json: string;
+      recovery_task_open: number;
     }>();
   const applications = (applicationRows.results ?? []).map((application) => ({
     project:
@@ -15741,7 +14419,59 @@ async function applicantSummary(request: Request, env: Env): Promise<Response> {
     provisioningStatus: application.provisioning_status ?? "not_started",
     provisioningError: application.provisioning_error ?? "",
     provisionedAt: application.provisioned_at,
+    applicantNotificationFailed:
+      Number(application.applicant_notification_failed ?? 0) === 1,
     discordConnected: Boolean(application.oauth_connected_at || application.discord_user_id),
+    intakeVerificationStatus: (() => {
+      const hasRecipientSnapshot =
+        application.operator_notification_recipients_json !== null;
+      const expectedRecipients = parseApplicationOperatorRecipients(
+        application.operator_notification_recipients_json,
+      );
+      const actualRecipients = parseApplicationOperatorRecipients(
+        application.actual_operator_recipients_json,
+      ) ?? [];
+      // NULL is the legacy format without an intake-time recipient snapshot.
+      // A present but invalid snapshot is corrupted state, so fail closed and
+      // surface it for operator follow-up instead of treating it as legacy.
+      const operatorQueueMatches = !hasRecipientSnapshot ||
+        (expectedRecipients !== null &&
+          Number(application.operator_email_count ?? 0) === expectedRecipients.length &&
+          JSON.stringify([...actualRecipients].sort()) ===
+            JSON.stringify([...expectedRecipients].sort()));
+      const knownMissing =
+        Number(application.response_task_count ?? 0) !== 1 ||
+        Number(application.confirmation_email_count ?? 0) !== 1 ||
+        !operatorQueueMatches;
+      return knownMissing ||
+        Number(application.intake_reconciliation_required ?? 0) === 1 ||
+        Number(application.recovery_task_open ?? 0) === 1
+        ? "attention_required"
+        : expectedRecipients === null
+          ? "legacy_unverified"
+          : "verified";
+    })(),
+    intakeNeedsOperatorAttention:
+      Number(application.recovery_task_open ?? 0) === 1 ||
+      Number(application.intake_reconciliation_required ?? 0) === 1 ||
+      ((application.status === "new" || application.status === "reviewing") &&
+        (Number(application.response_task_count ?? 0) !== 1 ||
+          Number(application.confirmation_email_count ?? 0) !== 1 ||
+          (() => {
+            const hasRecipientSnapshot =
+              application.operator_notification_recipients_json !== null;
+            const expected = parseApplicationOperatorRecipients(
+              application.operator_notification_recipients_json,
+            );
+            const actual = parseApplicationOperatorRecipients(
+              application.actual_operator_recipients_json,
+            ) ?? [];
+            if (hasRecipientSnapshot && expected === null) return true;
+            return expected !== null &&
+              (Number(application.operator_email_count ?? 0) !== expected.length ||
+                JSON.stringify([...actual].sort()) !==
+                  JSON.stringify([...expected].sort()));
+          })())),
   }));
   const discord = await env.REPORTS.prepare(
     `SELECT discord_user_id,oauth_connected_at FROM atlasez_member_discord_accounts
@@ -24245,10 +22975,7 @@ async function completeGoogleLogin(
     // 不正なCookieはログイン失敗として扱う。
   }
   if (!code || !state || state !== savedState.state)
-    return json(
-      { error: "Googleログインの確認に失敗しました。もう一度お試しください。" },
-      400,
-    );
+    return redirectGoogleLoginFailure();
 
   let token: { access_token?: string };
   try {
@@ -24266,10 +22993,10 @@ async function completeGoogleLogin(
     if (!tokenResponse.ok) throw new Error("token exchange failed");
     token = (await tokenResponse.json()) as { access_token?: string };
   } catch {
-    return json({ error: "Googleログインを完了できませんでした。" }, 502);
+    return redirectGoogleLoginFailure();
   }
   if (!token.access_token)
-    return json({ error: "Googleログインを完了できませんでした。" }, 502);
+    return redirectGoogleLoginFailure();
 
   let user: { email?: string; email_verified?: boolean; sub?: string };
   try {
@@ -24280,20 +23007,18 @@ async function completeGoogleLogin(
     if (!userResponse.ok) throw new Error("userinfo failed");
     user = (await userResponse.json()) as typeof user;
   } catch {
-    return json({ error: "Googleアカウントを確認できませんでした。" }, 502);
+    return redirectGoogleLoginFailure();
   }
   const email = user.email?.trim().toLowerCase() ?? "";
   const subject = user.sub?.trim() ?? "";
   if (!user.email_verified || !subject || !EMAIL_PATTERN.test(email))
-    return json({ error: "確認済みのGoogleメールアドレスが必要です。" }, 403);
+    return redirectGoogleLoginFailure();
 
   let account: { id: string; canonical_email: string };
   try {
     account = await resolveGoogleAccount(env, subject, email);
-  } catch (error) {
-    if (error instanceof GoogleIdentityConflictError)
-      return json({ error: error.message }, 409);
-    return json({ error: "Atlasezアカウントを作成できませんでした。" }, 500);
+  } catch {
+    return redirectGoogleLoginFailure();
   }
 
   const sessionToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
@@ -24345,6 +23070,19 @@ async function completeGoogleLogin(
     cookie(GOOGLE_STATE_COOKIE, "", 0, "/auth/google"),
   );
   return new Response(null, { status: 302, headers });
+}
+
+function redirectGoogleLoginFailure(): Response {
+  const headers = new Headers({
+    location: "/admin/login-error/",
+    "cache-control": "no-store",
+    "referrer-policy": "no-referrer",
+  });
+  headers.append(
+    "set-cookie",
+    cookie(GOOGLE_STATE_COOKIE, "", 0, "/auth/google"),
+  );
+  return new Response(null, { status: 303, headers });
 }
 
 async function logoutAdmin(request: Request, env: Env): Promise<Response> {
@@ -24452,16 +23190,12 @@ async function adminAuthStatus(request: Request, env: Env): Promise<Response> {
   const canAccessAdmin = !isResponse(adminScope);
   const scope = canAccessAdmin ? adminScope : memberScope;
   const identity = scope.email;
-  const managerProjects = scope.isManager
-    ? await env.REPORTS.prepare(
-        "SELECT id FROM atlasez_projects ORDER BY id",
-      ).all<{ id: string }>()
-    : await env.REPORTS.prepare(
-        `SELECT project_id AS id FROM atlasez_project_memberships
-         WHERE email=? AND role='manager' ORDER BY project_id`,
-      )
-        .bind(identity)
-        .all<{ id: string }>();
+  // Keep navigation hints aligned with the same live lifecycle checks used by
+  // project APIs. A stale manager row must not make a paused/withdrawn project
+  // appear active in the portal after the same session loses that scope.
+  const managerProjects = (await accessibleOperationProjects(env, scope)).filter(
+    (project) => project.role === "manager",
+  );
   const token = cookieValue(request, ADMIN_SESSION_COOKIE);
   const googleSession = token
     ? await env.REPORTS.prepare(
@@ -24473,7 +23207,7 @@ async function adminAuthStatus(request: Request, env: Env): Promise<Response> {
   return json({
     email: identity,
     isManager: scope.isManager,
-    managerProjects: (managerProjects.results ?? []).map((row) => row.id),
+    managerProjects: managerProjects.map((project) => project.id),
     canAccessAdmin,
     canAccessScopedAdminPages:
       canAccessAdmin &&
@@ -25383,6 +24117,17 @@ async function handleAdminRequest(
   ctx?: WorkerExecutionContext,
 ): Promise<Response> {
   const url = new URL(request.url);
+  if (
+    isStagingDiscordDisabled(env) &&
+    isDiscordOperationPath(url.pathname)
+  )
+    return Response.json(
+      {
+        code: "staging_discord_disabled",
+        error: "この隔離stagingではDiscord連携を無効にしています。",
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
   const adminApiAccess = getAdminApiAccessPolicy(url.pathname, request.method);
   const adminApiAccessFailure = await enforceAdminApiAccessPolicy(
     request,
@@ -25908,11 +24653,9 @@ async function handleAdminRequest(
   );
   if (availabilityRuleMatch && request.method === "DELETE")
     return deleteAvailabilityRule(request, env, availabilityRuleMatch[1]);
-  const taskMatch = url.pathname.match(
-    /^\/api\/admin\/operations\/tasks\/([0-9a-f-]{36})$/i,
-  );
+  const taskMatch = url.pathname.match(adminOperationTaskPath);
   if (taskMatch && request.method === "PATCH")
-    return updateTask(request, env, taskMatch[1]);
+    return updateTask(request, env, decodeURIComponent(taskMatch[1]));
   const availabilityMatch = url.pathname.match(
     /^\/api\/admin\/operations\/events\/([0-9a-f-]{36})\/availability$/i,
   );
@@ -26332,7 +25075,10 @@ async function archiveStaleAuditLogs(env: Env, report?: ScheduledJobReporter) {
 export async function runPersonalDataRetention(
   db: D1Database,
   now = new Date(),
-  options: { clearArticleReportData?: boolean } = {},
+  options: {
+    clearArticleReportData?: boolean;
+    deleteTerminalApplications?: boolean;
+  } = {},
 ) {
   try {
     const counts = await purgeExpiredPersonalData(db, now, options);
@@ -26354,13 +25100,43 @@ export default {
       return await handleAdminRequest(request, env, ctx);
     } catch (error) {
       const requestId = crypto.randomUUID();
+      const pathname = new URL(request.url).pathname;
+      const routeClass = pathname.startsWith("/api/admin/")
+        ? "admin_api"
+        : pathname.startsWith("/api/applicant/")
+          ? "applicant_api"
+          : pathname.startsWith("/api/")
+            ? "api"
+            : pathname.startsWith("/admin/")
+              ? "admin_page"
+              : pathname.startsWith("/applicant/")
+                ? "applicant_page"
+                : pathname.startsWith("/onboarding/")
+                  ? "onboarding_page"
+                  : "other";
+      const errorClass =
+        error instanceof DOMException
+          ? "dom_exception"
+          : error instanceof TypeError
+            ? "type_error"
+            : error instanceof RangeError
+              ? "range_error"
+              : error instanceof SyntaxError
+                ? "syntax_error"
+                : error instanceof URIError
+                  ? "uri_error"
+                  : error instanceof Error
+                    ? "error"
+                    : error === null
+                      ? "null"
+                      : typeof error;
       console.error("admin worker request failed", {
         requestId,
         method: request.method,
-        pathname: new URL(request.url).pathname,
-        error,
+        routeClass,
+        errorClass,
       });
-      if (new URL(request.url).pathname.startsWith("/api/"))
+      if (pathname.startsWith("/api/"))
         return json(
           {
             error:
@@ -26383,6 +25159,40 @@ export default {
       "cron" in controller
         ? String((controller as { cron?: unknown }).cron ?? "")
         : "";
+    const stagingModeConfigured =
+      isAdminStagingOrigin(env.ADMIN_PUBLIC_ORIGIN) ||
+      env.ATLASEZ_STAGING_MODE !== undefined ||
+      env.ATLASEZ_STAGING_CRON_MODE !== undefined ||
+      env.ATLASEZ_STAGING_EMAIL_DELIVERY !== undefined ||
+      env.ATLASEZ_STAGING_EMAIL_ALLOWLIST !== undefined;
+    if (stagingModeConfigured) {
+      if (
+        env.ATLASEZ_STAGING_MODE !== "true" ||
+        cron !== "*/5 * * * *" ||
+        env.ATLASEZ_STAGING_CRON_MODE !== "intake-only"
+      ) {
+        console.error(
+          JSON.stringify({
+            event: "admin_staging_cron_skipped",
+            reason:
+              env.ATLASEZ_STAGING_MODE !== "true"
+                ? "staging_mode_invalid"
+                : cron === "*/5 * * * *"
+                  ? "unsafe_cron_mode"
+                  : "unsupported_schedule",
+          }),
+        );
+        return;
+      }
+      ctx.waitUntil(
+        (async () => {
+          await reconcilePendingApplicationIntakes(env);
+          if (env.ATLASEZ_STAGING_EMAIL_DELIVERY === "test-sink")
+            await dispatchApplicationEmails(env);
+        })(),
+      );
+      return;
+    }
     ctx.waitUntil(
       executeAdminScheduledJobs(env.REPORTS, cron, {
         "editorial-publication-progress": (report) => progressEditorialPublicationRuns(env, { report }),
@@ -26424,8 +25234,9 @@ export default {
           clearArticleReportData:
             env.ADMIN_PERSONAL_DATA_RETENTION_ENABLED?.trim().toLowerCase() ===
             "true",
+          deleteTerminalApplications: false,
         }),
-      }).then(async () => {
+      }, () => reconcilePendingApplicationIntakes(env)).then(async () => {
         if (cron === "*/5 * * * *") await dispatchScheduledHealthAlerts(env);
       }),
     );
