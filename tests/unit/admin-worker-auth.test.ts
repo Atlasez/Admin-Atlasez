@@ -3290,7 +3290,7 @@ describe("applicant stage server-side access", () => {
     const memberEnvironment = stageEnv("accepted", false, true);
     const notificationDb = new DatabaseSync(":memory:");
     notificationDb.exec(`
-      CREATE TABLE editorial_documents (id TEXT PRIMARY KEY, title TEXT, created_by TEXT);
+      CREATE TABLE editorial_documents (id TEXT PRIMARY KEY, title TEXT, created_by TEXT, deleted_at TEXT);
       CREATE TABLE editorial_comments (
         id TEXT PRIMARY KEY,
         body TEXT,
@@ -3305,7 +3305,7 @@ describe("applicant stage server-side access", () => {
         read_at TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (email, notification_id)
       );
-      INSERT INTO editorial_documents VALUES
+      INSERT INTO editorial_documents (id,title,created_by) VALUES
         ('document-old', 'Old article', 'applicant@example.com'),
         ('document-new', 'New article', 'applicant@example.com');
       INSERT INTO editorial_comments VALUES
@@ -3358,7 +3358,7 @@ describe("applicant stage server-side access", () => {
     const memberEnvironment = stageEnv("accepted", false, true);
     const notificationDb = new DatabaseSync(":memory:");
     notificationDb.exec(`
-      CREATE TABLE editorial_documents (id TEXT PRIMARY KEY, title TEXT, created_by TEXT);
+      CREATE TABLE editorial_documents (id TEXT PRIMARY KEY, title TEXT, created_by TEXT, deleted_at TEXT);
       CREATE TABLE editorial_comments (
         id TEXT PRIMARY KEY,
         body TEXT,
@@ -3373,7 +3373,7 @@ describe("applicant stage server-side access", () => {
         read_at TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (email, notification_id)
       );
-      INSERT INTO editorial_documents VALUES
+      INSERT INTO editorial_documents (id,title,created_by) VALUES
         ('document-before', 'Before article', 'applicant@example.com'),
         ('document-boundary', 'Boundary article', 'applicant@example.com'),
         ('document-after', 'After article', 'applicant@example.com');
@@ -3452,7 +3452,7 @@ describe("applicant stage server-side access", () => {
     const memberEnvironment = stageEnv("accepted", false, true);
     const notificationDb = new DatabaseSync(":memory:");
     notificationDb.exec(`
-      CREATE TABLE editorial_documents (id TEXT PRIMARY KEY, title TEXT, created_by TEXT);
+      CREATE TABLE editorial_documents (id TEXT PRIMARY KEY, title TEXT, created_by TEXT, deleted_at TEXT);
       CREATE TABLE editorial_comments (
         id TEXT PRIMARY KEY,
         body TEXT,
