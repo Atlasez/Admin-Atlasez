@@ -2,14 +2,14 @@
 
 更新日: 2026-11-28
 
-状態: コード候補 `e9b40d3f284577a0af652e9d180ed2fcc4d4594b` とdocs-only PR head `af2c2ae17aa14c6943e60414bcc31db738052259` のCIが成功。Cloudflare Workers Builds run `05248d8c-ee60-4afc-a813-807cf8fd7bd2` はBuild/Deploy success、staging Version表示 `f07af8b2` は100% Ready、公開 `build-info.json` のSHAも一致。production 0141とrelease staging D1の0144はbackup・隔離restore後に適用済み。独立reviewerは所有者指示で不要。Google login allowlist未設定のため、認証済みrole別受入、本番Worker deploy、実利用者受入は未完了。
+状態: コード候補 `e9b40d3f284577a0af652e9d180ed2fcc4d4594b`。staging Build source SHA `af2c2ae17aa14c6943e60414bcc31db738052259` から後のPR headはdocs-only子孫で、最新PR CIはmerge前に再確認する。Workers Builds run `05248d8c-ee60-4afc-a813-807cf8fd7bd2` はBuild/Deploy success、staging Version表示 `f07af8b2` は100% Ready、公開 `build-info.json` のSHAも一致。production 0141とrelease staging D1の0144はbackup・隔離restore後に適用済み。独立reviewerは所有者指示で不要。Google login allowlist未設定のため、認証済みrole別受入、本番Worker deploy、実利用者受入は未完了.
 
 ## 現在の確認済み進捗
 
 - [x] main基準のPR #649を作成し、応募・審査・role境界・staging手順・migration検証を統合。
 - [x] mainの記事アーカイブ承認フローを維持し、別系統の記事削除migrationと分離。
 - [x] PRとIssueにはsecret値、実利用者情報、Cloudflare比較ID値を記録しない。
-- [x] PR #649 head `af2c2ae17aa14c6943e60414bcc31db738052259` の全CI success。独立reviewerは所有者指示で不要。main mergeはstaging受入・運営GO待ち。
+- [x] staging Build source SHA `af2c2ae17aa14c6943e60414bcc31db738052259` のCI success。PR headはその後のdocs-only子孫で、最新PR CIをmerge前にread-backする。独立reviewerは所有者指示で不要。main mergeはstaging受入・運営GO待ち。
 - [x] Cloudflare staging WorkerのProduction branch `codex/staging-intake-649`、Build/Deploy SHA guard、run checkout SHAを候補SHAへ揃えた。Build/Deploy success、Version表示 `f07af8b2` / 100% Ready、staging `build-info.json` SHA一致を確認。
 - [x] staging専用Worker/D1 bindingをread-only確認。release staging D1と既存staging D1は異なり、isolation preflightが成功。production D1は接続していない。
 - [x] production比較値のBuild環境変数名をCloudflare Build設定でread-backし、値を表示・記録せずにpreflight成功を確認。

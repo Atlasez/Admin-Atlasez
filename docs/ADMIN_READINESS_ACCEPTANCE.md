@@ -5,7 +5,7 @@
 ## 現在の状況
 
 - mainには記事アーカイブの承認フローが含まれる。メンバー受入候補は別系統の記事削除フローと分離している。
-- main基準の受入候補はPR [#649](https://github.com/Atlasez/Admin-Atlasez/pull/649)。コード候補は `e9b40d3f284577a0af652e9d180ed2fcc4d4594b`、現在のdocs-only PR headは `af2c2ae17aa14c6943e60414bcc31db738052259`。最新PR CI run [46134265088](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46134265088) とCloudflare staging Buildはsuccess。独立reviewerは所有者指示で不要だが、synthetic accountによるrole別受入と運営GO前のためPRは未merge。
+- main基準の受入候補はPR [#649](https://github.com/Atlasez/Admin-Atlasez/pull/649)。コード候補は `e9b40d3f284577a0af652e9d180ed2fcc4d4594b`。Cloudflare staging Build後にdocs-only更新が追加され、現在のPR headはstaging Build SHAのdocs-only子孫。staging Build source SHA `af2c2ae17aa14c6943e60414bcc31db738052259` のCI run [46134265088](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46134265088) はsuccess。PRの最新head CIをmerge前に再確認する。独立reviewerは所有者指示で不要だが、synthetic accountによるrole別受入と運営GO前のためPRは未merge.
 - Cloudflare staging Worker `atlasez-admin-release-staging` はbranch `codex/staging-intake-649` のSHA `af2c2ae17aa14c6943e60414bcc31db738052259` からBuild/Deploy済み。Build run `05248d8c-ee60-4afc-a813-807cf8fd7bd2`、Version表示 `f07af8b2`、traffic 100% Ready。staging `build-info.json` のSHAも一致した。Build設定と失敗・修正経緯は[Build設定実施記録](ADMIN_STAGING_BUILD_SETTINGS_PLAN_2026-11-28.md)を参照。
 - stagingは専用Worker/D1 bindingで、本番D1を参照していない。email/Discord deliveryはdisabled、Cronなし、Google login allowlist未設定。未認証ポータルはGoogle OAuth account chooserへ遷移したが、synthetic account未指定のためアカウント選択はしていない。role別の認証済み受入は未完了。
 - 本番D1は0144適用済み。0141は2026-11-28に、適用直前のledger確認、所有者限定backup、隔離SQLite restoreと0141適用検証、D1所有者の明示承認を経て適用した。直後のread-backは0141/0144適用済み、未適用migrationなし。

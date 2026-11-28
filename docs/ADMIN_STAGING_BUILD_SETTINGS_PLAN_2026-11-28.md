@@ -10,7 +10,7 @@ Cloudflare staging Worker `atlasez-admin-release-staging` は、GitHub branch `c
 - Build command / Deploy command: success
 - staging Worker Version表示: `f07af8b2`、traffic 100%、Ready
 - staging origin `/build-info.json` のcommit: Build対象SHAと一致
-- PR #649 head CI: run [46134265088](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46134265088) success
+- staging source SHAのCI: run [46134265088](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46134265088) success。以降のPR head docs-only更新はmerge前に最新CIをread-backする
 - release staging専用D1 bindingをread-back確認。production D1は接続していない。
 - `ATLASEZ_STAGING_MODE=true`、email/Discord delivery disabled、Cronなし、Google login allowlist未設定をread-back確認。
 - production Worker、Route、D1、secretsは変更していない。
