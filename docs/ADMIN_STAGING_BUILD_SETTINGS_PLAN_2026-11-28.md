@@ -99,3 +99,23 @@ test "$(git rev-parse HEAD)" = 'f0f4ee753c305c59f4c5efcdced7d4d14d7821d3' && pri
 ```bash
 test "$(git rev-parse HEAD)" = 'f0f4ee753c305c59f4c5efcdced7d4d14d7821d3' && npm run verify:admin-staging-config:compat && npx wrangler deploy --config wrangler.admin.staging.compat.jsonc --keep-vars
 ```
+
+## 応募受付停止switch候補のstaging設定案
+
+staging対象のruntime candidateは `f02421d4cadacc0f8043950e276de368558d86d8`。最新PR headがこのSHAのdocs-only子孫になった場合も、stagingのBuild/Deploy SHA guardとstaging refはこのruntime candidateへ固定する。以下はこのSHAのGitHub CI success後に適用する**未適用のstaging専用設定案**である。Production branch、Build SHA guard、Deploy SHA guard、staging refをこの完全SHAへ揃える。Build/Deploy commandのほかの部分は現在値から変更しない。
+
+Build commandのSHA guard:
+
+```bash
+test "$(git rev-parse HEAD)" = 'f02421d4cadacc0f8043950e276de368558d86d8' && printf '%s' "$RELEASE_CONFIG_JSON" > wrangler.admin.staging.compat.jsonc && npm ci && npm run verify:admin-staging-config:compat && ATLASEZ_BUILD_TARGET=admin SITE_URL=https://atlasez-admin-release-staging.atlasez-adm.workers.dev BASE_PATH=/ npm run build && npm run verify:build-info
+```
+
+Deploy commandのSHA guard:
+
+```bash
+test "$(git rev-parse HEAD)" = 'f02421d4cadacc0f8043950e276de368558d86d8' && npm run verify:admin-staging-config:compat && npx wrangler deploy --config wrangler.admin.staging.compat.jsonc --keep-vars
+```
+
+影響範囲はstaging Worker `atlasez-admin-release-staging`と専用D1だけ。migration、Cron、メール、Discord、本番Worker/Route/D1/secretsは変更しない。Build/Deploy前にGitHub CI success、Build設定のAccount/Worker/repository、専用D1 binding、production比較用Build variablesをread-backする。失敗・SHA不一致時はDeployせず、原因とrunを記録する。既存のactive staging Versionはread-onlyで照合し、推測によるrollback/promoteは行わない。
+
+今回のruntime variable `ADMIN_APPLICATION_INTAKE_MODE`はWrangler設定へ追加しない。Dashboard runtime変数の `open → paused → open` を受入する際は、staging Workerだけに適用し、変数設定後のWorker Version、3書込経路の503、DB未更新、応募画面案内を確認する。
