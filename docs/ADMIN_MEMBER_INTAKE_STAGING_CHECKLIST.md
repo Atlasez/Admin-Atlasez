@@ -24,6 +24,7 @@
 - [x] 既存候補のCI successと `99b8139d` からのdocs-only差分を確認し、前回Build/Deploy SHA guardとstaging refを合わせて配信した。
 - [x] Build設定計画とPR head CI successを確認し、Build/Deploy SHA guardを `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` に更新した。staging専用refを同SHAへfast-forwardしてWorkers Buildを起動し、run `78471160-5e0e-4b93-8f9f-8a7fc111daaa` のcheckout SHA/全段階successをread-backした。
 - [ ] test-user allowlistを所有者が承認したsynthetic Google accountに限定し、secret名をread-backする。許可アカウント未設定のままOAuth callback/role試験を行わない。
+- [ ] role別OAuth受入には、同じ人の別名ではなく、別々のGoogle identityを持つstaging専用synthetic accountを2件使う。member役とAtlas project manager/reviewer役を分け、両方の正確なemailが明示承認された場合だけstaging allowlistへ追加する。account情報はこのrepositoryへ記録しない。
 - [ ] Build設定、OAuth callback、cookie domain、CORS、redirect allowlistをstaging専用でread-back確認する。
 - [x] Build run/checkout SHA、公開build-info、Worker名・Version・100%配信、D1 bindingをread-onlyで再取得。staging D1 migration ledgerもread-back済み。想定SHA/workerとの不一致なし。
 - [x] staging D1の0141/0144適用状態をread-back照合。0144はbackup/隔離restore後に適用済み。
@@ -47,6 +48,8 @@
 ## 3. role別の実操作
 
 synthetic accountだけを使い、以下をstagingで実行する。
+
+role scopeの受入スクリプトは2つの別identityで実行する。member役は応募一覧・他project情報を閲覧できず、manager/reviewer役は割り当てられたproject内だけを閲覧できることをそれぞれ確認する。どちらかのidentityまたは権限設定が不足している場合は、未実施のまま記録して実利用者アカウントへ置き換えない。
 
 - [ ] 未ログイン: 保護ページ/API拒否と応募公開部分の利用可否を確認する。OAuth account chooser表示だけでは認証ガード受入を完了扱いしない。
 - [ ] 応募者: 入力、確認、再ログイン、応募状態表示、誤入力と二重送信を確認する。
