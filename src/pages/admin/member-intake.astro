@@ -16,7 +16,7 @@ const project = projects.find(([slug]) => slug === requested);
 <AdminLayout title="応募者・メンバー対応" description="連絡状況、担当者、初回タスク、次回確認予定を記録します">
   <main class="intake" data-member-intake data-project={project?.[0] ?? ""}>
     <header>
-      <div><p>メンバー運営</p><h1>応募者・メンバー対応</h1><span>応募者・メンバーへの連絡状況、担当者、相談先、初回タスク、次回確認予定を記録します。連絡や招待はここから送信されません。</span></div>
+      <div><h1>応募者・メンバー対応</h1><span>応募者・メンバーへの連絡状況、担当者、相談先、初回タスク、次回確認予定を記録します。連絡や招待はここから送信されません。</span></div>
       <a data-applications-link href={project ? `/admin/applications/?project=${encodeURIComponent(project[0])}` : "/admin/applications/"}>応募管理へ戻る →</a>
     </header>
     <section class="project-picker" aria-label="プロジェクト選択">
