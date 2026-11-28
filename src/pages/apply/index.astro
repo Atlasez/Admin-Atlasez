@@ -22,6 +22,8 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
       </div>
       <h1 data-project-title>運営参加応募</h1>
       <p class="intro" data-project-intro>入力内容は運営参加の選考・連絡、承認後の担当設定にのみ使います。応募内容は運営内運営のみが閲覧します。</p>
+      <p class="response-time">運営担当者から通常3営業日以内に初回返信します。未処理の応募が10件に達するか、最も古い応募から3営業日が経過した場合は、受付を一時停止します。</p>
+      <p class="form-loading" data-intake-paused role="status" aria-live="polite" hidden></p>
       <nav class="form-directory" aria-label="応募フォームの種類" data-form-directory hidden>
         <a href="/apply/atlas/" data-form-link="atlas">学習サイト</a>
         <a href="/apply/thinking-cafe/" data-form-link="thinking-cafe">考えるカフェ</a>
@@ -124,6 +126,18 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
     const authenticatedEmail = form.querySelector<HTMLInputElement>("[data-auth-email]");
     const userStatusPromise = fetch("/api/user/status", { credentials: "same-origin", cache: "no-store" })
       .then(async (response) => ({ response, data: await response.json() as { email?: string; stage?: string; applicationStatus?: string | null; applicationProjects?: string[] } }));
+    let intakeStatus = { open: false, available: false };
+    const applicationIntakePausedMessage = (languageCode: string) =>
+      languageCode === "en"
+        ? "Application intake is temporarily paused. Please check back after the application process resumes."
+        : "応募の受付を一時停止しています。受付再開後にあらためてお申し込みください。";
+    const intakeStatusPromise = fetch("/api/public/application-intake-status", { cache: "no-store" })
+      .then(async (response) => ({ response, data: await response.json() as { open?: boolean } }))
+      .then(({ response, data }) => {
+        intakeStatus = { open: response.ok && data.open === true, available: response.ok };
+        return intakeStatus;
+      })
+      .catch(() => intakeStatus);
     void userStatusPromise
       .then(({ response, data }) => {
         if (response.ok && authenticatedEmail && data.email) authenticatedEmail.value = data.email;
@@ -159,6 +173,7 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
     const formDirectoryEmpty = page.querySelector<HTMLElement>("[data-form-directory-empty]")!;
     const formLinks = [...page.querySelectorAll<HTMLAnchorElement>("[data-form-link]")];
     const formLoading = form.querySelector<HTMLElement>("[data-form-loading]")!;
+    const intakePausedNotice = page.querySelector<HTMLElement>("[data-intake-paused]")!;
     const projectForms: Record<string, { title: string; intro: string; article: string; interests: string; message: string; motivation: string; roles: string; articlePlaceholder: string }> = {
       atlas: { title: "学習サイト「アトラス」運営応募", intro: "学習サイト「アトラス」の記事執筆・査読・翻訳・運営に関する応募フォームです。", article: "書いてみたい記事・テーマ", interests: "関心のあるプロジェクト・できること", message: "参加したい理由・自己紹介", motivation: "参加理由（複数ある場合はすべて）", roles: "希望担当（複数ある場合はすべて）", articlePlaceholder: "例：群論の基本概念、英語学習の語源マップ…" },
       "thinking-cafe": { title: "考えるカフェ参加・運営応募", intro: "考えるカフェで扱いたいテーマや、対話の場づくりへの関心をお聞きします。", article: "参加してみたいテーマ", interests: "興味のある対話分野・できること", message: "参加してみたい理由・自己紹介", motivation: "", roles: "", articlePlaceholder: "考えてみたい問いや話し合いたいテーマ" },
@@ -299,7 +314,7 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
       profile.birth_date,
       profile.residence_city,
     ].some((value) => !value?.trim());
-    const showFormMode = (profile: ApplicationProfile | null, stage: string, applicationProjects: string[] = [], allowBasicFallback = false) => {
+    const showFormMode = (profile: ApplicationProfile | null, stage: string, applicationProjects: string[] = [], allowBasicFallback = false, intakeOpen = true, intakeStatusAvailable = true) => {
       const existingMember = ["ONBOARDING", "TUTORIAL", "MEMBER"].includes(stage);
       const markReady = () => {
         formLoading.hidden = true;
@@ -307,6 +322,25 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
         form.dataset.formReady = "true";
         form.setAttribute("aria-busy", "false");
       };
+      if (!intakeOpen) {
+        formLoading.hidden = true;
+        intakePausedNotice.hidden = false;
+        intakePausedNotice.textContent = intakeStatusAvailable
+          ? applicationIntakePausedMessage(language.value)
+          : "受付状況を確認できません。時間をおいてから再度アクセスしてください。";
+        formDirectory.hidden = true;
+        basicFieldset.hidden = true;
+        projectFieldset.hidden = true;
+        memberProjectNote.hidden = true;
+        basicNext.hidden = true;
+        submitButton.hidden = true;
+        setFieldsetDisabled(basicFieldset, true);
+        setFieldsetDisabled(projectFieldset, true);
+        submitButton.disabled = true;
+        refreshRequiredMarkers();
+        markReady();
+        return;
+      }
       const showBasicMode = (message = "") => {
         projectTitle.textContent = "運営参加応募 / 基本情報";
         projectIntro.textContent = "まず基本情報を登録し、その後に応募するプロジェクト固有の項目を入力します。基本情報は次回以降の応募でも再利用できます。";
@@ -522,7 +556,7 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
     copy.ja.privacyNotice = copy.ja.privacyNotice.replace(/詳しくは$/, "");
     copy.en.privacyNotice = copy.en.privacyNotice.replace(/Please see the $/, "");
     language.addEventListener("change", updateLanguage); updateLanguage();
-    void Promise.all([userStatusPromise, profilePromise]).then(([statusResult, profileResult]) => {
+    void Promise.all([userStatusPromise, profilePromise, intakeStatusPromise]).then(([statusResult, profileResult, intakeResult]) => {
       const stage = statusResult.response.ok ? (statusResult.data.stage ?? "NEW_USER") : "NEW_USER";
       const applicationProjects = statusResult.response.ok ? (statusResult.data.applicationProjects ?? []) : [];
       const unavailable = new Set(applicationProjects);
@@ -531,10 +565,10 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
       formDirectoryEmpty.hidden = availableCount !== 0;
       const profile = profileResult.response.ok ? (profileResult.data.profile ?? null) : null;
       if (profileResult.response.ok && profile) fillProfile(profile);
-      showFormMode(profile, stage, applicationProjects);
+      showFormMode(profile, stage, applicationProjects, false, intakeResult.open, intakeResult.available);
       if (profile && !directProjectScreen) profileMessage.value = "保存済みの基本情報を読み込みました。変更してから次へ進むこともできます。";
     }).catch(() => {
-      showFormMode(null, "NEW_USER", [], true);
+      showFormMode(null, "NEW_USER", [], true, intakeStatus.open, intakeStatus.available);
       profileMessage.value = "基本情報を確認できませんでした。入力内容を確認して、もう一度お試しください。";
     });
     const saveBasicProfileAndContinue = async () => {

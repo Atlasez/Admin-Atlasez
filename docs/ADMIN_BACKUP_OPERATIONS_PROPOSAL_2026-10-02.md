@@ -2,6 +2,14 @@
 
 Issue [#407](https://github.com/Atlasez/Admin-Atlesez/issues/407)と[`ADMIN_D1_RECOVERY.md`](ADMIN_D1_RECOVERY.md)の既存記録を読み直し、P0-8の証拠と未整備項目を分けた提案資料。Cloudflare設定、D1、R2、Workflowは変更していない。
 
+## 2026-11-29 所有者判断
+
+- 日次exportを専用R2 bucketへ保存し、35日保持する構成が承認された。保存先は本番と同じCloudflare Accountとし、R2管理鍵によるAES-256保存時暗号化/TLSを使う。別Account侵害・喪失から独立する案ではない。
+- Cloudflare R2 Standardの10 GB-month無料枠はAccount内利用量と合算され、超過分は現行料金の対象となる。Account内の他R2利用量と費用上限は未確認（[Cloudflare R2 pricing](https://developers.cloudflare.com/r2/pricing/)）。
+- GitHub Actions Workflowと検証スクリプトはPR branchで準備中。現時点ではR2 bucket/lifecycle、secrets、schedule、成功export、通知受信、隔離restoreのいずれも確認していない。Workflowは専用bucketの`daily/` prefixに35日expiration ruleが実際に適用されていることを一時markerの`x-amz-expiration`で検査し、不一致なら本番export前に停止する。
+- Cloudflare公式の[D1 export API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/)はD1 Write permissionを要求し、export完了までの間にDBがqueryを処理できなくなる場合がある。所有者はD1 Write token発行と、この一時的な影響をまだ承認していないため、本番exportは無効のままにする。
+- 運営通知先・担当者/代理・RPO/RTO・隔離restore目標は別途未決定。monitor workflowが失敗するだけでは、運営者がその通知を受信できる証拠にはならない。
+
 ## 現在確認できる証拠
 
 - 2026-10-02に確保したexport: 10,872,416 bytes、SHA256 `71d00dd248479d2088d253486e704e536b9b48d755fbca1d44cd400b797f1ed8`。
@@ -19,16 +27,16 @@ Cloudflare D1 Time Travelは短時間の誤操作復旧に使う。利用可能�
 
 ## 運用のたたき台
 
-| 項目      | 提案値                                                                                                      | 現状           |
-| --------- | ----------------------------------------------------------------------------------------------------------- | -------------- |
-| 実行      | UTCで1日1回。非本番でexport時間とquery影響を測定してから決定                                                | 未設定         |
-| 保存先    | Cloudflare R2専用bucket/prefix。別Accountまたは独立した保管先も災害モデルと個人情報条件で比較               | 未決定         |
-| 検証      | export状態/error、signed URL取得、R2 object size、SHA-256、bookmark、対象D1 ID、UTC時刻を成功manifestへ記録 | 未設定         |
-| 通知      | job失敗または最終成功から26時間超で運営ownerと代理へ通知                                                    | 未設定         |
-| retention | 35日保持を初期案とする。Lockを使う場合も35日にそろえ、削除境界を個人情報方針と合わせる                      | 未決定         |
-| owner     | 運営代表とDB/Cloudflare担当を実名で指定                                                                     | 未指定         |
-| 復元演習  | 月1回、isolated non-production D1へrestoreし、integrity/FK/API smokeを確認                                  | 未設定         |
-| RPO / RTO | RPO 24h、RTO 4hを検討目標とする                                                                             | 合意・実績なし |
+| 項目      | 提案値                                                                                                      | 現状                 |
+| --------- | ----------------------------------------------------------------------------------------------------------- | -------------------- |
+| 実行      | UTCで1日1回。非本番でexport時間とquery影響を測定してから決定                                                | 未設定               |
+| 保存先    | Cloudflare R2専用bucket/prefix。別Accountまたは独立した保管先も災害モデルと個人情報条件で比較               | 未決定               |
+| 検証      | export状態/error、signed URL取得、R2 object size、SHA-256、bookmark、対象D1 ID、UTC時刻を成功manifestへ記録 | 未設定               |
+| 通知      | job失敗または最終成功から26時間超で運営ownerと代理へ通知                                                    | 未設定               |
+| retention | 承認済み。R2 lifecycleで`daily/`を35日後に削除する。期限時刻から通常24時間以内の削除となる                  | Cloudflare設定未実施 |
+| owner     | 運営代表とDB/Cloudflare担当を実名で指定                                                                     | 未指定               |
+| 復元演習  | 月1回、isolated non-production D1へrestoreし、integrity/FK/API smokeを確認                                  | 未設定               |
+| RPO / RTO | RPO 24h、RTO 4hを検討目標とする                                                                             | 合意・実績なし       |
 
 Cloudflare公式[R2 lifecycle](https://developers.cloudflare.com/r2/buckets/object-lifecycles/)と[Bucket Locks](https://developers.cloudflare.com/r2/buckets/bucket-locks/)は保存期限・最低保持の実装候補。LockはLifecycleより優先されるため、35日Lockと90日Lifecycleを同時に設定すると実際には90日まで削除されない。35日保持を候補とする場合は両方の期間を35日にそろえる。90日を選ぶ場合は、個人情報保持方針・費用・削除境界の合意後に別案として記録する。同一Cloudflare Account上のR2をAccount喪失・侵害から独立したbackupとみなせるかはこの資料から確認できないため、災害対策の要件を決めて保存先を選ぶ。
 

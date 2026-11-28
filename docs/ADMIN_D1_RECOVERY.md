@@ -1,8 +1,17 @@
 # ADMIN D1のバックアップと復元検証
 
-本番はAccount `812021e62fa20465950b61be55dfe064`、D1 `atlasez-reports` / `d5112a62-7ed6-49c8-b6a2-18ee2dbab678`。以下のexportとTime Travel情報取得は読み取り操作で、本番のrestore・migrationは実行しない。
+本番はAccount `812021e62fa20465950b61be55dfe064`、D1 `atlasez-reports` / `d5112a62-7ed6-49c8-b6a2-18ee2dbab678`。D1 exportはDB内容を変更しないが、Cloudflareの[Export API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/)は大きなDBの処理中にqueryを受け付けられなくなる場合がある。Export APIにはD1 Write権限が必要で、restore・migrationとは別の本番影響操作として扱う。
 
 **影響範囲:** 公開Worker `atlasez01` と運営Worker `atlasez-admin` は同じ本番D1を使う。Time Travel restoreは片方のアプリだけを戻す操作ではなく、公開応募・記事報告・ADMINの全データをDB全体で巻き戻す。Cloudflareの[Time Travel仕様](https://developers.cloudflare.com/d1/reference/time-travel/)によればrestoreは全データを上書きし、実行中query/transactionをcancelする。現在の本番DB `version` とTime Travel利用可能期間を、復旧時に読み取り確認する。Time Travelの最大保持はWorkers Paidで30日、Freeで7日だが、対象DBの実際のversion/planを確認するまで本番の保持範囲として決め打ちしない。
+
+## 2026-11-29 運用決定と実装状況
+
+- 所有者は日次export、専用R2 bucket `atlasez-admin-d1-backups`、35日保持を承認した。保存先は同じCloudflare Accountで、Cloudflare管理AES-256の保存時暗号化とTLSを使う。別Account災害から独立するbackupではない。
+- GitHub PR用branchに、main限定のWorkflow、固定本番Account/DB ID、SQL integrity/FK検証、R2書込み後のSHA-256/size read-back、成功manifest、26時間超の古いbackup検知を実装中。PRがmainへ入るまでは未運用。
+- R2 `daily/` prefixに、Lifecycle rule ID `atlasez-admin-d1-backups-35-day-expiration`、expiration 35 daysをCloudflare側で設定する必要がある。R2 preflightはD1へ触れず一時markerを同prefixに書き、`HeadObject`の`x-amz-expiration`がこのrule IDと35日の期間を示さない限り失敗する。Cloudflareは期限時刻から通常24時間以内に削除すると説明しているため、保存期間は35日+最大約24時間となり得る（[R2 object lifecycle](https://developers.cloudflare.com/r2/buckets/object-lifecycles/)）。Lifecycle設定はbucket-level操作なので、GitHub Actionsへ管理用R2書込権限は与えない。
+- Workflow、R2 bucket/lifecycle、R2資格情報、Cloudflare D1 Write API token、GitHub Environmentはまだ本番に作成・設定していない。scheduleと手動exportは既定で無効。本番export/restore、migration、D1設定変更は実施していない。
+- 26時間超チェックはGitHub Actions runを失敗させる設計で、運営者への通知先・通知受信は未設定/未実証。担当者と代理、RPO/RTO、隔離restore演習も未確定。
+- Exportを有効化する前に、所有者はD1 Write権限のToken発行と、export中に両サイトのqueryが一時停止する可能性を個別に承認する。既存のCloudflare read-only deployment tokenを流用しない。R2 bucket/lifecycle・資格情報・Environmentを用意して、非exportのR2 preflightが通るまでD1 tokenをActions secretへ登録しない。
 
 ## 現行確認（2026-10-12）
 
@@ -13,7 +22,7 @@
 - 2026-09-30/10-02のexport検証は履歴証拠であり、0130適用後を含む最新バックアップの存在や取得時刻を示さない。
 - 公開側 `wrangler.jsonc` とADMIN側 `wrangler.admin.jsonc` のD1 bindingが同じdatabase IDを参照することを確認した。D1復元の停止範囲には両Workerと両サイトの利用者を含める。
 
-現行の担当者、代理、暗号化された保管先、保持/削除、失敗通知、RPO/RTO、隔離復元演習は未確認または未決である。下記の数値は運営決定済みのSLOとして扱わない。
+担当者、代理、通知先、隔離復元演習は未決であり、RPO/RTOは未承認・未実測である。R2の日次頻度と35日保持のみ所有者が案として承認しているが、実際の保存先設定や成功は未確認である。下記の過去の演習数値は現在のSLO/backupとして扱わない。
 
 ADMINの個人情報期限処理が稼働中D1の列を空化またはNULL化しても、過去のD1 Time Travel snapshotや取得済みexport内の値は自動で書き換わらない。バックアップコピーへのアクセス制限・保持期間・期限切れ削除は、稼働中D1上の保持処理とは別に決定し、公開説明にも区別を記載する。対象アカウントのTime Travel保持状態、過去snapshotの実削除時期、外部backupの有無は別途確認が必要であり、現在の確認結果から推定しない。
 

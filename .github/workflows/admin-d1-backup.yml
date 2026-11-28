@@ -1,0 +1,102 @@
+name: ADMIN D1 encrypted backup
+
+on:
+  schedule:
+    - cron: "0 18 * * *"
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Operation to run against the configured private backup bucket
+        type: choice
+        required: true
+        default: preflight
+        options:
+          - preflight
+          - backup
+          - monitor
+      confirm_production_export:
+        description: Confirm a live export of the production D1 database
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: admin-d1-backup-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    if: ${{ github.repository == 'Atlasez/Admin-Atlasez' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: admin-d1-backup
+    env:
+      BACKUP_OPERATION: ${{ github.event_name == 'schedule' && (github.event.schedule == '0 18 * * *' && 'backup' || 'monitor') || inputs.operation }}
+      ADMIN_D1_BACKUP_ENABLED: ${{ vars.ADMIN_D1_BACKUP_ENABLED }}
+      ADMIN_D1_BACKUP_CONFIRM_PRODUCTION_EXPORT: ${{ github.event_name == 'schedule' && vars.ADMIN_D1_BACKUP_ENABLED == 'true' || inputs.confirm_production_export }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify this is the expected production target
+        run: npm run verify:deploy-config
+
+      - name: Keep production exports disabled until owner setup is complete
+        if: ${{ github.event_name == 'schedule' && vars.ADMIN_D1_BACKUP_ENABLED != 'true' }}
+        run: echo "ADMIN D1 backup remains disabled; no production export was requested."
+
+      - name: Verify private R2 bucket and retention without reading D1
+        if: ${{ env.BACKUP_OPERATION == 'preflight' }}
+        env:
+          ADMIN_D1_BACKUP_R2_ACCESS_KEY_ID: ${{ secrets.ADMIN_D1_BACKUP_R2_ACCESS_KEY_ID }}
+          ADMIN_D1_BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.ADMIN_D1_BACKUP_R2_SECRET_ACCESS_KEY }}
+        run: node scripts/preflight-admin-d1-backup.mjs
+
+      - name: Verify R2 bucket retention before starting a production export
+        if: ${{ env.BACKUP_OPERATION == 'backup' && vars.ADMIN_D1_BACKUP_ENABLED == 'true' && (github.event_name == 'schedule' || inputs.confirm_production_export == true) }}
+        env:
+          ADMIN_D1_BACKUP_R2_ACCESS_KEY_ID: ${{ secrets.ADMIN_D1_BACKUP_R2_ACCESS_KEY_ID }}
+          ADMIN_D1_BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.ADMIN_D1_BACKUP_R2_SECRET_ACCESS_KEY }}
+        run: node scripts/preflight-admin-d1-backup.mjs
+
+      - name: Check latest backup and object integrity metadata
+        if: ${{ (env.BACKUP_OPERATION == 'monitor' || (github.event_name == 'schedule' && github.event.schedule == '0 20 * * *')) && vars.ADMIN_D1_BACKUP_ENABLED == 'true' }}
+        env:
+          ADMIN_D1_BACKUP_R2_ACCESS_KEY_ID: ${{ secrets.ADMIN_D1_BACKUP_R2_ACCESS_KEY_ID }}
+          ADMIN_D1_BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.ADMIN_D1_BACKUP_R2_SECRET_ACCESS_KEY }}
+        run: node scripts/check-admin-d1-backup.mjs
+
+      - name: Export, validate, and upload the production D1 database
+        if: ${{ env.BACKUP_OPERATION == 'backup' && vars.ADMIN_D1_BACKUP_ENABLED == 'true' && (github.event_name == 'schedule' || inputs.confirm_production_export == true) }}
+        env:
+          ADMIN_D1_BACKUP_API_TOKEN: ${{ secrets.ADMIN_D1_BACKUP_API_TOKEN }}
+          ADMIN_D1_BACKUP_R2_ACCESS_KEY_ID: ${{ secrets.ADMIN_D1_BACKUP_R2_ACCESS_KEY_ID }}
+          ADMIN_D1_BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.ADMIN_D1_BACKUP_R2_SECRET_ACCESS_KEY }}
+        run: node scripts/run-admin-d1-backup.mjs
+
+      - name: Reject an unconfirmed manual production export
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'backup' && inputs.confirm_production_export != true }}
+        run: |
+          echo "A manual production export requires confirm_production_export=true." >&2
+          exit 1
+
+      - name: Reject a manual backup while the owner enable switch is off
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'backup' && vars.ADMIN_D1_BACKUP_ENABLED != 'true' }}
+        run: |
+          echo "Set the repository variable ADMIN_D1_BACKUP_ENABLED only after the owner-approved setup is complete." >&2
+          exit 1

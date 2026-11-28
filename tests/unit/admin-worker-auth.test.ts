@@ -2249,7 +2249,17 @@ describe("applicant stage server-side access", () => {
           };
           return statement;
         },
-        batch: async () => [],
+        batch: async (statements: Statement[]) => {
+          for (const statement of statements) {
+            if (
+              statement.query.includes(
+                "INSERT INTO atlasez_member_applications",
+              )
+            )
+              inserts.push(statement.boundValues);
+          }
+          return statements.map(() => ({ meta: { changes: 1 } }));
+        },
       },
       ASSETS: { fetch: async () => new Response(null, { status: 404 }) },
     };
