@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { mockOpenApplicationIntake } from "./support/application-intake";
 
 const applicantProfile = {
   email: "applicant@example.test",
@@ -47,6 +48,7 @@ async function mockAdminShell(page: Page) {
 test("応募フォームは初期化完了まで必須入力の検証・送信を受け付けない", async ({
   page,
 }) => {
+  await mockOpenApplicationIntake(page);
   let releaseApiResponses!: () => void;
   const apiResponsesReleased = new Promise<void>((resolve) => {
     releaseApiResponses = resolve;
@@ -105,6 +107,7 @@ test("応募フォームは初期化完了まで必須入力の検証・送信�
 test("所属機関候補を上下キーとEnterで選び、Escapeで閉じられる", async ({
   page,
 }) => {
+  await mockOpenApplicationIntake(page);
   await page.route("**/api/user/status", (route) =>
     route.fulfill({
       json: {

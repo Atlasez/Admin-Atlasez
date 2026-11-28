@@ -567,8 +567,13 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
       if (profileResult.response.ok && profile) fillProfile(profile);
       showFormMode(profile, stage, applicationProjects, false, intakeResult.open, intakeResult.available);
       if (profile && !directProjectScreen) profileMessage.value = "保存済みの基本情報を読み込みました。変更してから次へ進むこともできます。";
-    }).catch(() => {
-      showFormMode(null, "NEW_USER", [], true, intakeStatus.open, intakeStatus.available);
+    }).catch(async () => {
+      // Promise.all may reject before the independent intake request finishes.
+      // Wait for it so an auth/profile failure cannot turn an open intake into
+      // a misleading "status unavailable" state; a failed intake request still
+      // resolves to the fail-closed default.
+      const fallbackIntakeStatus = await intakeStatusPromise;
+      showFormMode(null, "NEW_USER", [], true, fallbackIntakeStatus.open, fallbackIntakeStatus.available);
       profileMessage.value = "基本情報を確認できませんでした。入力内容を確認して、もう一度お試しください。";
     });
     const saveBasicProfileAndContinue = async () => {
