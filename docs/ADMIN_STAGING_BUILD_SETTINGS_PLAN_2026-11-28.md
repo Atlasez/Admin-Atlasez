@@ -2,7 +2,7 @@
 
 更新日: 2026-11-28
 
-状態: 計画のみ。Cloudflare設定、Worker、Route、secretは変更していない。Cloudflare設定変更のレビューと、OAuth受入用synthetic accountの所有者承認が完了するまで適用しない。
+状態: Cloudflare設定変更は未実施。候補branchのみ作成済み。Worker、Route、secretは変更していない。Cloudflare設定変更のレビューと、OAuth受入用synthetic accountの所有者承認が完了するまで適用しない。
 
 ## 対象と候補
 
@@ -10,7 +10,7 @@
 - GitHub repository: `Atlasez/Admin-Atlasez`
 - 現在のProduction branch: `codex/release-staging-647`
 - 現在のBuild/Deploy SHA guard: `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718`
-- 候補branch: `codex/staging-intake-649`。現在のPR #649 head `99b8139dd9585840fc4f555789de1a5a4bc75217` を指す専用refとして作成し、候補CIが成功した後は移動しない。
+- 候補branch: `codex/staging-intake-649`。作成済みで、candidate SHA `99b8139dd9585840fc4f555789de1a5a4bc75217` を指しています。同SHAのCI run [46130190787](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46130190787) は成功済みです。Cloudflare staging Workerはまだ旧branchに接続されており、このrefを配信していません。
 - 候補SHA: `99b8139dd9585840fc4f555789de1a5a4bc75217`。コード候補 `e9b40d3f284577a0af652e9d180ed2fcc4d4594b` からの差分は受入・復旧記録だけ。
 - binding、Runtime vars/secrets、Workers.dev origin、email/Discord無効、Cronなし、staging D1は現状のままにする。D1 0141/0144は適用・read-back済み。
 
