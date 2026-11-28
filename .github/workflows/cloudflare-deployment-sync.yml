@@ -45,6 +45,17 @@ jobs:
           BASE_UPDATED: ${{ steps.sync.outputs.base_updated }}
         run: bash scripts/cloudflare-deployment-sync-branch.sh persist
 
+      - name: Verify GH_SYNC_TOKEN can read pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GH_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "GH_SYNC_TOKEN is not configured" >&2
+            exit 1
+          fi
+          gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 1 --json number >/dev/null
+
       - name: Create or update synchronization PR
         if: steps.update.outputs.updated == 'true'
         env:
