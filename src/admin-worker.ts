@@ -2685,6 +2685,7 @@ const WORKFLOW_TRANSITIONS: WorkflowTransition[] = [
   { entityType: "document", from: "draft", to: "in-review", label: "査読を依頼", requiredRole: "reviewer" },
   { entityType: "document", from: "in-review", to: "approved", label: "承認", requiredRole: "reviewer" },
   { entityType: "application", from: "new", to: "reviewing", label: "確認を開始", requiredRole: "manager" },
+  { entityType: "application", from: "new", to: "accepted", label: "直接受け入れ", requiredRole: "manager" },
   { entityType: "application", from: "reviewing", to: "accepted", label: "受け入れ", requiredRole: "manager" },
   { entityType: "application", from: "reviewing", to: "rejected", label: "見送り", requiredRole: "manager" },
   { entityType: "approval", from: "pending", to: "approved", label: "承認", requiredRole: "reviewer" },
@@ -13772,6 +13773,19 @@ async function updateApplication(
       {
         error:
           "登録済み運営者との不整合を防ぐため、受け入れ済み応募の状態は戻せません。権限変更は権限管理から行ってください。",
+      },
+      409,
+    );
+  if (
+    !workflowTransitionsFor("application", application.status).some(
+      (transition) => transition.to === status,
+    )
+  )
+    return json(
+      {
+        error: "許可されていない応募状態の変更です。最新の状態を確認してください。",
+        code: "INVALID_TRANSITION",
+        currentState: application.status,
       },
       409,
     );

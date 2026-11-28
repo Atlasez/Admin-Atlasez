@@ -3096,6 +3096,115 @@ it("仮応募者の応募から審査受入・初回オンボーディング・�
   expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
 });
 
+it("応募状態の直接更新APIも正規の状態遷移だけを許可する", async () => {
+  const { db, request } = environment();
+  const now = new Date().toISOString();
+  const cases = [
+    {
+      id: "11111111-1111-4111-8111-111111111111",
+      email: "direct-new-reject@atlasez.test",
+      from: "new",
+      to: "rejected",
+    },
+    {
+      id: "22222222-2222-4222-8222-222222222222",
+      email: "direct-accepted-repeat@atlasez.test",
+      from: "accepted",
+      to: "accepted",
+    },
+    {
+      id: "33333333-3333-4333-8333-333333333333",
+      email: "direct-review-reset@atlasez.test",
+      from: "reviewing",
+      to: "new",
+    },
+    {
+      id: "44444444-4444-4444-8444-444444444444",
+      email: "direct-rejected-review@atlasez.test",
+      from: "rejected",
+      to: "reviewing",
+    },
+  ];
+  for (const application of cases)
+    db.prepare(
+      `INSERT INTO atlasez_member_applications
+        (id,name,email,interests,message,status,created_at,updated_at,project_slug)
+       VALUES (?, '隔離応募者', ?, '', '', ?, ?, ?, 'thinking-cafe')`,
+    ).run(application.id, application.email, application.from, now, now);
+
+  for (const application of cases) {
+    const response = await request(
+      `/api/admin/applications/${application.id}?project=thinking-cafe`,
+      "global@atlasez.test",
+      {
+        status: application.to,
+        expectedStatus: application.from,
+        idempotencyKey: `invalid-${application.id}`,
+      },
+      "https://admin.atlasez.test",
+      "PATCH",
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "INVALID_TRANSITION",
+      currentState: application.from,
+    });
+  }
+
+  expect(
+    db
+      .prepare(
+        "SELECT id,status FROM atlasez_member_applications WHERE id IN (?,?,?,?) ORDER BY id",
+      )
+      .all(...cases.map((application) => application.id)),
+  ).toEqual(
+    cases
+      .map((application) => ({ id: application.id, status: application.from }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  );
+  expect(
+    db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM workflow_transition_events WHERE entity_id IN (?,?,?,?)",
+      )
+      .get(...cases.map((application) => application.id)),
+  ).toEqual({ count: 0 });
+  expect(
+    db
+      .prepare(
+        "SELECT COUNT(*) AS count FROM atlasez_project_memberships WHERE lower(email) IN (?,?,?,?)",
+      )
+      .get(...cases.map((application) => application.email)),
+  ).toEqual({ count: 0 });
+
+  const validId = "55555555-5555-4555-8555-555555555555";
+  db.prepare(
+    `INSERT INTO atlasez_member_applications
+      (id,name,email,interests,message,status,created_at,updated_at,project_slug)
+     VALUES (?, '隔離応募者', 'valid-transition@atlasez.test', '', '', 'new', ?, ?, 'thinking-cafe')`,
+  ).run(validId, now, now);
+  const valid = await request(
+    `/api/admin/applications/${validId}?project=thinking-cafe`,
+    "global@atlasez.test",
+    {
+      status: "reviewing",
+      expectedStatus: "new",
+      idempotencyKey: "valid-new-to-reviewing",
+    },
+    "https://admin.atlasez.test",
+    "PATCH",
+  );
+  expect(valid.status).toBe(200);
+  expect(await valid.json()).toMatchObject({ ok: true, status: "reviewing" });
+  expect(
+    db
+      .prepare(
+        "SELECT from_state,to_state FROM workflow_transition_events WHERE entity_id=?",
+      )
+      .get(validId),
+  ).toEqual({ from_state: "new", to_state: "reviewing" });
+});
+
 it("仮応募者の見送り後は応募状況を確認でき、オンボーディングと会員利用を拒否する", async () => {
   const { db, request } = environment();
   const email = "rejected-journey@atlasez.test";
