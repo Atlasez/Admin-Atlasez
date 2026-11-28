@@ -2,7 +2,13 @@
 
 作成日: 2026-11-03 JST
 
-状態: **未実施／未承認**。このチェックリストは運営判断と隔離環境の準備票であり、募集開始・実ユーザーへの通知・本番変更を許可するものではない。
+状態: **一部運営値は所有者承認済み。staging受入・募集開始・本番設定は未実施／未承認**。このチェックリストは運営判断と隔離環境の準備票であり、実ユーザーへの通知・本番変更を許可するものではない。
+
+## 2026-11-29 所有者判断の追記
+
+- 初回返信3営業日、未処理応募10件または最古応募3日本営業日で受付停止、採用/不採用確定済み応募行の最終更新から180日保持、同一Accountの専用R2への日次backup・35日保持を所有者が承認しました。決定詳細は[運営決定票](ADMIN_OPERATIONAL_DECISIONS.md)を参照してください。
+- 承認内容だけでは募集開始の許可になりません。主担当・代理氏名、連絡/障害通知先、staging用reviewer合成ID、R2 bucket/lifecycle・credentials、D1 Write権限とexport中のquery停止影響、isolated restore記録は未完了です。
+- staging applicant合成アカウントのメールアドレスは安全なsecret store/owner-controlled台帳で管理し、このrepositoryには記録しません。manager/reviewer用の別合成Googleアカウントを新規作成してメールアドレスだけ共有する方針が選ばれましたが、そのメールアドレスは未受領です。パスワードや実利用者のアカウントは受け取りません。
 
 ## 2026-11-12 最新mainとの照合
 
@@ -27,7 +33,7 @@
 
 2026-11-04 UTCのread-only確認で、Cloudflare上の専用Worker `atlasez-admin-staging` と別D1 `atlasez-admin-staging-reports` が存在し、専用 `workers.dev` originを使い、Custom Routeとscheduled triggerはありません。候補migration一式（0134を含む）を指定したD1 migration listはpendingなしでした。WorkerはVersion prefix `ef25f36d`が100%配信、Source `Unknown`で、live `build-info.json`は古いcommit `a509d52b5ad766d5cd41ad438ddf0040c7c13daa`, `ref=unknown`を返しました。current candidateの配信証拠ではありません。
 
-既存staging D1には運営者identityと試験データがあるため保持します。**既存Worker/D1を作り直す、削除する、空にする、role tableをresetする、またはrestoreする操作をしないでください。** Google Cloud Consoleの専用client/callback/test-user一覧は未確認で、運営者とは異なるsynthetic applicant/member・project reviewerは未準備です。Resend/Discordは設定上disabledですが、provider呼出し回数は計測していません。これらのread-back以降に設定差分を見つけた場合も、修正やresource作成の前に別途承認を取得します。
+既存staging D1には運営者identityと試験データがあるため保持します。**既存Worker/D1を作り直す、削除する、空にする、role tableをresetする、またはrestoreする操作をしないでください。** Google Cloud Consoleの専用client/callback/test-user一覧は未確認で、応募者/member役の合成アカウントに加え、manager/reviewer役の別合成アカウントの作成状況・連絡先が未確認です。個人・運営者アカウントをrole境界の証拠に使いません。Resend/Discordは設定上disabledですが、provider呼出し回数は計測していません。これらのread-back以降に設定差分を見つけた場合も、修正やresource作成の前に別途承認を取得します。
 
 以下の新規Worker/D1作成・空DB migration手順は、**新たな使い捨て環境が必要と判断され、個別変更承認が得られた場合のみ**の条件付き手順です。現在のstagingには適用しません。作業中に本番 `atlasez-admin`、本番D1、`admin.atlasez.org` のroute/secretを参照・変更しないでください。
 

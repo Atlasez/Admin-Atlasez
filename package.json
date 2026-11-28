@@ -21,6 +21,9 @@
     "build:ci": "node scripts/write-build-info.mjs && astro build && ATLASEZ_BUILD_TARGET=admin node scripts/build-xai-prototype.mjs && ATLASEZ_BUILD_TARGET=admin node scripts/build-ui-review-prototype.mjs",
     "verify:build-info": "node scripts/verify-build-info.mjs",
     "verify:live-admin-production": "node scripts/verify-live-admin-production.mjs",
+    "backup:admin-d1:preflight": "node scripts/preflight-admin-d1-backup.mjs",
+    "backup:admin-d1": "node scripts/run-admin-d1-backup.mjs",
+    "backup:admin-d1:monitor": "node scripts/check-admin-d1-backup.mjs",
     "audit:cloudflare-deployments": "node scripts/record-cloudflare-deployments.mjs",
     "tikz:server": "node scripts/tikz-renderer-server.mjs",
     "search:index": "pagefind --site dist",
@@ -72,6 +75,7 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.9",
+    "@aws-sdk/client-s3": "^3.1179.0",
     "@axe-core/playwright": "^4.12.1",
     "@playwright/test": "^1.62.0",
     "eslint": "^10.8.0",

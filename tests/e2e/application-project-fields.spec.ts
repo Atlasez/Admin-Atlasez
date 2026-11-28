@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mockOpenApplicationIntake } from "./support/application-intake";
 
 const projects = [
   { slug: "atlas", answers: [], articles: true, roles: true },
@@ -23,6 +24,7 @@ for (const width of [1280, 390]) {
     test(`${project.slug}: ${width}pxで対象設問だけを表示して応募する`, async ({
       page,
     }) => {
+      await mockOpenApplicationIntake(page);
       await page.setViewportSize({ width, height: 900 });
       await page.route("**/api/user/status", (route) =>
         route.fulfill({

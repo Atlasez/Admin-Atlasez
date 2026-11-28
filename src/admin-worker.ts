@@ -38,6 +38,13 @@ import { getAdminApiAccessPolicy } from "./lib/admin-api-access-policy";
 import { applicationInterviewPath } from "./lib/application-attention";
 import { applicationAcceptanceEmail } from "./lib/application-acceptance-email";
 import {
+  APPLICANT_PROFILE_UPSERT_SQL,
+  APPLICATION_INTAKE_INSERT_SQL,
+  APPLICATION_INTAKE_MAX_UNRESOLVED,
+  applicationIntakePausedMessage,
+  applicationIntakePauseReason,
+} from "./lib/application-intake-capacity";
+import {
   canAccess,
   getUserStage,
   stageHome,
@@ -9190,7 +9197,8 @@ async function queueApplicationEmails(
     "Atlasez運営です。",
     "",
     `${application.projectLabel}への応募を受け付けました。`,
-    "内容を確認のうえ、運営から必要な連絡をお送りします。",
+    "内容を確認のうえ、運営担当者から通常3営業日以内に初回返信します。",
+    "選考結果や次の案内は、内容に応じてお送りします。",
     "このメールに心当たりがない場合は、Atlasez運営までご連絡ください。",
   ].join("\n");
   const operatorText = [
@@ -9211,7 +9219,7 @@ async function queueApplicationEmails(
       email: application.email,
       subject: applicantSubject,
       textBody: applicantText,
-      htmlBody: `<h2>応募を受け付けました</h2><p>${emailSafe(application.projectLabel)}への応募を受け付けました。</p><p>内容を確認のうえ、運営から必要な連絡をお送りします。</p>`,
+      htmlBody: `<h2>応募を受け付けました</h2><p>${emailSafe(application.projectLabel)}への応募を受け付けました。</p><p>内容を確認のうえ、運営担当者から通常3営業日以内に初回返信します。</p><p>選考結果や次の案内は、内容に応じてお送りします。</p>`,
     },
     ...operatorEmails.map((email) => ({
       kind: "operator_notification",
@@ -15983,6 +15991,25 @@ async function submitMemberApplication(
         400,
       );
   }
+  const unresolvedApplications = await env.REPORTS.prepare(
+    `SELECT COUNT(*) AS unresolved_count, MIN(created_at) AS oldest_created_at
+     FROM atlasez_member_applications WHERE status IN ('new','reviewing')`,
+  ).first<{ unresolved_count: number; oldest_created_at: string | null }>();
+  if (
+    applicationIntakePauseReason(
+      {
+        unresolvedCount: Number(unresolvedApplications?.unresolved_count ?? 0),
+        oldestCreatedAt: unresolvedApplications?.oldest_created_at ?? null,
+      },
+      new Date(),
+    )
+  )
+    return json(
+      {
+        error: applicationIntakePausedMessage(formLanguage),
+      },
+      503,
+    );
   const duplicate = await env.REPORTS.prepare(
     "SELECT id FROM atlasez_member_applications WHERE lower(email)=lower(?) AND project_slug=? AND status IN ('new','reviewing') LIMIT 1",
   )
@@ -15997,57 +16024,7 @@ async function submitMemberApplication(
       409,
     );
   const now = new Date().toISOString();
-  if (authenticatedEmail) {
-    await env.REPORTS.prepare(
-      `INSERT INTO atlasez_applicant_profiles
-        (email,family_name,given_name,middle_name,nickname,family_name_kana,given_name_kana,form_language,
-         affiliation_email,affiliation_type,institution,grade,country,timezone,birth_date,residence_city,
-         current_organizations,referral_source,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-       ON CONFLICT(email) DO UPDATE SET
-         family_name=excluded.family_name,given_name=excluded.given_name,middle_name=excluded.middle_name,
-         nickname=excluded.nickname,
-         family_name_kana=excluded.family_name_kana,given_name_kana=excluded.given_name_kana,
-         form_language=excluded.form_language,affiliation_type=excluded.affiliation_type,
-         affiliation_email=excluded.affiliation_email,
-         institution=excluded.institution,grade=excluded.grade,country=excluded.country,
-         timezone=excluded.timezone,birth_date=excluded.birth_date,residence_city=excluded.residence_city,
-         current_organizations=excluded.current_organizations,referral_source=excluded.referral_source,
-         updated_at=excluded.updated_at`,
-    )
-      .bind(
-        authenticatedEmail,
-        familyName,
-        givenName,
-        middleName,
-        nickname,
-        familyNameKana,
-        givenNameKana,
-        formLanguage,
-        affiliationEmail,
-        affiliationType,
-        institution,
-        grade,
-        country,
-        timezone,
-        birthDate,
-        residenceCity,
-        currentOrganizations,
-        referralSource,
-        now,
-        now,
-      )
-      .run();
-  }
-  const applicationInsert = await env.REPORTS.prepare(
-    `INSERT INTO atlasez_member_applications
-     (id,name,email,affiliation_email,family_name,given_name,middle_name,nickname,family_name_kana,given_name_kana,form_language,interests,message,status,created_at,updated_at,project_slug,project_answers,affiliation_type,institution,grade,country,timezone,desired_subjects,article_ideas,discord_user_id,availability_note,birth_date,residence_city,current_organizations,referral_source,motivation_reasons,desired_roles,interview_availability,applicant_questions)
-     SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?, 'new',?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?,?,?,?,?,?
-     WHERE NOT EXISTS (
-       SELECT 1 FROM atlasez_member_applications
-       WHERE lower(email)=lower(?) AND project_slug=? AND status IN ('new','reviewing')
-     )`,
-  )
+  const applicationInsert = env.REPORTS.prepare(APPLICATION_INTAKE_INSERT_SQL)
     .bind(
       applicationId,
       name,
@@ -16084,16 +16061,58 @@ async function submitMemberApplication(
       applicantQuestions,
       email,
       projectSlug,
+      APPLICATION_INTAKE_MAX_UNRESOLVED,
+    );
+  const applicationStatements = [applicationInsert];
+  if (authenticatedEmail) {
+    applicationStatements.push(
+      env.REPORTS.prepare(APPLICANT_PROFILE_UPSERT_SQL).bind(
+        authenticatedEmail,
+        familyName,
+        givenName,
+        middleName,
+        nickname,
+        familyNameKana,
+        givenNameKana,
+        formLanguage,
+        affiliationEmail,
+        affiliationType,
+        institution,
+        grade,
+        country,
+        timezone,
+        birthDate,
+        residenceCity,
+        currentOrganizations,
+        referralSource,
+        now,
+        now,
+        applicationId,
+      ),
+    );
+  }
+  const [applicationInsertResult] = await env.REPORTS.batch(applicationStatements);
+  if (applicationInsertResult?.meta?.changes !== 1) {
+    const duplicateAfterRace = await env.REPORTS.prepare(
+      "SELECT id FROM atlasez_member_applications WHERE lower(email)=lower(?) AND project_slug=? AND status IN ('new','reviewing') LIMIT 1",
     )
-    .run();
-  if (applicationInsert.meta?.changes !== 1)
+      .bind(email, projectSlug)
+      .first<{ id: string }>();
+    if (duplicateAfterRace)
+      return json(
+        {
+          error:
+            "このメールアドレスの応募はすでに確認中です。結果の連絡をお待ちください。",
+        },
+        409,
+      );
     return json(
       {
-        error:
-          "このメールアドレスの応募はすでに確認中です。結果の連絡をお待ちください。",
+        error: applicationIntakePausedMessage(formLanguage),
       },
-      409,
+      503,
     );
+  }
   const followup = {
     id: applicationId,
     name,
@@ -16125,6 +16144,21 @@ async function submitMemberApplication(
 
 const publicApplicationConfig = (env: Env): Response =>
   json({ turnstileSiteKey: env.PUBLIC_TURNSTILE_SITE_KEY ?? "" });
+
+async function publicApplicationIntakeStatus(env: Env): Promise<Response> {
+  const unresolvedApplications = await env.REPORTS.prepare(
+    `SELECT COUNT(*) AS unresolved_count, MIN(created_at) AS oldest_created_at
+     FROM atlasez_member_applications WHERE status IN ('new','reviewing')`,
+  ).first<{ unresolved_count: number; oldest_created_at: string | null }>();
+  const pauseReason = applicationIntakePauseReason(
+    {
+      unresolvedCount: Number(unresolvedApplications?.unresolved_count ?? 0),
+      oldestCreatedAt: unresolvedApplications?.oldest_created_at ?? null,
+    },
+    new Date(),
+  );
+  return json({ open: pauseReason === null });
+}
 
 async function userStatus(request: Request, env: Env): Promise<Response> {
   const current = await getCurrentUserStage(request, env);
@@ -26111,6 +26145,11 @@ async function handleAdminRequest(
     request.method === "GET"
   )
     return publicApplicationConfig(env);
+  if (
+    url.pathname === "/api/public/application-intake-status" &&
+    request.method === "GET"
+  )
+    return publicApplicationIntakeStatus(env);
   if (url.pathname === "/api/user/status" && request.method === "GET")
     return userStatus(request, env);
   if (url.pathname === "/api/application-profile") {

@@ -1,8 +1,10 @@
 import { expect, test } from "@playwright/test";
+import { mockOpenApplicationIntake } from "./support/application-intake";
 
 test("応募フォームの基本情報にプロジェクト選択を置かず、個人情報案内と表示設定を表示する", async ({
   page,
 }) => {
+  await mockOpenApplicationIntake(page);
   await page.goto("apply/");
   await expect(page.getByRole("group", { name: "基本情報" })).toBeVisible();
   await expect(page.getByLabel("応募先プロジェクト")).toHaveCount(0);
@@ -17,6 +19,7 @@ test("応募フォームの基本情報にプロジェクト選択を置かず�
 test("応募済みプロジェクトは応募フォームの選択肢と入力画面から除外する", async ({
   page,
 }) => {
+  await mockOpenApplicationIntake(page);
   await page.route("**/api/user/status", (route) =>
     route.fulfill({
       json: {
