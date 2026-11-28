@@ -207,6 +207,7 @@ test("B-1: 応募フロー・状況集計・検索と状態フィルターを表
   });
 
   await page.goto("./admin/applications/?project=atlas");
+  await expect(page.locator(".applications header p")).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "学習サイト「アトラス」：応募管理" }),
   ).toBeVisible();
@@ -220,6 +221,14 @@ test("B-1: 応募フロー・状況集計・検索と状態フィルターを表
     "応募者・メンバーの連絡・準備記録を管理 →",
   );
   await expect(page.locator("[data-total-count]")).toHaveText("2件");
+  await expect(
+    page.locator(
+      ".applications header p, .project-picker > p, .flow-heading > p, .section-heading > p, .application-section-heading > p, .app-kicker",
+    ),
+  ).toHaveCount(0);
+  await expect(page.locator(".application-section--subjects h3")).toHaveText(
+    "希望分野",
+  );
   await expect(page.locator("[data-summary-new]")).toHaveText("1");
   await expect(page.locator("[data-summary-reviewing]")).toHaveText("1");
 
@@ -356,8 +365,8 @@ test("応募管理の導線は現在のプロジェクトに引き継がれる",
     }),
   );
   await page.goto("./admin/manage/?project=seminar-platform");
-  await expect(page.locator("main header p")).toHaveText(
-    "ゼミプラットフォーム",
+  await expect(page.locator("main h1")).toHaveText(
+    "ゼミプラットフォーム：管理トップ",
   );
   await expect(
     page.locator('a[data-manager-only][href*="permissions"]'),
@@ -551,6 +560,14 @@ test("応募一覧から応募者対応を開き、一覧へ戻っても選択�
   await expect(page.locator("[data-application-content]")).toContainText(
     "群論",
   );
+  await expect(
+    page.locator("[data-application-content] .application-section-heading > p"),
+  ).toHaveCount(0);
+  await expect(
+    page.locator(
+      "[data-application-content] .application-section--subjects h3",
+    ),
+  ).toHaveText("希望分野");
   await expect(page.locator("[data-interview-location]")).toHaveValue(
     "保存済み会場",
   );
