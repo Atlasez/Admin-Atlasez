@@ -4,7 +4,16 @@
 
 **影響範囲:** 公開Worker `atlasez01` と運営Worker `atlasez-admin` は同じ本番D1を使う。Time Travel restoreは片方のアプリだけを戻す操作ではなく、公開応募・記事報告・ADMINの全データをDB全体で巻き戻す。Cloudflareの[Time Travel仕様](https://developers.cloudflare.com/d1/reference/time-travel/)によればrestoreは全データを上書きし、実行中query/transactionをcancelする。現在の本番DB `version` とTime Travel利用可能期間を、復旧時に読み取り確認する。Time Travelの最大保持はWorkers Paidで30日、Freeで7日だが、対象DBの実際のversion/planを確認するまで本番の保持範囲として決め打ちしない。
 
-## 現行確認（2026-10-12）
+## 2026-11-28 migration 0141の実施記録
+
+- 固定Account/本番D1を明示したremote migration listでは、適用前の未適用migrationは `0141_application_intake_reconciliation.sql` のみ。0144は適用済みだった。
+- 適用前に本番D1をFileVault有効の端末上の所有者限定ディレクトリへexportした。SQLは7,778,600 bytes、99 tables、SHA256 `f5b2457585a6ac2d9ee217b76bd7e02bd2ccb494a0f8dfd8396732c03e89ebdd`。export検証器はintegrity `ok`、foreign key violation 0を報告した。
+- exportを別の隔離SQLiteへ実復元し、整合性と外部キーを検査してから0141を適用した。applications、email deliveries、archive requestsの行数、0144のmigration履歴、通知先backfill、JSON、index、受付照合markerを集計で確認し、すべて合格した。レコード値は表示・記録していない。
+- D1所有者の明示承認後、固定本番D1へ0141を適用。直後のremote migration listは `No migrations to apply!`。read-backでは0141/0144と対象indexが存在し、marker、invalid JSON、missing backfillはいずれも0だった。
+- exportと隔離復元ファイルは所有者限定の暗号化ローカル領域に保持している。受入完了までは削除せず、リポジトリ・Issueへ添付しない。この一回のmigration backupは定期取得、独立保管、RPO/RTOまたは全体復旧演習の達成を示さない。
+- 本番Workerのdeploy、Route変更、Time Travel restoreは行っていない。PR #649のコードはまだmainへmergeしていない。
+
+## 2026-10-12時点の確認（履歴）
 
 - 対象main SHA: `e63ab8b8ecca0dbe042e982fc19e9c3dffc7e370`。
 - 固定Accountを明示したremote migration listは `No migrations to apply!`。migration適用はしていない。

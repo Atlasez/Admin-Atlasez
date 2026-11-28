@@ -294,6 +294,30 @@ describe("ADMIN Workers Builds-only production policy", () => {
     ).not.toContain("CLOUDFLARE_DEPLOY_API_TOKEN");
   });
 
+  it("preflights GH_SYNC_TOKEN read access before conditional PR writes", () => {
+    const audit = parse(
+      source(".github/workflows/cloudflare-deployment-sync.yml"),
+    ) as Workflow;
+    const steps = audit.jobs?.record?.steps ?? [];
+    const preflightIndex = steps.findIndex(
+      (step) => step.name === "Verify GH_SYNC_TOKEN can read pull requests",
+    );
+    const createPrIndex = steps.findIndex(
+      (step) => step.name === "Create or update synchronization PR",
+    );
+    const preflight = steps[preflightIndex];
+
+    expect(preflightIndex).toBeGreaterThanOrEqual(0);
+    expect(preflight?.if).toBeUndefined();
+    expect(preflight?.env?.GH_TOKEN).toBe("${{ secrets.GH_SYNC_TOKEN }}");
+    expect(preflight?.run).toContain("GH_SYNC_TOKEN is not configured");
+    expect(preflight?.run).toContain("gh pr list --repo");
+    expect(createPrIndex).toBeGreaterThan(preflightIndex);
+    expect(steps[createPrIndex]?.if).toBe(
+      "steps.update.outputs.updated == 'true'",
+    );
+  });
+
   it("keeps mandatory docs aligned with main-only Builds and migration prerequisites", () => {
     for (const path of [
       "AGENTS.md",

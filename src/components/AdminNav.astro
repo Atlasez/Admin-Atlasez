@@ -303,22 +303,25 @@ const projectHome = new Set<NonNullable<Props["current"]>>(["atlas", "semi-platf
           const response = await fetch('/api/admin/notifications', { credentials: 'same-origin', cache: 'no-store' });
           const contentType = response.headers.get('content-type') ?? '';
           if (!response.ok || !contentType.includes('application/json')) throw new Error('notification request failed');
-          const data = await response.json() as { notifications?: typeof notifications; unreadNotificationsCount?: number; notificationsTruncated?: boolean; legacyReminderNormalizationPending?: boolean; legacyReminderNormalizationFailed?: boolean };
+          const data = await response.json() as { notifications?: typeof notifications; unreadNotificationsCount?: number; notificationsTruncated?: boolean; notificationsUnavailable?: boolean; legacyReminderNormalizationPending?: boolean; legacyReminderNormalizationFailed?: boolean };
           if (!Array.isArray(data.notifications)) throw new Error('invalid notification response');
           notifications = data.notifications;
+          const notificationsUnavailable = data.notificationsUnavailable === true;
           const unreadCount = Math.max(0, Math.trunc(Number(data.unreadNotificationsCount ?? notifications.filter((item) => !item.read).length)));
           const truncated = data.notificationsTruncated === true;
-          notificationStatus = unreadCount > 99 || (truncated && unreadCount > 0) ? `未読${Math.min(unreadCount, 99)}件以上` : unreadCount > 0 ? `未読${unreadCount}件` : truncated ? "未読数は確定できません" : "未読はありません";
+          notificationStatus = notificationsUnavailable ? "一部の通知を取得できませんでした" : unreadCount > 99 || (truncated && unreadCount > 0) ? `未読${Math.min(unreadCount, 99)}件以上` : unreadCount > 0 ? `未読${unreadCount}件` : truncated ? "未読数は確定できません" : "未読はありません";
           syncNotificationButtonLabel(notificationButton?.getAttribute("aria-expanded") === "true");
-          if (notificationCount) { notificationCount.textContent = unreadCount > 99 ? "99+" : `${unreadCount}${truncated && unreadCount ? "+" : ""}`; notificationCount.hidden = unreadCount === 0; }
-          if (markAllRead) markAllRead.hidden = unreadCount === 0 && data.notificationsTruncated !== true;
-          if (markAllRead) markAllRead.disabled = data.legacyReminderNormalizationPending === true;
+          if (notificationCount) { notificationCount.textContent = unreadCount > 99 ? "99+" : `${unreadCount}${truncated && unreadCount ? "+" : ""}`; notificationCount.hidden = unreadCount === 0 || notificationsUnavailable; }
+          if (markAllRead) markAllRead.hidden = notificationsUnavailable || (unreadCount === 0 && data.notificationsTruncated !== true);
+          if (markAllRead) markAllRead.disabled = notificationsUnavailable || data.legacyReminderNormalizationPending === true;
           if (legacyReminderStatus) {
             legacyReminderStatus.textContent = '古いタスクリマインダーを準備中です。一括既読は準備完了後に利用できます。';
             legacyReminderStatus.hidden = data.legacyReminderNormalizationPending !== true;
           }
           if (legacyReminderFailed) legacyReminderFailed.hidden = data.legacyReminderNormalizationFailed !== true;
-          notificationList.innerHTML = notifications.length ? notifications.map((item) => `<div class="admin-notification-item${item.read ? ' is-read' : ''}"><a href="${escape(safeNotificationHref(item.href, location.origin))}" data-open-notification="${escape(item.id)}"><span class="notification-kind">${escape(notificationKindLabel(item.kind))}</span><b>${escape(item.title)}</b><small>${escape(item.detail)}</small><time datetime="${escape(item.updatedAt ?? '')}">${escape(formatNotificationTimestamp(item.updatedAt))}</time></a>${item.read ? '<span class="notification-read-label">既読</span>' : `<button type="button" data-read-notification="${escape(item.id)}">既読にする</button>`}</div>`).join('') : '<span class="admin-notification-empty">通知はまだありません。</span>';
+          const unavailableNotice = notificationsUnavailable ? '<span class="admin-notification-empty" role="status">一部の通知を取得できませんでした。運営管理者へ連絡してください。</span>' : '';
+          const notificationItems = notifications.length ? notifications.map((item) => `<div class="admin-notification-item${item.read ? ' is-read' : ''}"><a href="${escape(safeNotificationHref(item.href, location.origin))}" data-open-notification="${escape(item.id)}"><span class="notification-kind">${escape(notificationKindLabel(item.kind))}</span><b>${escape(item.title)}</b><small>${escape(item.detail)}</small><time datetime="${escape(item.updatedAt ?? '')}">${escape(formatNotificationTimestamp(item.updatedAt))}</time></a>${item.read ? '<span class="notification-read-label">既読</span>' : `<button type="button" data-read-notification="${escape(item.id)}">既読にする</button>`}</div>`).join('') : notificationsUnavailable ? '' : '<span class="admin-notification-empty">通知はまだありません。</span>';
+          notificationList.innerHTML = `${unavailableNotice}${notificationItems}`;
         } catch {
           notifications = [];
           notificationStatus = "通知を取得できませんでした";

@@ -71,8 +71,17 @@ describe("observed admin scheduler", () => {
   ])("preserves existing cron membership for %s", async (cron, expected) => {
     const { env, db } = createAdminTestEnvironment();
     const { tasks, called } = createTasks();
-    await executeAdminScheduledJobs(env.REPORTS, cron as string, tasks);
+    const reconcileIntakes = vi.fn(async () => undefined);
+    await executeAdminScheduledJobs(
+      env.REPORTS,
+      cron as string,
+      tasks,
+      reconcileIntakes,
+    );
 
+    expect(reconcileIntakes).toHaveBeenCalledTimes(
+      expected === maintenance || expected === hourly ? 1 : 0,
+    );
     expect(called.sort()).toEqual([...(expected as string[])].sort());
     expect(
       db

@@ -1,47 +1,39 @@
-# 実運用開始の受入試験
+# 実運用受入基準
 
-対象は監査P0の4〜7。仮利用者は `@atlasez.test`、隔離D1はメモリ内SQLiteで全migrationを適用する。本番の認証方式・権限表・Google認証を検証用に変更しない。プロバイダーを模擬した試験と実到達・本番受入を区別する。
+更新日: 2026-11-28
 
-専用stagingの実サービス受入、OPSD-01〜09の運営承認、synthetic account台帳、証拠形式は[新規メンバー受入stagingチェックリスト](ADMIN_MEMBER_INTAKE_STAGING_CHECKLIST.md)を使う。staging手順が未実施の場合、以下の隔離自動試験を実サービスの受入完了として扱わない。
+## 現在の状況
 
-## 自動検証
+- mainは `76e5fad87e01f6894d3917bec6bf494e99ebe888`。記事アーカイブ承認と個別記事削除申請は別フローとして運用する。
+- 本番Workers Build `76517dd7-8166-41d7-81b9-bf5f0dbd46e2` はmain SHAをBuild/Deployし、Worker `atlasez-admin` のVersion `902fd2f0-e906-4800-b353-13afb355e969` が100% Ready。公開 `build-info.json` のcommitもmain SHAと一致した。
+- PR [#649](https://github.com/Atlasez/Admin-Atlasez/pull/649) のruntime候補 `f02421d4cadacc0f8043950e276de368558d86d8` はmain `76e5fad87e01f6894d3917bec6bf494e99ebe888` を基準とする。head `6eb8072d8abcb98d7c0286ecb800533c9971c57f` のGitHub CI run [46149985778](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46149985778) は全job success。独立reviewerは所有者指示で不要だが、残る受入と運営GO前のためPRは未merge。
+- Cloudflare staging Worker `atlasez-admin-release-staging` はbranch `codex/staging-intake-649` のruntime候補SHA `f02421d4cadacc0f8043950e276de368558d86d8` からBuild/Deploy済み。Workers Build [`abebebec-31d3-49ba-96d4-5e6595f6c68f`](https://dash.cloudflare.com/812021e62fa20465950b61be55dfe064/workers/services/view/atlasez-admin-release-staging/production/builds/abebebec-31d3-49ba-96d4-5e6595f6c68f) はcheckout SHAとBuild/Deploy guardが一致し、全段階success。Version `56afd06e-5679-4cee-98f9-6330ac0504fd` は100% Ready。公開build-infoのcommitも候補SHA、targetは `admin`、`ref` は `unknown`（branchはBuild recordで照合）。専用D1 bindingは維持し、migrationなし。影響・復旧方法と証跡は[Build設定実施記録](ADMIN_STAGING_BUILD_SETTINGS_PLAN_2026-11-28.md)に記録する。
+- staging専用Worker/D1 bindingは確認済みで、本番D1を参照していない。staging D1 migration ledgerはread-only照合で未適用なし。email/Discord delivery disabled、Cronなし。Google login allowlist secretは存在しCloudflare上で暗号化表示だが、値は確認していない。承認済みmember合成identityでGoogle再ログインし、既存のAtlas応募状態を確認した。manager/reviewer用の別identityは未指定のため、role越境と審査の受入は未完了。
+- staging受付switchはDashboardで `open → paused → open` を実施。pause Version `bfc0ac21-b0e2-4c27-b5a0-2450ecd74e07`、再開Version `24d40253-fd56-464d-baf2-b8493786d349` が各100%配信。再開後の公開設定は `intakeEnabled:true`。3書込経路の503・DB未更新はunit testで確認済みで、live API実地試験は未実施。
+- 本番D1は0141/0144適用済み。0141は2026-11-28に、適用直前ledger、所有者限定backup、隔離SQLite restoreと適用検証、D1所有者の明示承認を経て適用した。read-backで未適用migrationなしを確認した。release staging D1の0144もbackup/隔離restore後に適用済み。
+- 本番配信後、認証済みChromeでポータル、タスク、カレンダー、プロフィール、管理トップ、記事一覧、記事削除申請を確認した。各画面は表示され、読み込み残り・画面エラーはなかった。
+- 個人情報保持のOPSD-03は未承認。180日は候補で本番方針ではない。定期処理の `deleteTerminalApplications` は無効のまま。保持方針・公開説明・backup上の削除時期が合うまで有効化しない。
+- synthetic accountによるrole別操作、通知到達、backup復元、運営担当/SLA/RPO/RTOの合意、本番WorkerへのPR #649配信、実利用者受入は未完了。
 
-- `tests/unit/admin-readiness-integration.test.ts`: 実Workerのルーターと実SQLで新規利用者、基本情報保存、応募、二重応募防止、他人の基本情報非公開、全体管理と担当者の境界、別プロジェクトの応募非公開、退会後の管理権限剥奪を確認する。外部通信は拒否する。
-- 同試験は、仮応募者の基本情報保存から応募・審査中・受入・応募状況・初回プロフィール保存までを一連で確認する。審査状態は実WorkerのWorkflow APIで遷移し、監査イベントとproject membershipが保存されること、受入前は会員画面に入れず、公開プロフィールとプロジェクト内プロフィールの保存後に会員画面へ進めることも検証する。見送り経路でも応募状況を本人が確認でき、応募者ステージを保ち、オンボーディング/API・会員画面を拒否し、project membershipを作らないことを確認する。全migration適用済みの隔離SQLiteを使い、実OAuth・メール・Discord連携は証明しない。
-- `tests/e2e/applicant-discord.spec.ts`: 見送り後に応募状況画面が「今回は見送り」と結果を表示し、連絡待ち文言とDiscord連携案内を出さないことを仮API応答で確認する。
-- 同試験のメール送信は、仮受信先限定のプロバイダーを使う。503後の再試行、同じidempotency key、送信済みの再送防止を確認する。メールボックスへの実到達は証明しない。
-- `tests/e2e/application-project-fields.spec.ts`: 5プロジェクト×1280px/390pxで設問の表示・必須・無効化・送信内容・画面幅を確認する。UIのAPI応答は仮データ。
-- 既存の `admin-workflow-atomicity.test.ts`、`admin-worker-discord-roles.test.ts`、`onboarding.spec.ts`、`applicant-discord.spec.ts`、応募管理のE2Eを継続実行する。これらは外部サービスの実証を代替しない。
+## リリースゲート
 
-受け入れ担当の【仮】は[受け入れ手順](ADMIN_MEMBER_INTAKE.md)にある。主担当は運営事務局、代理は当該プロジェクトのプロジェクト責任者、連絡は https://atlasez.org/contact/ 。確定前の仮の値であり、下の本番受入を実施済みにはしない。
+1. **ブランチ・CI・レビュー** — runtime候補 `f0f4ee75` のCI success。独立reviewerは所有者指示で不要。docs-only更新後はmerge前に最新PR head CIを再確認する。PRはstaging受入・運営GO待ち。
+2. **staging構成** — runtime候補 `f02421d4` のWorkers Build、専用Worker/D1、Version `56afd06e` の100%配信、build-info SHAを照合済み。allowlist secretは存在するが値は未読。member役の再ログインは成功し、受付switchは再開済み。
+3. **実ユーザー受入** — 未完了。manager/reviewer用の第2合成identityが未指定。別identityで応募審査、権限境界、role画面/APIを確認し、pause中のlive APIと応募画面案内を検証する。通知は承認済みsandboxに限る。
+4. **運営準備** — 担当と運用条件の決定待ち。主担当/代理、対応期限、問い合わせ先、個人情報保持期間、権限表、停止/復旧、backupのRPO/RTOを決めて記録する。
+5. **データ移行** — production 0141はowner approval、backup、isolated restore後に適用・read-back済み。これは定期backupや運用SLO、本番Worker deployの承認を意味しない。
+6. **本番GO** — 未承認・未実施。全証跡を責任者が確認し、対象commit、戻し方、監視時間、担当者を記録してから判断する。
 
-## 本番受入の記録欄
+## 次に行う順序
 
-以下はADMINのWorkers Builds復旧後、対象main SHAの成功run、固定Worker `atlasez-admin` のVersion 100%配信、公開`build-info.json`の一致を確認してから実行する。日付、PR/main SHA、Worker Version、操作者のrole、結果を記録し、秘密値・個人情報・OAuth stateを記録しない。最新の復旧状態は[実運用準備監査](ADMIN_OPERATIONAL_READINESS_2026-10-12.md)と[Issue #509](https://github.com/Atlasez/Admin-Atlesez/issues/509)を実行直前に照合する。
+1. staging専用manager/reviewer identityを作成し、release staging Workerだけのallowlistと専用D1上のrole設定へ追加する。
+2. member/managerでrole別受入を行う。新runtimeの `open → paused → open` とVersionは記録済み。残る3書込経路のlive 503/DB不更新と応募画面案内を認証済み環境で確認し、外部通知/Cronは承認済みsandboxで個別確認する。
+3. 運営体制・保持期間・停止/復旧・backup SLOを決め、公開説明に反映する。
+4. 全証跡と担当者を確認して本番GOを記録し、PR #649をmergeする。その後mainのWorkers Buildと認証済みChromeで本番SHA・画面を確認する。
 
-| 項目                 | 手順                                                                                                                                                                                                 | 合格条件                                                                                                                                                                                                                                                                                  | 実績                               |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| 4 権限               | 応募者・会員・担当・分野統括・全体管理・別プロジェクト・退会者で主要画面と直接APIへアクセス                                                                                                          | 担当外の応募・本文・会員情報を取得できない。退会後に管理操作できない                                                                                                                                                                                                                      | 未実施                             |
-| 4 権限失効           | 専用隔離アカウントで担当roleを失効させ、Chromeに既存sessionを残したままナビ、直接URL、既知の合成データAPIを再読込。別scopeも確認する                                                                 | 失効したscopeはAPI・直接URLとも拒否され、前画面のキャッシュや開きっぱなしのタブから保護データを再取得できない。他の有効scopeは維持される                                                                                                                                                  | 未実施（専用環境待ち）             |
-| 4 休止・再開         | 隔離会員を休止→休止中の画面/API→再開し、profile・membership・task・calendarと監査履歴を照合。DiscordはOPS-18で決めたrole方針と別に記録                                                               | 休止中は合意した範囲だけが失効し、再開後は元の許可scopeだけ復旧。休止/退会に伴うDiscord role扱いは運営決定前に本番変更しない                                                                                                                                                              | 未実施（専用環境・方針待ち）       |
-| 4 退会・申請取り下げ | 専用隔離会員で退会申請をpending→reviewing/scheduledの状態ごとに本人が取り下げ、別ケースで審査・予約日適用まで実行。適用前後に既存sessionを残し、ナビ・直接URL・既知の合成APIを再読込。再開申請も確認 | pending/reviewing/scheduledの取り下げはcancelledとなりmembership/lifecycleを変更しない。applied後の取り下げは拒否。適用後は退会状態が画面・API・監査に一致し、失効scopeを既存session/直接URL/APIから再取得できず、再開後は合意済みscopeだけ戻る。通知/Discordは重複せず、外部同期は別受入 | 未実施（専用環境・運営方針待ち）   |
-| 4 Discord連携解除    | active Discord role割当がある合成会員で連携解除→role割当を解除・同期成功後に連携解除                                                                                                                 | active割当が残る間は409で連携行/割当が保たれ、role解除・同期成功後だけ連携解除できる。外部Discord APIの実同期結果は承認済みsandboxで別途確認                                                                                                                                              | 未実施（PR #526反映・sandbox待ち） |
-| 5 新規参加           | 専用Googleアカウントで基本情報保存→各応募→受付→面談・審査→受入/見送り→初回プロフィール・任意のチュートリアル                                                                                         | 各段階の画面と保存状態が一致。二重応募を防止。受入前に会員操作不可                                                                                                                                                                                                                        | 未実施（OAuth開始のみ確認）        |
-| 6 メール             | 指定した検証受信先で受付・面談・受入通知を受け取る                                                                                                                                                   | 実メールの到着、宛先、リンク、迷惑メール状況を確認。ログのsentだけで合格にしない                                                                                                                                                                                                          | 未実施                             |
-| 6 Discord            | 専用利用者を連携し、受入ロールと担当分野を確認。隔離試験で失敗・再試行も確認                                                                                                                         | 応募の個人情報をDiscordへ転送しない。管理者ロールを誤付与しない。再試行で重複しない                                                                                                                                                                                                       | 未実施                             |
-| 7 記事公開           | 公開してよい原稿を下書き→査読→分野統括/プロジェクト統括承認→公開Run→CI→公開用GitHub App処理→公開側main・Workers Builds                                                                               | 内容の人による承認とGitHub自動レビューを混同しない。CI失敗/needs-operatorでmergeしない。対象SHA、公開URL、build-info、Versionを照合                                                                                                                                                       | 未実施                             |
-| 7 訂正               | 公開済み原稿を直接編集し、承認リセット・再レビュー・更新PR・CI・本番反映まで確認                                                                                                                     | 公開中の本文は更新PR反映まで維持され、修正後に再承認された内容だけが公開される                                                                                                                                                                                                            | 未実施                             |
-| 7 非公開化           | 対象記事・理由・参照関係をレビューし、非公開PRとCI、本番反映を確認                                                                                                                                   | URL・一覧・検索の除外が一致。履歴・復旧方法を残す                                                                                                                                                                                                                                         | 未実施                             |
-| 8 バックアップ       | 最新D1復旧点と保存先を確認し、許可済み隔離環境へ復元。応募/profile、membership/permission、task/calendar、article/revision/audit、queue/checkpointの関連を検査                                       | 暗号化/閲覧者/保持/削除/失敗通知が決定済み。integrity・FK・関連・Worker/schema互換性がpassし、RPO/RTOを実測。実データの外部移送・本番restoreは別承認                                                                                                                                      | 未実施                             |
-| 8 個人データ保持     | 未完了profile、accepted/rejected応募、記事報告hash/contact、本文/運営メモ、backupコピーの目的・起算日・期限・例外を決定。隔離D1で期限前/境界/期限後/再実行を確認                                     | 運営/privacy責任者が期間を記録承認し、公開説明と一致。承認前は`ADMIN_PERSONAL_DATA_RETENTION_ENABLED`を未設定にし記事報告hash/contactの追加消去を無効に保つ。既存session/rate limit/採否確定済み応募の整理は継続。実D1削除は別途受入                                                      | 未実施                             |
-| 8 Cron・queue        | 各scheduleの直近success/failure、処理時間、最古滞留、失敗回数、再試行枯渇、メール/Discord/GitHubの結果を確認                                                                                         | 設定の存在だけを正常扱いしない。重複防止・再試行・alert通知先の受信を承認済みsandboxで確認                                                                                                                                                                                                | 未実施                             |
-| 9 UI/UX              | 専用roleで主要操作を390px/desktop/200%拡大、keyboard・screen readerで実行。loading/empty/success/403、入力error、通信切断、保存競合も確認                                                            | 横overflowなし、focus/エラー案内が識別可能、失敗後に誤った成功表示や二重送信がなく、操作後の次の行動が分かる。画面幅/role/手順/結果を記録                                                                                                                                                 | 未実施                             |
-| 10 運営引継ぎ        | 主担当・代理・窓口・応募返信目安・queue確認頻度・相談/緊急連絡先を登録し、不在時の引継ぎを机上演習                                                                                                   | 未対応項目ごとに責任role、次回期限、完了条件、エスカレーション先が決まり、代理が手順だけで引き継げる                                                                                                                                                                                      | 未実施                             |
+## 停止条件
 
-テスト用Google/Discordアカウントは実サービス上に存在する必要がある。文字列だけの仮アカウントは隔離試験に使えるが、OAuth・メール実到達・Discordの実権限を証明できない。既存の認証済みChromeを使う場合も承認済みの専用検証アカウントに限る。個人アカウント候補が表示されたら選択せず停止し、識別子やOAuth stateを記録しない。
-
-2026-10-12 公開ADMINログイン導線の読み取り確認: 未認証でADMINトップを開くとGoogle OAuthへ遷移し、Googleのアカウント選択画面まで到達した。アカウント識別子やOAuth stateは記録せず、アカウント選択・同意・callback・セッション確立には進んでいない。専用検証アカウントを確認できないため停止した。これはOAuth開始導線だけの確認であり、本人確認・権限・応募の受入証拠ではない。
-
-## 記事公開が停止した場合
-
-公開側正本は `Atlasez/Atlasez01`、公開Workerは `atlasez01`、URLは `https://atlasez.org`。ADMIN側と公開側のSHAを混同しない。公開PRがCI失敗・レビュー未完了・main未反映、公開WorkerがBuilds未接続、または本文・SHA不一致なら、公開済みへの強制変更を行わず、そのrunを調査する。推測のmerge、Version promote、cache purge、直接deployは行わない。
+- 必須CI失敗、対象commit不一致、権限漏れ、stagingから本番データへの接続、未承認のメール/Discord送信、backup復元失敗のいずれかで停止する。
+- migrationや本番設定変更はコードdeployと分ける。GO記録とD1所有者承認がない状態では適用しない。
+- 受入試験で使う個人情報はsynthetic dataに限定し、実応募データを検証用環境へ複製しない。
+- 実利用者の招待は、staging受入・担当者合意・責任者GOの完了後に限定する。

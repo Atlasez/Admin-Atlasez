@@ -65,6 +65,27 @@ describe("管理APIのアクセス方針", () => {
     );
   });
 
+  it("応募から生成したtask IDもmember scopeで更新し、形式外IDはadmin scopeへ倒す", () => {
+    expect(
+      getAdminApiAccessPolicy(
+        "/api/admin/operations/tasks/application-response:11111111-1111-4111-8111-111111111111",
+        "PATCH",
+      ),
+    ).toBe("member");
+    expect(
+      getAdminApiAccessPolicy(
+        "/api/admin/operations/tasks/application-recovery%3A11111111-1111-4111-8111-111111111111",
+        "PATCH",
+      ),
+    ).toBe("member");
+    expect(
+      getAdminApiAccessPolicy(
+        "/api/admin/operations/tasks/application-response:not-a-uuid",
+        "PATCH",
+      ),
+    ).toBe("admin");
+  });
+
   it("プロジェクト責任者・審査者のスコープをhandler側で決めるAPIを区別する", () => {
     expect(getAdminApiAccessPolicy("/api/admin/member-intake", "GET")).toBe(
       "dedicated",

@@ -1,3 +1,9 @@
+import {
+  isApprovedStagingAddress,
+  isApprovedStagingRecipient,
+} from "./admin-staging-email-policy.mjs";
+import { isAdminStagingOrigin } from "./admin-staging-origin.mjs";
+
 type D1Statement = {
   bind(...values: unknown[]): D1Statement;
   run(): Promise<unknown>;
@@ -12,6 +18,10 @@ export type ApplicationEmailDeliveryEnv = {
   REPORTS: D1Database;
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string;
+  ADMIN_PUBLIC_ORIGIN?: string;
+  ATLASEZ_STAGING_MODE?: string;
+  ATLASEZ_STAGING_EMAIL_DELIVERY?: string;
+  ATLASEZ_STAGING_EMAIL_ALLOWLIST?: string;
 };
 
 export type ApplicationEmailDeliveryOptions = {
@@ -87,6 +97,26 @@ export async function dispatchApplicationEmails(
   options: ApplicationEmailDeliveryOptions = {},
 ) {
   const logger = options.logger ?? console;
+  const stagingConfigured =
+    isAdminStagingOrigin(env.ADMIN_PUBLIC_ORIGIN) ||
+    env.ATLASEZ_STAGING_MODE !== undefined ||
+    env.ATLASEZ_STAGING_EMAIL_DELIVERY !== undefined ||
+    env.ATLASEZ_STAGING_EMAIL_ALLOWLIST !== undefined;
+  if (stagingConfigured && env.ATLASEZ_STAGING_MODE !== "true") {
+    safeLog(logger, "error", "application_email_staging_mode_invalid");
+    return { sent: 0, failed: 0, skipped: true };
+  }
+  if (
+    env.ATLASEZ_STAGING_MODE === "true" &&
+    env.ATLASEZ_STAGING_EMAIL_DELIVERY !== "test-sink"
+  ) {
+    safeLog(logger, "info", "application_email_staging_delivery_disabled");
+    return { sent: 0, failed: 0, skipped: true };
+  }
+  if (stagingConfigured && options.channel === "seminar") {
+    safeLog(logger, "info", "seminar_email_staging_delivery_disabled");
+    return { sent: 0, failed: 0, skipped: true };
+  }
   const table =
     options.channel === "seminar"
       ? "seminar_email_deliveries"
@@ -107,6 +137,35 @@ export async function dispatchApplicationEmails(
     safeLog(logger, "error", "application_email_sender_invalid");
     return { sent: 0, failed: 0, skipped: true };
   }
+  if (
+    env.ATLASEZ_STAGING_MODE === "true" &&
+    !isApprovedStagingAddress(sender)
+  ) {
+    safeLog(logger, "error", "application_email_staging_sender_invalid");
+    return { sent: 0, failed: 0, skipped: true };
+  }
+  const stagingRecipients =
+    env.ATLASEZ_STAGING_MODE === "true"
+      ? (env.ATLASEZ_STAGING_EMAIL_ALLOWLIST ?? "")
+          .split(",")
+          .map((email) => email.trim().toLowerCase())
+          .filter(Boolean)
+      : [];
+  const stagingAllowedRecipients =
+    env.ATLASEZ_STAGING_MODE === "true"
+      ? new Set(stagingRecipients.filter((email) => EMAIL_PATTERN.test(email)))
+      : null;
+  if (stagingAllowedRecipients && stagingAllowedRecipients.size === 0) {
+    safeLog(logger, "error", "application_email_staging_allowlist_missing");
+    return { sent: 0, failed: 0, skipped: true };
+  }
+  if (
+    stagingAllowedRecipients &&
+    stagingRecipients.some((email) => !isApprovedStagingRecipient(email))
+  ) {
+    safeLog(logger, "error", "application_email_staging_allowlist_invalid");
+    return { sent: 0, failed: 0, skipped: true };
+  }
   const nowDate = options.now ?? new Date();
   const now = nowDate.toISOString();
   const staleClaimCutoff = new Date(
@@ -121,6 +180,14 @@ export async function dispatchApplicationEmails(
   // 冪等性キーをproviderへ初めて渡す時刻を保持し、応募受付から初回配信までの
   // 待ち時間が長くても、実際のキー保持期間を超えるまでは同じキーで再試行する。
   const limit = Math.min(100, Math.max(1, options.limit ?? 100));
+  const reconciliationFilter =
+    options.channel === "seminar"
+      ? ""
+      : `AND EXISTS (
+        SELECT 1 FROM atlasez_member_applications a
+         WHERE a.id=${table}.application_id
+           AND a.intake_reconciliation_required=0
+      )`;
   const outsideIdempotencyWindow = (await env.REPORTS.prepare(
     `UPDATE ${table}
         SET status='failed',claim_token=NULL,claimed_at=NULL,
@@ -165,6 +232,7 @@ export async function dispatchApplicationEmails(
         OR (status='sending' AND first_attempt_at>?
             AND COALESCE(claimed_at,updated_at)<=?)
       )
+      ${reconciliationFilter}
       ORDER BY CASE WHEN status='sending' THEN COALESCE(claimed_at,updated_at) ELSE next_attempt_at END ASC,
                created_at ASC LIMIT ?`,
   )
@@ -187,6 +255,23 @@ export async function dispatchApplicationEmails(
       )
         .bind(now, delivery.id)
         .run();
+      failed += 1;
+      continue;
+    }
+    if (
+      stagingAllowedRecipients &&
+      !stagingAllowedRecipients.has(
+        delivery.recipient_email.trim().toLowerCase(),
+      )
+    ) {
+      await env.REPORTS.prepare(
+        `UPDATE ${table}
+            SET status='failed',last_error='staging_recipient_not_allowlisted',updated_at=?
+          WHERE id=? AND status IN ('pending','retry','sending')`,
+      )
+        .bind(now, delivery.id)
+        .run();
+      safeLog(logger, "error", "application_email_staging_recipient_blocked");
       failed += 1;
       continue;
     }

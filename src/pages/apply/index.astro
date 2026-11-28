@@ -36,6 +36,7 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
         <p class="privacy-notice"><span data-i18n="privacyNotice">個人情報の取り扱いについて：ご入力いただいた個人情報は、応募内容の確認・選考、応募に関する連絡、受入後のアカウント・担当設定および本人確認のために、必要な範囲で利用します。法令に基づく場合を除き、ご本人の同意なく第三者へ提供しません。選考・運営上必要な期間保管し、利用目的を終えた後は適切に削除します。</span> <a href="https://atlasez.org/privacy-policy/" target="_blank" rel="noopener noreferrer">詳しい個人情報の取り扱い</a></p>
         <input type="hidden" name="projectSlug" data-project-slug value="atlas" />
         <p class="form-loading" data-form-loading aria-live="polite">入力画面を準備しています…</p>
+        <p data-intake-paused role="status" hidden></p>
         <fieldset data-basic-fieldset hidden disabled>
           <legend data-i18n="basic">基本情報</legend>
           <div class="name-grid">
@@ -103,6 +104,7 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
         <label class="trap" aria-hidden="true">Website<input name="website" tabindex="-1" autocomplete="off" /></label>
         <button type="submit" data-i18n="submit" disabled>応募を送信</button>
         <output data-result aria-live="polite"></output>
+        <a data-application-status-link href="/applicant/" hidden>応募状況を確認する</a>
       </form>
     </section>
   </main>
@@ -130,6 +132,7 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
       })
       .catch(() => undefined);
     const result = document.querySelector<HTMLOutputElement>("[data-result]")!;
+    const applicationStatusLink = document.querySelector<HTMLAnchorElement>("[data-application-status-link]")!;
     const slot = document.querySelector<HTMLElement>("[data-turnstile]")!;
     const tz = form.querySelector<HTMLSelectElement>("[data-timezone]")!;
     const affiliation = form.querySelector<HTMLSelectElement>("[data-affiliation]")!;
@@ -142,6 +145,10 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
       fallback.append(option);
       return fallback;
     })();
+    language.addEventListener("change", () => {
+      if (!applicationStatusLink.hidden)
+        applicationStatusLink.textContent = language.value === "en" ? "Check application status" : "応募状況を確認する";
+    });
     const institutionInput = form.querySelector<HTMLInputElement>("[data-institution-input]")!;
     const institutionList = form.querySelector<HTMLElement>("#institution-directory")!;
     const institutionStatus = form.querySelector<HTMLElement>("[data-institution-status]")!;
@@ -159,6 +166,7 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
     const formDirectoryEmpty = page.querySelector<HTMLElement>("[data-form-directory-empty]")!;
     const formLinks = [...page.querySelectorAll<HTMLAnchorElement>("[data-form-link]")];
     const formLoading = form.querySelector<HTMLElement>("[data-form-loading]")!;
+    let applicationIntakeEnabled = true;
     const projectForms: Record<string, { title: string; intro: string; article: string; interests: string; message: string; motivation: string; roles: string; articlePlaceholder: string }> = {
       atlas: { title: "学習サイト「アトラス」運営応募", intro: "学習サイト「アトラス」の記事執筆・査読・翻訳・運営に関する応募フォームです。", article: "書いてみたい記事・テーマ", interests: "関心のあるプロジェクト・できること", message: "参加したい理由・自己紹介", motivation: "参加理由（複数ある場合はすべて）", roles: "希望担当（複数ある場合はすべて）", articlePlaceholder: "例：群論の基本概念、英語学習の語源マップ…" },
       "thinking-cafe": { title: "考えるカフェ参加・運営応募", intro: "考えるカフェで扱いたいテーマや、対話の場づくりへの関心をお聞きします。", article: "参加してみたいテーマ", interests: "興味のある対話分野・できること", message: "参加してみたい理由・自己紹介", motivation: "", roles: "", articlePlaceholder: "考えてみたい問いや話し合いたいテーマ" },
@@ -204,6 +212,22 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
       for (const control of extra.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input,textarea")) control.required = visible;
     }
     const submitButton = form.querySelector<HTMLButtonElement>("[data-i18n=submit]")!;
+    const intakePausedNotice = form.querySelector<HTMLElement>("[data-intake-paused]")!;
+    const intakePausedMessage = () => language.value === "en"
+      ? "Applications are temporarily paused. Please return after intake reopens."
+      : "応募受付は一時停止中です。受付再開後にお申し込みください。";
+    const renderIntakePausedState = () => {
+      const paused = !applicationIntakeEnabled;
+      intakePausedNotice.hidden = !paused;
+      if (!paused) return;
+      const message = intakePausedMessage();
+      intakePausedNotice.textContent = message;
+      result.value = message;
+      profileMessage.value = message;
+      nextProjectButton.disabled = true;
+      submitButton.disabled = true;
+    };
+    language.addEventListener("change", renderIntakePausedState);
     const setFieldsetDisabled = (fieldset: HTMLFieldSetElement, disabled: boolean) => {
       fieldset.disabled = disabled;
       for (const control of fieldset.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input,select,textarea")) {
@@ -303,7 +327,7 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
       const existingMember = ["ONBOARDING", "TUTORIAL", "MEMBER"].includes(stage);
       const markReady = () => {
         formLoading.hidden = true;
-        submitButton.disabled = submitButton.hidden;
+        submitButton.disabled = submitButton.hidden || !applicationIntakeEnabled;
         form.dataset.formReady = "true";
         form.setAttribute("aria-busy", "false");
       };
@@ -538,6 +562,7 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
       profileMessage.value = "基本情報を確認できませんでした。入力内容を確認して、もう一度お試しください。";
     });
     const saveBasicProfileAndContinue = async () => {
+      if (!applicationIntakeEnabled) { renderIntakePausedState(); return; }
       if (!basicFieldset.checkValidity()) { basicFieldset.reportValidity(); return; }
       nextProjectButton.disabled = true;
       profileMessage.value = "基本情報を保存中…";
@@ -546,21 +571,27 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
       for (const name of ["familyName", "givenName", "middleName", "nickname", "familyNameKana", "givenNameKana", "affiliationEmail", "affiliationType", "institution", "grade", "country", "timezone", "birthDate", "residenceCity", "currentOrganizations"]) fields[name] = fd.get(name) ?? "";
       try {
         const response = await fetch("/api/application-profile", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(fields) });
-        const data = await response.json().catch(() => ({})) as { error?: string };
+        const data = await response.json().catch(() => ({})) as { error?: string; code?: string };
+        if (data.code === "APPLICATION_INTAKE_PAUSED") {
+          applicationIntakeEnabled = false;
+          renderIntakePausedState();
+          throw new Error(intakePausedMessage());
+        }
         if (!response.ok) throw new Error(data.error ?? "基本情報を保存できませんでした。");
         location.assign(`/apply/${encodeURIComponent(projectSlug)}/?nameOrder=${encodeURIComponent(nameOrder.value)}`);
       } catch (error) {
         profileMessage.value = error instanceof Error ? error.message : "基本情報を保存できませんでした。";
-        nextProjectButton.disabled = false;
+        nextProjectButton.disabled = !applicationIntakeEnabled;
       }
     };
     nextProjectButton.addEventListener("click", () => { void saveBasicProfileAndContinue(); });
     let turnstileToken = "";
-    fetch("/api/public/application-config").then((response) => response.json()).then((config: { turnstileSiteKey?: string }) => { if (!config.turnstileSiteKey) return; const script = document.createElement("script"); script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"; script.async = true; script.onload = () => { const turnstile = (window as unknown as { turnstile?: { render: (target: HTMLElement, options: Record<string, unknown>) => void } }).turnstile; turnstile?.render(slot, { sitekey: config.turnstileSiteKey, callback: (token: string) => { turnstileToken = token; }, "expired-callback": () => { turnstileToken = ""; } }); }; document.head.append(script); }).catch(() => undefined);
+    fetch("/api/public/application-config").then((response) => response.json()).then((config: { turnstileSiteKey?: string; intakeEnabled?: boolean }) => { if (config.intakeEnabled === false) { applicationIntakeEnabled = false; renderIntakePausedState(); } if (!config.turnstileSiteKey) return; const script = document.createElement("script"); script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"; script.async = true; script.onload = () => { const turnstile = (window as unknown as { turnstile?: { render: (target: HTMLElement, options: Record<string, unknown>) => void } }).turnstile; turnstile?.render(slot, { sitekey: config.turnstileSiteKey, callback: (token: string) => { turnstileToken = token; }, "expired-callback": () => { turnstileToken = ""; } }); }; document.head.append(script); }).catch(() => undefined);
     let isSubmitting = false;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (!directProjectScreen) { await saveBasicProfileAndContinue(); return; }
+      if (!applicationIntakeEnabled) { renderIntakePausedState(); return; }
       if (isSubmitting) return;
       isSubmitting = true;
       submitButton.disabled = true;
@@ -590,7 +621,26 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ ...fields, turnstileToken }),
         });
-        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        const data = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
+        if (data.code === "APPLICATION_INTAKE_PAUSED") {
+          isSubmitting = false;
+          applicationIntakeEnabled = false;
+          renderIntakePausedState();
+          return;
+        }
+        if (response.status === 409 && data.code === "APPLICATION_ALREADY_EXISTS") {
+          result.value = submittedLanguage === "en" ? "This project already has an application or membership for your account. Opening your status…" : "このプロジェクトの応募または参加情報を確認します。応募状況へ移動します…";
+          location.assign("/applicant/?submission=already-received");
+          return;
+        }
+        if (data.code === "APPLICATION_RESULT_UNCONFIRMED") {
+          location.assign("/applicant/?submission=check");
+          return;
+        }
+        if (data.code === "APPLICATION_SETUP_REQUIRES_REVIEW") {
+          location.assign("/applicant/?submission=check");
+          return;
+        }
         if (!response.ok)
           throw new Error(
             data.error ??
@@ -599,9 +649,17 @@ const zoneGroups = timeZones.reduce<Record<string, string[]>>((groups, zone) => 
         result.value = submittedLanguage === "en" ? "Your application has been received." : "応募を受け付けました。";
         location.assign("/applicant/");
       } catch (error) {
-        result.value = error instanceof Error ? error.message : "送信できませんでした。";
+        if (error instanceof TypeError) {
+          result.value = submittedLanguage === "en"
+            ? "We could not confirm the submission result. Check your application status before submitting again."
+            : "送信結果を確認できませんでした。再送前に応募状況をご確認ください。";
+          applicationStatusLink.hidden = false;
+          applicationStatusLink.textContent = submittedLanguage === "en" ? "Check application status" : "応募状況を確認する";
+        } else {
+          result.value = error instanceof Error ? error.message : "送信できませんでした。";
+        }
         isSubmitting = false;
-        submitButton.disabled = false;
+        submitButton.disabled = !applicationIntakeEnabled;
       }
     });
   }
