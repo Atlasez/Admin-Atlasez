@@ -2,15 +2,15 @@
 
 更新日: 2026-11-28
 
-状態: runtime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` は最新mainを取り込み、GitHub CI run [46139876980](https://github.com/Atlasez/Admin-Atlesez/actions/runs/46139876980) が全job success。今回の記録更新はdocs-onlyで、更新後のPR head CIを確認する。Cloudflare stagingは前回Build source SHA `af2c2ae17aa14c6943e60414bcc31db738052259` / Version `f07af8b2` を100%配信中。最新候補のBuild/Deployは未実施。production D1 0141とrelease staging D1 0144はbackup・隔離restore後に適用済みで、staging D1に未適用migrationはない。独立reviewerは所有者指示で不要。Google login allowlist未設定のため、認証済みrole別受入、本番Worker deploy、実利用者受入は未完了。
+状態: runtime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` は最新mainを取り込み、GitHub CI run [46139876980](https://github.com/Atlasez/Admin-Atlesez/actions/runs/46139876980) が全job success。staging Workers Build [78471160](https://dash.cloudflare.com/812021e62fa20465950b61be55dfe064/workers/services/view/atlasez-admin-release-staging/production/builds/78471160-5e0e-4b93-8f9f-8a7fc111daaa) も全段階successで、Version `dbf58dc9` / 100% Ready、公開build-info SHA一致を確認。今回の受入記録更新はdocs-onlyで、更新後のPR head CIをmerge前に確認する。production D1 0141とrelease staging D1 0144はbackup・隔離restore後に適用済みで、staging D1に未適用migrationはない。独立reviewerは所有者指示で不要。Google login allowlist未設定のため、認証済みrole別受入、本番Worker deploy、実利用者受入は未完了。
 
 ## 現在の確認済み進捗
 
 - [x] main基準のPR #649を作成し、応募・審査・role境界・staging手順・migration検証を統合。
 - [x] mainの記事アーカイブ承認フローを維持し、別系統の記事削除migrationと分離。
 - [x] PRとIssueにはsecret値、実利用者情報、Cloudflare比較ID値を記録しない。
-- [x] staging Build source SHA `af2c2ae17aa14c6943e60414bcc31db738052259` のCI success。PR headはその後のdocs-only子孫で、最新PR CIをmerge前にread-backする。独立reviewerは所有者指示で不要。main mergeはstaging受入・運営GO待ち。
-- [x] Cloudflare staging WorkerのProduction branch `codex/staging-intake-649`、Build/Deploy SHA guard、run checkout SHAを候補SHAへ揃えた。Build/Deploy success、Version表示 `f07af8b2` / 100% Ready、staging `build-info.json` SHA一致を確認。
+- [x] runtime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` のCI success。最新確認済みPR head `6e0adc4dab42cb60eafa623aa277947ac6697080` のdocs-only更新もCI success。追加の記録更新後はmerge前に最新PR CIをread-backする。独立reviewerは所有者指示で不要。main mergeはstaging受入・運営GO待ち。
+- [x] Cloudflare staging WorkerのProduction branch `codex/staging-intake-649`、Build/Deploy SHA guard、run checkout SHAをruntime候補 `f0f4ee75` へ揃えた。Build `78471160`、Version `dbf58dc9` / 100% Ready、staging `build-info.json` SHA一致を確認。
 - [x] staging専用Worker/D1 bindingをread-only確認。release staging D1と既存staging D1は異なり、isolation preflightが成功。production D1は接続していない。
 - [x] production比較値のBuild環境変数名をCloudflare Build設定でread-backし、値を表示・記録せずにpreflight成功を確認。
 - [x] staging用OAuth secretの存在を確認。test-user allowlist未設定、email/Discord delivery disabled、Resend/Discord credential未設定、Cron trigger未設定。secret値は記録しない。
@@ -22,7 +22,7 @@
 ## 1. コード・レビュー・migration
 
 - [x] 既存候補のCI successと `99b8139d` からのdocs-only差分を確認し、前回Build/Deploy SHA guardとstaging refを合わせて配信した。
-- [ ] 今回の記録更新後のPR head CI successを確認し、Build設定計画をPRで確認してから、Build/Deploy SHA guardを `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` に更新する。続けてstaging専用refを同SHAへfast-forwardし、Workers Buildsを起動する。
+- [x] Build設定計画とPR head CI successを確認し、Build/Deploy SHA guardを `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` に更新した。staging専用refを同SHAへfast-forwardしてWorkers Buildを起動し、run `78471160-5e0e-4b93-8f9f-8a7fc111daaa` のcheckout SHA/全段階successをread-backした。
 - [ ] test-user allowlistを所有者が承認したsynthetic Google accountに限定し、secret名をread-backする。許可アカウント未設定のままOAuth callback/role試験を行わない。
 - [ ] Build設定、OAuth callback、cookie domain、CORS、redirect allowlistをstaging専用でread-back確認する。
 - [x] Build run/checkout SHA、公開build-info、Worker名・Version・100%配信、D1 bindingをread-onlyで再取得。staging D1 migration ledgerもread-back済み。想定SHA/workerとの不一致なし。
@@ -32,8 +32,8 @@
 
 ## 2. stagingの分離確認と配信
 
-- [x] 前回Buildではstaging専用Workerとreports用D1 bindingを確認。Build branch/SHA guardは `codex/staging-intake-649` / `af2c2ae1` に整合し、runと配信結果を確認した。
-- [ ] 次回Buildのbranch/SHA guard `codex/staging-intake-649` / `f0f4ee75` をPR計画・最新CIで確認後に反映し、run/checkout SHA、Version、100%配信、build-info、D1 bindingをread-backする。
+- [x] staging専用Workerとreports用D1 bindingを確認。Build branch/SHA guardは `codex/staging-intake-649` / `f0f4ee75` に整合し、run `78471160`、Version `dbf58dc9`、100%配信、build-info、専用D1 bindingをread-backした。
+- [x] runtime候補Build後にrun/checkout SHA、Build/Deploy、Worker Version、100%配信、build-info、staging D1 bindingを照合した。
 - [ ] staging origin、OAuth callback、cookie domain、CORS、redirect allowlistがstaging専用で一致することを確認する。
 - [x] production比較値をCloudflare Build環境からstaging isolation preflightへ与えた。値はrepository、PR、Issueへ保存しない。
 - [ ] Discord staging runtime guard用のproduction比較secret名をstaging Workerでread-backする。どちらかが未設定ならstaging Discordを有効化しない。

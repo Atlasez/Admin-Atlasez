@@ -73,22 +73,28 @@ Workers Builds runのbranch/commit、Build/Deploy結果、Worker Version、100% 
 - GitHub main `76e5fad87e01f6894d3917bec6bf494e99ebe888` のproduction Workers Build `76517dd7-8166-41d7-81b9-bf5f0dbd46e2` はBuild/Deployとも成功。
 - Worker `atlasez-admin` のVersion `902fd2f0-e906-4800-b353-13afb355e969` は100% traffic、Ready。公開 `https://admin.atlasez.org/build-info.json` のcommitはmain SHAと一致。
 - 認証済みChromeでポータル、タスク、カレンダー、プロフィール、`/admin/manage/?project=atlas`、記事一覧、記事削除申請を確認し、各画面が表示されることを確認した。
-- PR #649 runtime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` はmainを取り込み、GitHub CI run [46139876980](https://github.com/Atlasez/Admin-Atlesez/actions/runs/46139876980) が全job success。今回の記録更新はdocs-onlyで、最新head CIは更新後に確認する。
-- stagingは前回のBuild SHA `af2c2ae17aa14c6943e60414bcc31db738052259` / Version `f07af8b2` を100%配信中。staging専用D1のmigration ledgerはread-onlyで確認し、未適用migrationなし。新しいruntime候補はまだBuildしていない。
+- PR #649 runtime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` はmainを取り込み、GitHub CI run [46139876980](https://github.com/Atlasez/Admin-Atlesez/actions/runs/46139876980) が全job success。PR docs head `6e0adc4dab42cb60eafa623aa277947ac6697080` のCI run [46140848291](https://github.com/Atlasez/Admin-Atlesez/actions/runs/46140848291) も全job success。この後の受入記録更新はdocs-onlyで、新head CIはmerge前に確認します。
+- staging専用Workerはruntime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` / Version `dbf58dc9` を100%配信中。staging専用D1のmigration ledgerはread-onlyで確認し、未適用migrationなし。run、build-info、runtime isolationの記録は次節にあります。
 
-## 次回staging Buildの設定計画
+## 2026-11-28 runtime候補staging Build結果
 
-この設定変更はPR #649で計画・復旧方法を記録し、PRの最新head CIが成功した後に行う。Build/Deploy SHA guardをCI成功済みruntime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` に固定し、staging専用ref `codex/staging-intake-649` を同SHAへfast-forwardする。Worker Buildsが対象Worker `atlasez-admin-release-staging` だけをBuild/Deployすることを確認する。
+PR #649の最新head CI success、設定値、影響、復旧方法を確認した後、Build/Deploy SHA guardをruntime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` に固定し、staging専用ref `codex/staging-intake-649` をfast-forwardしました。
 
-影響範囲はstaging Workerと専用D1だけで、production Worker/Route/D1、production secrets、email/Discord delivery、Cronは変更しない。migrationは実行しない。preflight/Build/Deployが失敗した場合は現行のstaging Version `f07af8b2` がそのまま配信され、productionには影響しない。設定・接続の復旧候補は上記「復旧」に記録した旧staging branch/guardであり、推測によるrollback/promoteやproductionへの手動deployは行わない。
+- Workers Build [#78471160](https://dash.cloudflare.com/812021e62fa20465950b61be55dfe064/workers/services/view/atlasez-admin-release-staging/production/builds/78471160-5e0e-4b93-8f9f-8a7fc111daaa) はcheckout SHAとガードが一致し、Initializing、Cloning、Installing、Building、Deployingの全段階が成功しました。
+- 対象Worker `atlasez-admin-release-staging` の新Version `dbf58dc9` は100% traffic、Ready。GitHub branch `codex/staging-intake-649` のruntime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` とDeployment recordをread-backしました。
+- 公開 [staging build-info.json](https://atlasez-admin-release-staging.atlasez-adm.workers.dev/build-info.json) のcommitは同SHA、targetは `admin`、`ref` は `unknown` です。branchはCloudflare Build recordで同一性を確認済みです。
+- staging専用D1 binding `atlasez-admin-release-staging-reports` をread-backし、Buildではmigrationを実行していません。staging D1 migration ledgerは事前確認で未適用なしです。
+- 再read-backでstaging mode有効、email/Discord delivery disabled、Cronなし、Google login allowlist未設定を確認しました。production Worker/Route/D1/secretsには変更なし。
 
-予定Build command:
+影響範囲はstaging Workerと専用D1だけです。production Worker/Route/D1、production secrets、email/Discord delivery、Cron、migrationは変更していません。失敗した場合は旧active staging Version `f07af8b2` が配信状態に残ることを事前の影響評価に記録していました。今回は新VersionがReadyになり100%配信中です。復旧候補は上記「復旧」に記録した旧staging branch/guardです。推測によるrollback/promoteやproductionへの手動deployは行いません。
+
+今回使ったBuild command:
 
 ```bash
 test "$(git rev-parse HEAD)" = 'f0f4ee753c305c59f4c5efcdced7d4d14d7821d3' && printf '%s' "$RELEASE_CONFIG_JSON" > wrangler.admin.staging.compat.jsonc && npm ci && npm run verify:admin-staging-config:compat && ATLASEZ_BUILD_TARGET=admin SITE_URL=https://atlasez-admin-release-staging.atlasez-adm.workers.dev BASE_PATH=/ npm run build && npm run verify:build-info
 ```
 
-予定Deploy command:
+今回使ったDeploy command:
 
 ```bash
 test "$(git rev-parse HEAD)" = 'f0f4ee753c305c59f4c5efcdced7d4d14d7821d3' && npm run verify:admin-staging-config:compat && npx wrangler deploy --config wrangler.admin.staging.compat.jsonc --keep-vars
