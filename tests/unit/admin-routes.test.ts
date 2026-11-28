@@ -8,7 +8,8 @@ import {
 
 describe("admin page routes", () => {
   it("exposes every generated admin page through the Worker", () => {
-    expect(ADMIN_PAGE_PATHS).toHaveLength(46);
+    expect(ADMIN_PAGE_PATHS).toHaveLength(47);
+    expect(isAdminPagePath("/admin/deletion-requests/")).toBe(true);
     expect(isAdminPagePath("/admin/getting-started/")).toBe(true);
     expect(isAdminPagePath("/admin/getting-started")).toBe(true);
     expect(isAdminPagePath("/admin/task-detail/")).toBe(true);
