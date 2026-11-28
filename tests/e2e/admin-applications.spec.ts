@@ -207,6 +207,7 @@ test("B-1: 応募フロー・状況集計・検索と状態フィルターを表
   });
 
   await page.goto("./admin/applications/?project=atlas");
+  await expect(page.locator(".applications header p")).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "学習サイト「アトラス」：応募管理" }),
   ).toBeVisible();

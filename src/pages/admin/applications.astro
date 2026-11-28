@@ -16,7 +16,6 @@ const projectLabel = selectedProject?.[1] ?? "";
 <AdminLayout title={selectedProject ? `${projectLabel}：応募管理` : "応募管理"} description="プロジェクト別の運営参加応募を確認">
   <main class="applications" data-applications data-project={selectedProject?.[0] ?? ""}>
     <header>
-      <p>運営参加応募</p>
       <h1>{selectedProject ? `${projectLabel}：応募管理` : "応募管理"}</h1>
     </header>
     <section class="project-picker" hidden={Boolean(selectedProject)} aria-labelledby="project-picker-title">
