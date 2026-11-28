@@ -107,6 +107,8 @@ interface Env {
   ADMIN_AUTH_MODE?: string;
   /** Google OAuth後に必ず戻す運営サイトの固定URL。Preview URLでは認証を完結させない。 */
   ADMIN_PUBLIC_ORIGIN?: string;
+  /** Runtime emergency switch for new member applications and applicant-profile writes. */
+  ADMIN_APPLICATION_INTAKE_MODE?: string;
   GOOGLE_OAUTH_CLIENT_ID?: string;
   GOOGLE_OAUTH_CLIENT_SECRET?: string;
   ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST?: string;
@@ -1697,6 +1699,8 @@ async function saveApplicationProfile(
     return json({ error: "この送信元からは受け付けられません。" }, 403);
   const identity = await getAuthenticatedEmail(request, env);
   if (isResponse(identity)) return identity;
+  if (!isApplicationIntakeEnabled(env))
+    return applicationIntakePausedResponse();
   if (
     request.headers.get("content-type")?.includes("application/json") !== true
   )
@@ -16607,12 +16611,16 @@ async function submitMemberApplication(
       )
     )
       return json({ error: "応募送信の認証に失敗しました。" }, 401);
+    if (!isApplicationIntakeEnabled(env))
+      return applicationIntakePausedResponse();
   } else {
     if (!isSameOrigin(request))
       return json({ error: "この送信元からは受け付けられません。" }, 403);
     const identity = await getAuthenticatedEmail(request, env);
     if (isResponse(identity)) return identity;
     authenticatedEmail = identity;
+    if (!isApplicationIntakeEnabled(env))
+      return applicationIntakePausedResponse();
     const current = await getUserStageForEmail(
       authenticatedEmail,
       env,
@@ -17420,8 +17428,28 @@ async function submitMemberApplication(
   );
 }
 
+const isApplicationIntakeEnabled = (env: Env): boolean => {
+  const mode =
+    env.ADMIN_APPLICATION_INTAKE_MODE === undefined
+      ? "open"
+      : env.ADMIN_APPLICATION_INTAKE_MODE.trim().toLowerCase();
+  return mode === "open";
+};
+
+const applicationIntakePausedResponse = (): Response =>
+  json(
+    {
+      error: "応募受付は一時停止中です。再開後にお申し込みください。",
+      code: "APPLICATION_INTAKE_PAUSED",
+    },
+    503,
+  );
+
 const publicApplicationConfig = (env: Env): Response =>
-  json({ turnstileSiteKey: env.PUBLIC_TURNSTILE_SITE_KEY ?? "" });
+  json({
+    turnstileSiteKey: env.PUBLIC_TURNSTILE_SITE_KEY ?? "",
+    intakeEnabled: isApplicationIntakeEnabled(env),
+  });
 
 async function userStatus(request: Request, env: Env): Promise<Response> {
   const current = await getCurrentUserStage(request, env);

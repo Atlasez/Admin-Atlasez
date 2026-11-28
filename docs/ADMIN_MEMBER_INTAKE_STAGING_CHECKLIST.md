@@ -2,7 +2,7 @@
 
 更新日: 2026-11-28
 
-状態: runtime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` は最新mainを取り込み、GitHub CI run [46139876980](https://github.com/Atlasez/Admin-Atlesez/actions/runs/46139876980) が全job success。staging Workers Build [78471160](https://dash.cloudflare.com/812021e62fa20465950b61be55dfe064/workers/services/view/atlasez-admin-release-staging/production/builds/78471160-5e0e-4b93-8f9f-8a7fc111daaa) も全段階successで、Version `dbf58dc9` / 100% Ready、公開build-info SHA一致を確認。production D1 0141とrelease staging D1 0144はbackup・隔離restore後に適用済みで、staging D1に未適用migrationはない。独立reviewerは所有者指示で不要。Cloudflare設定では専用Google allowlist secretの名前を確認し、値は暗号化されたまま閲覧していない。Issue #647の記録では応募者役の合成identity 1件の受入済み。別identityのmanager/reviewer受入、運営GO、本番Worker反映、実利用者受入は未完了。
+状態: runtime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` は最新mainを取り込み、GitHub CI run [46139876980](https://github.com/Atlasez/Admin-Atlesez/actions/runs/46139876980) が全job success。staging Workers Build [78471160](https://dash.cloudflare.com/812021e62fa20465950b61be55dfe064/workers/services/view/atlasez-admin-release-staging/production/builds/78471160-5e0e-4b93-8f9f-8a7fc111daaa) も全段階successで、Version `dbf58dc9` / 100% Ready、公開build-info SHA一致を確認。production D1 0141とrelease staging D1 0144はbackup・隔離restore後に適用済みで、staging D1に未適用migrationはない。独立reviewerは所有者指示で不要。Cloudflare設定では専用Google allowlist secretの名前を確認し、値は暗号化されたまま閲覧していない。Issue #647の記録では応募者役の合成identity 1件の受入済み。PR #649に応募受付停止スイッチの実装とunit/E2Eテストを追加中。manager/reviewerの別identity、停止スイッチのstaging runtime受入、運営GO、本番Worker反映、実利用者受入は未完了。
 
 ## 現在の確認済み進捗
 
@@ -46,6 +46,7 @@
 - [x] candidate Build後にrun/checkout SHA、Build/Deploy、Worker Version、100%配信、build-info、staging D1 bindingを照合した。
 - [ ] Resend sandboxとDiscord test guildのcredential、送信先、停止方法をread-backする。未設定・未承認の通知は送らない。
 - [x] Workerのemail/Discord deliveryがdisabled、Cron triggerなしをread-back確認。sandboxの受信確認前に有効化しない。
+- [ ] `ADMIN_APPLICATION_INTAKE_MODE` の `open → paused → open` をstagingで演習し、応募profile・同一origin応募・公開取り込みがpaused時にすべて503となり、D1未更新、応募フォーム案内、Worker Versionを記録する。既存queue/Cron/通知はこのスイッチの対象外として別手順を確認する。
 
 ## 3. role別の実操作
 

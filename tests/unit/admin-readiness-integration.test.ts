@@ -67,6 +67,8 @@ function environment() {
   const env = {
     ADMIN_AUTH_MODE: "google-oauth",
     ADMIN_PRIMARY_EMAIL: "global@atlasez.test",
+    ADMIN_APPLICATION_INTAKE_MODE: undefined as string | undefined,
+    PUBLIC_APPLICATION_INGEST_TOKEN: undefined as string | undefined,
     APPLICATION_OPERATIONS_EMAILS: "operator@atlasez.test",
     REPORTS: {
       prepare: (query: string) => new Statement(query, db),
@@ -1158,6 +1160,110 @@ it("既存member sessionは所属休止後のmember-task APIから拒否され�
       )
       .get(sessionHash, new Date().toISOString()),
   ).toEqual({ count: 1 });
+});
+
+it("応募受付停止中は基本情報・同一origin応募・公開取り込みを保存せず拒否する", async () => {
+  const { db, request, env } = environment();
+  env.ADMIN_APPLICATION_INTAKE_MODE = "paused";
+  env.PUBLIC_APPLICATION_INGEST_TOKEN = "isolated-ingest-token";
+  const email = "paused-applicant@atlasez.test";
+  const profile = {
+    familyName: "検証",
+    givenName: "停止中",
+    familyNameKana: "けんしょう",
+    givenNameKana: "ていしちゅう",
+    formLanguage: "ja",
+    affiliationEmail: "school@atlasez.test",
+    affiliationType: "大学",
+    institution: "検証大学",
+    grade: "B1",
+    country: "日本",
+    timezone: "Asia/Tokyo",
+    birthDate: "2000-01-01",
+    residenceCity: "検証市",
+  };
+  const pausedProfile = await request(
+    "/api/application-profile",
+    email,
+    profile,
+  );
+  expect(pausedProfile.status).toBe(503);
+  expect(await pausedProfile.json()).toMatchObject({
+    code: "APPLICATION_INTAKE_PAUSED",
+  });
+
+  const application = {
+    projectSlug: "thinking-cafe",
+    interests: "討論",
+    message: "受付停止の隔離検証",
+    referralSource: "公式サイト",
+    interviewAvailability: "平日18時 Asia/Tokyo",
+    projectAnswers: { theme: "学び" },
+  };
+  const sameOriginApplication = await request("/api/apply", email, application);
+  expect(sameOriginApplication.status).toBe(503);
+  expect(await sameOriginApplication.json()).toMatchObject({
+    code: "APPLICATION_INTAKE_PAUSED",
+  });
+
+  const publicApplication = await worker.fetch(
+    new Request("https://admin.atlasez.test/api/public/applications", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-atlasez-application-token": "isolated-ingest-token",
+      },
+      body: JSON.stringify(application),
+    }),
+    env as never,
+  );
+  expect(publicApplication.status).toBe(503);
+  expect(await publicApplication.json()).toMatchObject({
+    code: "APPLICATION_INTAKE_PAUSED",
+  });
+
+  const publicConfig = await worker.fetch(
+    new Request("https://admin.atlasez.test/api/public/application-config"),
+    env as never,
+  );
+  expect(await publicConfig.json()).toMatchObject({ intakeEnabled: false });
+  expect(
+    db
+      .prepare("SELECT COUNT(*) AS count FROM atlasez_applicant_profiles")
+      .get(),
+  ).toEqual({ count: 0 });
+  expect(
+    db
+      .prepare("SELECT COUNT(*) AS count FROM atlasez_member_applications")
+      .get(),
+  ).toEqual({ count: 0 });
+});
+
+it("未設定なら従来どおり応募受付を開き、未知のmodeは閉じる", async () => {
+  const { request, env } = environment();
+  const getConfig = () =>
+    worker.fetch(
+      new Request("https://admin.atlasez.test/api/public/application-config"),
+      env as never,
+    );
+  expect(await (await getConfig()).json()).toMatchObject({
+    intakeEnabled: true,
+  });
+  env.ADMIN_APPLICATION_INTAKE_MODE = "unexpected";
+  expect(await (await getConfig()).json()).toMatchObject({
+    intakeEnabled: false,
+  });
+  const paused = await request(
+    "/api/application-profile",
+    "unknown-mode@atlasez.test",
+    {
+      familyName: "検証",
+    },
+  );
+  expect(paused.status).toBe(503);
+  expect(await paused.json()).toMatchObject({
+    code: "APPLICATION_INTAKE_PAUSED",
+  });
 });
 
 it("仮の新規利用者の基本情報保存・応募・二重応募防止・本人以外の非公開を実APIで確認する", async () => {

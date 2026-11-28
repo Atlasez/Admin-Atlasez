@@ -18,6 +18,56 @@ const projects = [
   },
 ];
 
+test("受付停止中は停止案内を表示し応募送信を無効化する", async ({ page }) => {
+  await page.route("**/api/user/status", (route) =>
+    route.fulfill({
+      json: {
+        email: "applicant@atlasez.test",
+        stage: "NEW_USER",
+        applicationProjects: [],
+      },
+    }),
+  );
+  await page.route("**/api/application-profile", (route) =>
+    route.fulfill({
+      json: {
+        profile: {
+          email: "applicant@atlasez.test",
+          family_name: "検証",
+          given_name: "太郎",
+          family_name_kana: "けんしょう",
+          given_name_kana: "たろう",
+          form_language: "ja",
+          affiliation_email: "school@atlasez.test",
+          affiliation_type: "大学",
+          institution: "検証大学",
+          grade: "B1",
+          country: "日本",
+          timezone: "Asia/Tokyo",
+          birth_date: "2000-01-01",
+          residence_city: "検証市",
+        },
+      },
+    }),
+  );
+  await page.route("**/api/public/application-config", (route) =>
+    route.fulfill({ json: { intakeEnabled: false } }),
+  );
+  let submissionAttempts = 0;
+  await page.route("**/api/apply", async (route) => {
+    submissionAttempts += 1;
+    await route.fulfill({
+      status: 503,
+      json: { code: "APPLICATION_INTAKE_PAUSED" },
+    });
+  });
+
+  await page.goto("apply/atlas/");
+  await expect(page.locator("[data-intake-paused]")).toBeVisible();
+  await expect(page.locator('[data-i18n="submit"]')).toBeDisabled();
+  expect(submissionAttempts).toBe(0);
+});
+
 for (const width of [1280, 390]) {
   for (const project of projects) {
     test(`${project.slug}: ${width}pxで対象設問だけを表示して応募する`, async ({
