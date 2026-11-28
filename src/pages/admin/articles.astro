@@ -120,14 +120,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
                 <option value="request">依頼できる記事</option>
               </select>
             </label>
-            <label class="filter-control">
-              <span>ゴミ箱</span>
-              <select data-archive aria-label="アーカイブ表示">
-                <option value="active">未アーカイブ</option>
-                <option value="archived">ゴミ箱のみ</option>
-                <option value="all">すべて</option>
-              </select>
-            </label>
           </div>
         </details>
       </div>
@@ -1037,7 +1029,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
   import { readAdminApiJson } from "../../lib/admin-api";
   import { isTestArticleTitle } from "../../lib/article-test-classification";
   type Article={id:string;source_article_id?:string|null;subject:string;category:string;slug?:string;title:string;status:"draft"|"in-review"|"on-hold"|"approved";updated_at:string;published_at:string|null;current_version_id?:string|null;published_version_id?:string|null;scheduled_publish_at?:string|null;publication_review_stage?:"subject-coordinator"|"project-leader"|null;archived_at?:string|null;archive_expires_at?:string|null;canRestoreArchive?:boolean;canPurgeArchive?:boolean;created_by?:string;updated_by?:string;reviewer_email?:string|null;active_editors?:Array<{sessionId:string;email:string;displayName:string;field:string}>};
-  type ArticleFilterState={query:string;subject:string;category:string;status:string;publication:string;test:string;workflow:string;archive:string};
+  type ArticleFilterState={query:string;subject:string;category:string;status:string;publication:string;test:string;workflow:string};
   type ArticleScope={email:string;subjects?:string[];coordinatorSubjects?:string[];allSubjects?:boolean;isManager?:boolean;isProjectLeader?:boolean};
   type ArticlePagination={limit:number;nextCursor:string|null;hasMore:boolean};
   type PublicArticle={articleId:string;subject:string;category:string;slug:string;title:string};
@@ -1055,7 +1047,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     const publication = root.querySelector<HTMLSelectElement>("[data-public]")!;
     const test = root.querySelector<HTMLSelectElement>("[data-test]")!;
     const workflow = root.querySelector<HTMLSelectElement>("[data-workflow-filter]")!;
-    const archive = root.querySelector<HTMLSelectElement>("[data-archive]")!;
     const count = root.querySelector<HTMLOutputElement>("[data-count]")!;
     const filterSummary = root.querySelector<HTMLElement>("[data-filter-summary]")!;
     const scopeNote = root.querySelector<HTMLElement>("[data-scope-note]")!;
@@ -1082,13 +1073,12 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     const pageQuery = new URLSearchParams(location.search);
     const trashView = pageQuery.get("trash") === "1";
     const filterStorageKey = trashView ? "atlasez-admin-trash-filters" : "atlasez-admin-article-filters";
-    const defaultFilterState: ArticleFilterState = { query: "", subject: "all", category: "all", status: "all", publication: "all", test: trashView ? "all" : "exclude", workflow: "all", archive: trashView ? "archived" : "active" };
+    const defaultFilterState: ArticleFilterState = { query: "", subject: "all", category: "all", status: "all", publication: "all", test: trashView ? "all" : "exclude", workflow: "all" };
     if (trashView) {
       root.querySelector<HTMLElement>("[data-article-heading]")!.textContent = "記事のゴミ箱";
       const back = root.querySelector<HTMLAnchorElement>("[data-article-trash-link]")!;
       back.href = "/admin/articles/";
       back.textContent = "記事一覧に戻る";
-      archive.disabled = true;
     }
 
     const requestedMode = trashView ? null : pageQuery.get("mode");
@@ -1115,7 +1105,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     assignSelectValue(publication, storedFilters.publication, defaultFilterState.publication);
     assignSelectValue(test, storedFilters.test, defaultFilterState.test);
     assignSelectValue(workflow, requestedMode === "review" || requestedMode === "revise" || requestedMode === "request" ? requestedMode : storedFilters.workflow, defaultFilterState.workflow);
-    assignSelectValue(archive, trashView ? "archived" : storedFilters.archive, defaultFilterState.archive);
     if (requestedMode === "review" || requestedMode === "revise" || requestedMode === "request") workflow.value = requestedMode;
     const esc = (value: string) => value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character] ?? character));
     const labels = { draft: "下書き", "in-review": "フィードバック中", "on-hold": "保留", approved: "フィードバック済み" };
@@ -1166,7 +1155,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
         publication: publication.value,
         test: test.value,
         workflow: workflow.value,
-        archive: archive.value,
       };
       try {
         localStorage.setItem(filterStorageKey, JSON.stringify(state));
@@ -1254,8 +1242,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       const rows = catalogRows();
       const matchesFilters = (row: CatalogRow, ignoreSelectedSubject = false) => {
         const article = row.article;
-        if (archive.value === "active" && isArchived(article)) return false;
-        if (archive.value === "archived" && !isArchived(article)) return false;
+        if (isArchived(article) !== trashView) return false;
         if (mode === "review" && article.status === "approved") return false;
         const hasUnpublishedVersion = Boolean(article.published_at && hasUnpublishedPublicationChanges(article));
         if (mode === "request" && !([article.created_by, article.updated_by].includes(scopeEmail) && article.status !== "approved" && (!article.published_at || hasUnpublishedVersion))) return false;
@@ -1289,9 +1276,8 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       const activePublication = publication.value === "all" ? "" : ` ・ 学習サイト：${publication.selectedOptions[0]?.textContent ?? publication.value}`;
       const activeTest = test.value === "exclude" ? "" : ` ・ テスト原稿：${test.selectedOptions[0]?.textContent ?? test.value}`;
       const activeWorkflow = mode === "all" ? "" : ` ・ 作業対象：${workflow.selectedOptions[0]?.textContent ?? workflow.value}`;
-      const activeArchive = archive.value === "active" ? "" : ` ・ ${archive.selectedOptions[0]?.textContent ?? archive.value}`;
       const activeQuery = query.value.trim() ? ` ・ キーワード：「${query.value.trim()}」` : "";
-      filterSummary.textContent = `${activeScope}${activeCategory}${activeStatus}${activePublication}${activeTest}${activeWorkflow}${activeArchive}${activeQuery}`;
+      filterSummary.textContent = `${activeScope}${activeCategory}${activeStatus}${activePublication}${activeTest}${activeWorkflow}${activeQuery}`;
       renderSubjectBrowser(matchingAllSubjectsShown);
       const formatDate = (value: string) => new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium" }).format(new Date(value));
       const formatSchedule = (value: string) => {
@@ -1313,10 +1299,10 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
               : '<span class="badge public-draft">未公開</span>';
         const editorialState = `<span class="article-status-group"><span class="article-status-group__label">編集</span><span class="badge ${article.status}">${labels[article.status]}</span></span>`;
         const updatedLabel = "最終更新";
-        const archiveBadge = article && isArchived(article) ? '<span class="badge archived">アーカイブ済み</span>' : "";
+        const archiveBadge = trashView ? '<span class="badge archived">アーカイブ済み</span>' : "";
         const testBadge = isTestArticleTitle(title) ? '<span class="badge">テスト原稿</span>' : "";
         const canArchiveArticle = article && (article.status === "draft" || article.status === "in-review") && !article.publication_review_stage && !article.published_version_id && !article.published_at && !article.scheduled_publish_at;
-        const inTrash = canArchiveArticle && isArchived(article);
+        const inTrash = trashView && canArchiveArticle;
         const restoreAction = inTrash && article.canRestoreArchive !== false && !archiveExpired(article)
           ? `<button type="button" class="article-action" data-archive-action="unarchive" data-archive-document-id="${esc(article.id)}">復元</button>`
           : "";
@@ -1434,7 +1420,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
             scopeNote.dataset.state = "loading";
             scopeNote.textContent = "担当範囲を確認しています…";
           }
-          const includeArchived = archive.value !== "active";
           loadingAllDocuments = !silent;
           if (!preserveLoadedPages) {
             loadedPageCount = 0;
@@ -1447,8 +1432,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
           }
           while (true) {
             const params = new URLSearchParams();
-            if (archive.value === "archived") params.set("archivedOnly", "1");
-            else if (includeArchived) params.set("includeArchived", "1");
+            if (trashView) params.set("archivedOnly", "1");
             if (querySubject) params.set("subject", querySubject);
             if (pageCursor) params.set("cursor", pageCursor);
             params.set("limit", "100");
@@ -1558,7 +1542,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     retry = createAdminLoadRetry(root, () => reloadForSelection(), "原稿一覧を読み込めませんでした。");
     resetFiltersButton.addEventListener("click", () => {
       const previousSubject = subject.value;
-      const previousArchive = archive.value;
       query.value = defaultFilterState.query;
       assignSelectValue(subject, defaultFilterState.subject, defaultFilterState.subject);
       assignSelectValue(category, defaultFilterState.category, defaultFilterState.category);
@@ -1566,13 +1549,12 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
       assignSelectValue(publication, defaultFilterState.publication, defaultFilterState.publication);
       assignSelectValue(test, defaultFilterState.test, defaultFilterState.test);
       assignSelectValue(workflow, defaultFilterState.workflow, defaultFilterState.workflow);
-      assignSelectValue(archive, defaultFilterState.archive, defaultFilterState.archive);
       expandedArticleGroups.clear();
       root.querySelector<HTMLDetailsElement>(".advanced-filters")!.open = false;
       updateCategoryOptions();
       saveFilterState();
-      history.replaceState({}, "", `${location.pathname}#article-list`);
-      if (previousSubject !== subject.value || previousArchive !== archive.value) void reloadForSelection();
+      history.replaceState({}, "", `${location.pathname}${trashView ? "?trash=1" : ""}#article-list`);
+      if (previousSubject !== subject.value) void reloadForSelection();
       else render();
     });
     const selectSubjectFromBrowser = (value: string) => {
@@ -1596,7 +1578,6 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
     query.addEventListener("input", render);
     [category, status, publication, test].forEach((element) => element.addEventListener("change", render));
     workflow.addEventListener("change", () => { syncWorkflowLocation(); render(); });
-    archive.addEventListener("change", () => { saveFilterState(); void reloadForSelection(); });
     list.addEventListener("click", async (event) => {
       const target = event.target as HTMLElement;
       const expandButton = target.closest<HTMLButtonElement>("[data-expand-category]");
@@ -1629,15 +1610,7 @@ const publicArticlesPayload = JSON.stringify(publicArticles).replace(/</g, "\\u0
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw Error(data.error ?? "アーカイブ操作に失敗しました。");
-        if (action === "purge-archive" || archive.value === "archived") {
-          await reloadForSelection();
-          return;
-        }
-        if (article) {
-          article.archived_at = data.archived_at ?? null;
-          article.archive_expires_at = data.archive_expires_at ?? null;
-        }
-        render();
+        await reloadForSelection();
       } catch (error) {
         button.disabled = false;
         window.alert(error instanceof Error ? error.message : "アーカイブ操作に失敗しました。");
