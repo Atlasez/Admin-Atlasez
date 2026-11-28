@@ -2,39 +2,39 @@
 
 更新日: 2026-11-28
 
-状態: コード候補 `e9b40d3f284577a0af652e9d180ed2fcc4d4594b` とstaging候補 `99b8139dd9585840fc4f555789de1a5a4bc75217` の必須CIは成功。docs-only更新のmerge可否は最新PR checksが成功したことを確認する。独立レビュー担当は所有者指示で不要。production 0141とrelease staging D1の0144はバックアップ・隔離復元後に適用済み。candidate branch `codex/staging-intake-649` は作成済みだが、staging WorkerのBuild branch/SHA guardは候補と不一致で、OAuth test-user allowlistも未設定のため、staging配信・role別受入・本番Worker deploy・実利用者受入は未完了。
+状態: コード候補 `e9b40d3f284577a0af652e9d180ed2fcc4d4594b` とstaging候補 `99b8139dd9585840fc4f555789de1a5a4bc75217` の必須CI、PR head `54643d261efa9c9ff87fb1c72f72f4eaa10e44cf` の全CIは成功。独立レビュー担当は所有者指示で不要。production 0141とrelease staging D1の0144はbackup・隔離restore後に適用済み。Cloudflare staging Workerのbranch/SHA guardは専用candidate `codex/staging-intake-649` / `99b8139d` に整合して保存・read-back済みだが、Buildは未起動でactive Versionは旧SHA `a4dcfc79` のまま。OAuth test-user allowlist未設定のため、staging配信後の認証済みrole別受入、本番Worker deploy、実利用者受入は未完了。
 
 ## 現在の確認済み進捗
 
 - [x] main基準のPR #649を作成し、応募・審査・role境界・staging手順・migration検証を統合。
 - [x] mainの記事アーカイブ承認フローを維持し、別系統の記事削除migrationと分離。
 - [x] PRとIssueにはsecret値、実利用者情報を記録しない。staging Discordの本番比較値は外部Worker設定から読み、欠落時は有効化しない。
-- [x] Cloudflare stagingをread-onlyで再確認。Workerは `codex/release-staging-647` に接続し、Build settingsのSHA guardは `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718`、直近の失敗Build commandは旧SHA `f7a3d4edf70d4a0f8736f4d1b4b12d9f8011ef4d` を要求する。候補headとの一致を確認できず、Cloudflare設定は変更していない。
+- [x] Cloudflare staging WorkerのProduction branchを `codex/staging-intake-649`、Build/Deploy SHA guardをcandidate `99b8139dd9585840fc4f555789de1a5a4bc75217` に揃えて保存。read-backで両command、staging D1 binding、allowlist不在、email/Discord disabled、Cronなしを確認。設定変更後もactive Versionは旧SHA `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718` の `65f6359d` / 100%であり、candidate Buildは未起動。
 - [x] staging用OAuth secretの存在、test-user allowlist未設定、email/Discord delivery disabled、Resend/Discord credential未設定、Cron trigger未設定をread-only確認。secret値は記録しない。
 - [x] production D1の0141適用前exportを隔離復元し、整合性・外部キー・0141適用後の集計を確認した上で、所有者承認により本番0141を適用。直後のmigration ledgerは未適用なし。
 - [x] release staging D1のmigration ledgerで0141適用済み・0144未適用を確認。バックアップと隔離復元後に0144を適用し、直後のledger、table、indexをread-back確認。
-- [x] コード候補 `e9b40d3f` とstaging candidate SHA `99b8139dd9585840fc4f555789de1a5a4bc75217` の必須CIが成功。専用ref作成と同SHAのno-Cron staging dry-runを確認。dry-runはWorker deployおよびD1 migrationを行っておらず、専用refはCloudflare Workerへまだ接続していない。
+- [x] コード候補 `e9b40d3f` とstaging candidate SHA `99b8139dd9585840fc4f555789de1a5a4bc75217` の必須CIが成功。専用refと同SHAのno-Cron staging dry-runを確認。dry-runではWorker deploy・D1 migrationを行っていない。専用refはCloudflare staging Workerへ接続済みだが、Buildは未起動。
 - [x] 2026-11-28にproduction migration 0141 read-back後のbuild-infoと、ポータル、タスク、カレンダー、プロフィール、管理トップ、記事一覧を認証済みChromeで再確認。主要画面はログイン状態で表示され、読み込み残り・画面エラーなし。
-- [x] 独立レビュー担当は所有者指示で不要。staging設定変更、配信、受入、限定運用GOは未承認・未実施。
+- [x] 独立レビュー担当は所有者指示で不要。staging Build設定の値・影響・復旧方法を計画書へ記録し、staging Workerへ適用・read-back済み。candidate Build、role別受入、限定運用GOは未完了。
 
 ## 1. コード・レビュー・migration
 
-- [ ] Cloudflare staging Build設定を候補SHAに整合する変更計画をPRでレビューする。現在のbranch/SHA guardとの不一致が解消するまで配信しない。
+- [ ] docs-only PR headのCI成功と `99b8139d` からのdocs-only差分を確認後、staging Build/Deploy SHA guardを新headへ合わせ、candidate branchをそのheadへfast-forwardしてWorkers Buildsを起動する。
 - [ ] test-user allowlistを所有者が承認したsynthetic Google accountに限定し、secret名をread-backする。許可アカウント未設定のままstagingログイン試験を行わない。
 - [ ] Build設定、OAuth callback、cookie domain、CORS、redirect allowlistをstaging専用でread-back確認する。
-- [ ] staging配信後、公開build-info/commit、D1 binding、migration ledgerをread-onlyで再取得する。PR headとの不一致があれば停止する。
+- [ ] candidate Build後、run/checkout SHA、公開build-info、Worker名・Version・100%配信、D1 binding、migration ledgerをread-onlyで再取得する。想定SHA/workerとの不一致があれば停止する。
 - [x] staging D1の0141/0144適用状態をread-back照合。0144はbackup/隔離restore後に適用済み。
 - [ ] 本番D1のmigration適用は、このstagingチェックリストの完了だけでは許可しない。
 
 ## 2. stagingの分離確認と配信
 
-- [x] staging専用Worker、reports用D1 binding、OAuth secretの存在をread-onlyで確認。
+- [x] staging専用Worker、reports用D1 binding、OAuth secretの存在をread-onlyで確認。Build branch/SHA guardをcandidate `codex/staging-intake-649` / `99b8139d` に合わせて保存した。
 - [ ] staging origin、OAuth callback、cookie domain、CORS、redirect allowlistがstaging専用で一致することを確認する。
 - [x] production比較値を外部環境からstaging isolation preflightへ与えた。値はrepository、PR、Issueへ保存しない。
 - [ ] Discord stagingのruntime guard用にATLASEZ_PRODUCTION_DISCORD_GUILD_IDとATLASEZ_PRODUCTION_DISCORD_CLIENT_IDをstaging Workerのsecret storeへ設定し、secret値を表示せず名前だけread-backする。どちらかが未設定ならstaging Discordを有効化しない。
 - [x] release staging用D1と既存staging D1が異なることをread-onlyで照合し、isolation preflightへ渡した。
 - [ ] operatorが承認したsynthetic accountだけをstaging allowlistに設定する。現状はallowlist未設定。
-- [x] exact commit SHA `e9b40d3f284577a0af652e9d180ed2fcc4d4594b` のno-Cron dry-runが成功。branch/SHA guardのずれが残る間はdeployしない。
+- [x] exact code commit SHA `e9b40d3f284577a0af652e9d180ed2fcc4d4594b` のno-Cron dry-runが成功。候補 `99b8139d` のBuildは未起動で、active staging Versionは旧SHAのまま。
 - [ ] Resend sandboxとDiscord test guildのcredential、送信先、停止方法をread-backする。未設定・未承認の通知は送らない。
 - [ ] Workerのemail/Discord deliveryがdisabledであることを維持し、sandboxの受信確認前に有効化しない。
 
