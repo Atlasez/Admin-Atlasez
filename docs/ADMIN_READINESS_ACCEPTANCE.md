@@ -5,7 +5,7 @@
 ## 現在の状況
 
 - mainには記事アーカイブの承認フローが含まれる。メンバー受入候補は別系統の記事削除フローと分離している。
-- main基準の受入候補はPR [#649](https://github.com/Atlasez/Admin-Atlasez/pull/649)。対象headは `e9b40d3f284577a0af652e9d180ed2fcc4d4594b`、base mainは `a902f54059ec032fe49b6aea2464e8e5d6c5198a`。GitHub CI run [46126987210](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46126987210) はsuccess。独立レビュー担当は所有者指示で不要だが、PRはstaging受入・運営GO前のため未merge。
+- main基準の受入候補はPR [#649](https://github.com/Atlasez/Admin-Atlasez/pull/649)。コード候補 `e9b40d3f284577a0af652e9d180ed2fcc4d4594b`、base main `a902f54059ec032fe49b6aea2464e8e5d6c5198a` のCI run [46126987210](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46126987210) はsuccess。docs-onlyの受入記録更新後に最新headのCIを再実行中。独立レビュー担当は所有者指示で不要だが、PRはstaging受入・運営GO前のため未merge。
 - Cloudflare staging Workerは `codex/release-staging-647` に接続し、Build設定のSHA pin `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718` とBuild commandの旧SHA `f7a3d4edf70d4a0f8736f4d1b4b12d9f8011ef4d` は候補headと一致しない。候補head `e9b40d3f` のno-Cron dry-runは成功したが、Workerへは配信していない。Cloudflare Build設定は変更していない。
 - staging専用Worker/D1 bindingとOAuth secretを確認。test-user allowlistは未設定、email/Discord deliveryはdisabled、Resend/Discord credentialsは未設定、Cron triggerも未設定。synthetic Google accountを許可するまで認証済み受入はできない。
 - 本番D1は0144適用済み。0141は2026-11-28に、適用直前のledger確認、所有者限定backup、隔離SQLite restoreと0141適用検証、D1所有者の明示承認を経て適用した。直後のread-backは0141/0144適用済み、未適用migrationなし。
