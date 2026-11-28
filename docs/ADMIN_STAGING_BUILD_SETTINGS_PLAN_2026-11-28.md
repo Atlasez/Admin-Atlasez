@@ -1,52 +1,69 @@
-# ADMIN staging Build設定変更計画
+# ADMIN staging Build設定変更計画・実施記録
 
 更新日: 2026-11-28
 
-状態: staging WorkerのBuild設定は2026-11-28に保存・read-back済み。Production branchは候補branch、Build/Deploy SHA guardは候補SHAを指す。設定保存だけではBuildは起動せず、active staging Versionは旧SHAのまま。候補Worker Versionはまだ配信していない。production Worker・Route・D1は変更していない。
+## 実施結果
 
-## 対象と候補
+Cloudflare staging Worker `atlasez-admin-release-staging` は、GitHub branch `codex/staging-intake-649` のcommit `af2c2ae17aa14c6943e60414bcc31db738052259` からWorkers BuildsでBuild/Deploy済み。
+
+- Build run: `05248d8c-ee60-4afc-a813-807cf8fd7bd2`
+- Build command / Deploy command: success
+- staging Worker Version表示: `f07af8b2`、traffic 100%、Ready
+- staging origin `/build-info.json` のcommit: Build対象SHAと一致
+- PR #649 head CI: run [46134265088](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46134265088) success
+- release staging専用D1 bindingをread-back確認。production D1は接続していない。
+- `ATLASEZ_STAGING_MODE=true`、email/Discord delivery disabled、Cronなし、Google login allowlist未設定をread-back確認。
+- production Worker、Route、D1、secretsは変更していない。
+
+Build run `6c476de7-d452-4dc3-8e82-688d7da5391f` はproduction比較用Build環境変数が未設定で停止した。run `d1f365bc-cc59-403a-84f8-f15680bfc381` はrelease staging D1をlegacy staging D1比較値へ誤設定したため、隔離preflightが停止した。D1一覧をread-onlyで照合して比較値を修正後、run `05248d8c-ee60-4afc-a813-807cf8fd7bd2` がpreflight、Build、Deployとも成功した。比較用D1 IDなどの値はCloudflare Build環境にだけ置き、この文書、repository、PR、Issueには記録しない。
+
+## 候補とCloudflare設定
 
 - 対象Worker: `atlasez-admin-release-staging`
-- GitHub repository: `Atlasez/Admin-Atlasez`
-- 現在のProduction branch: `codex/staging-intake-649`
-- 現在のBuild/Deploy SHA guard: `99b8139dd9585840fc4f555789de1a5a4bc75217`
-- active staging Version: `65f6359d`、commit `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718`、traffic 100%。候補SHAのVersionは未作成。
-- 候補branch: `codex/staging-intake-649`。candidate SHA `99b8139dd9585840fc4f555789de1a5a4bc75217` を指しています。同SHAのCI run [46130190787](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46130190787) とno-Cron dry-runは成功済みです。
-- 候補SHA: `99b8139dd9585840fc4f555789de1a5a4bc75217`。コード候補 `e9b40d3f284577a0af652e9d180ed2fcc4d4594b` からの差分は受入・復旧記録だけ。
-- binding、Runtime vars/secrets、Workers.dev origin、email/Discord無効、Cronなし、staging D1は現状のままにする。D1 0141/0144は適用・read-back済み。
-
-設定変更時点でProduction branchとBuild/Deploy commandのSHA guardを上記値に揃え、Cloudflare dashboardからread-backした。OAuth allowlistは未設定なのでログイン受入はまだできない。Production branch設定の保存後もBuildは自動起動しなかった。次のBuildは、最新PR headのCI成功と `99b8139d` からの差分がdocs-onlyであることを確認し、Build/Deploy guardをそのfull SHAに揃えた後、candidate refを同じfull SHAへfast-forwardしてWorkers Buildsのpush triggerで開始する。コード候補は変わらないが、対象SHA・Build・Versionは別途照合する。
-
-## 変更するCloudflare設定
-
-保存済み設定はProduction branch `codex/staging-intake-649`、Build/Deploy commandのSHA guard `99b8139dd9585840fc4f555789de1a5a4bc75217`。次のBuild起動時は、PR headに追記されたdocs-only変更を含むCI成功SHAへ両guardを更新してから、candidate refを同じSHAへfast-forwardする。Build commandとDeploy commandの他の処理は保つ。
+- Repository: `Atlasez/Admin-Atlasez`
+- Production branch: `codex/staging-intake-649`
+- candidate SHA: `af2c2ae17aa14c6943e60414bcc31db738052259`
+- コード候補: `e9b40d3f284577a0af652e9d180ed2fcc4d4594b`
+- base main: `a902f54059ec032fe49b6aea2464e8e5d6c5198a`
+- `99b8139dd9585840fc4f555789de1a5a4bc75217` からの差分はdocs-only。候補SHA CIとCloudflare Buildが成功した。
 
 Build command:
 
 ```bash
-test "$(git rev-parse HEAD)" = '99b8139dd9585840fc4f555789de1a5a4bc75217' && printf '%s' "$RELEASE_CONFIG_JSON" > wrangler.admin.staging.compat.jsonc && npm ci && npm run verify:admin-staging-config:compat && ATLASEZ_BUILD_TARGET=admin SITE_URL=https://atlasez-admin-release-staging.atlasez-adm.workers.dev BASE_PATH=/ npm run build && npm run verify:build-info
+test "$(git rev-parse HEAD)" = 'af2c2ae17aa14c6943e60414bcc31db738052259' && printf '%s' "$RELEASE_CONFIG_JSON" > wrangler.admin.staging.compat.jsonc && npm ci && npm run verify:admin-staging-config:compat && ATLASEZ_BUILD_TARGET=admin SITE_URL=https://atlasez-admin-release-staging.atlasez-adm.workers.dev BASE_PATH=/ npm run build && npm run verify:build-info
 ```
 
 Deploy command:
 
 ```bash
-test "$(git rev-parse HEAD)" = '99b8139dd9585840fc4f555789de1a5a4bc75217' && npm run verify:admin-staging-config:compat && npx wrangler deploy --config wrangler.admin.staging.compat.jsonc --keep-vars
+test "$(git rev-parse HEAD)" = 'af2c2ae17aa14c6943e60414bcc31db738052259' && npm run verify:admin-staging-config:compat && npx wrangler deploy --config wrangler.admin.staging.compat.jsonc --keep-vars
 ```
 
-既存の `RELEASE_CONFIG_JSON`、Google OAuth client secret、Worker/D1 binding、API token、watch pathsは変更しない。Cronは未設定のままにし、email/Discord deliveryをdisabledのまま維持する。Production Worker `atlasez-admin`、本番D1、公開サイトのrouteやsecretsへは変更を加えない。
+Build環境には比較専用の次の変数名を登録した。各値はCloudflare外へ記録しない。
 
-## 影響とread-back
+- `ATLASEZ_PRODUCTION_ADMIN_ORIGIN`
+- `ATLASEZ_PRODUCTION_D1_NAME`
+- `ATLASEZ_PRODUCTION_D1_ID`
+- `ATLASEZ_PRODUCTION_DISCORD_GUILD_ID`
+- `ATLASEZ_PRODUCTION_DISCORD_CLIENT_ID`
+- `ATLASEZ_EXISTING_STAGING_D1_ID`
 
-Build branchまたはcommandの保存だけで新Versionが配信されたことにはしない。Cloudflare上でbranch、Build/Deploy commandをread-backしたが、その時点のactive Versionは旧SHAのまま。Build開始後はWorkers Builds runとcheckout SHA、Worker名、traffic 100%、Version、staging D1 bindingを読み戻す。staging originの `build-info.json` のSHAがBuild対象SHAと一致することを確認する。OAuth allowlistが未設定の間は認証済み受入に進まず、Secret値やユーザー行を出力・記録しない。
+これらはBuild時の分離preflight用で、Worker runtime secrets/varsやstaging configには追加していない。OAuth allowlistも設定していない。
 
-Build triggerは、レビュー済みの最新PR docs-only headへ専用branchをfast-forwardしてWorkers Buildsのpushを発生させる。候補コードSHA `e9b40d3f284577a0af652e9d180ed2fcc4d4594b` とstaging candidate `99b8139dd9585840fc4f555789de1a5a4bc75217` のCI/no-Cron dry-runは既に成功している。新しいPR docs-only headのCIが成功するまでbranchを動かさない。
+## Read-backと次の作業
+
+Workers Builds runのbranch/commit、Build/Deploy結果、Worker Version、100% traffic、staging `build-info.json` SHA、D1 binding、email/Discord disabled、Cronなしを照合した。stagingポータルの未認証アクセスはGoogle OAuth account chooserへ遷移したが、synthetic test accountがまだ指定されていないため、アカウントを選ばず終了した。role別の認証済み受入は未完了。
+
+次のBuildでは、Build/Deploy SHA guardとstaging branch refを、その時点でCI success済みの完全なSHAへ一致させてからWorkers Buildsを起動する。Build起動時にD1 migrationを自動適用しない。production Worker/D1への配信は、staging受入と運営GOの記録が揃うまで行わない。
 
 ## 復旧
 
-想定外のcheckout SHA、Worker、Version、binding、auth動作を確認したら、staging WorkerのBuildを停止してから設定を次へ戻す。
+予期しないcheckout SHA、Worker、Version、binding、認証動作を確認した場合はstagingで停止し、productionへ切り替えない。Build設定とactive staging Versionを読み取り専用で照合する。別のVersionへのrollback/promote、Route変更、productionへの手動deployは推測で実行しない。
+
+過去の安定設定へ戻す必要がある場合は、次の設定を復旧候補としてread-backし、意図しない変更を含まないことを確認する。
 
 - Production branch: `codex/release-staging-647`
 - Build command SHA guard: `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718`
 - Deploy command SHA guard: `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718`
 
-復旧後はBuild設定、active staging Version、Worker/D1 bindingをread-onlyで照合する。Versionが期待と異なる場合は、承認なしでpromote、rollback、Route変更を推測実行しない。0144は追加型schemaのため逆migrationで削除せず、必要な修正はstaging上でforward-fixする。本番Worker/D1はこの復旧手順の対象外。
+復旧後はBuild設定、active staging Version、Worker/D1 bindingをread-onlyで照合する。0144は追加型schemaのため逆migrationで削除せず、必要な修正はstaging上のforward-fixとして扱う。本番Worker/D1はこの復旧手順の対象外。
