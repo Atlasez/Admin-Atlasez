@@ -100,9 +100,9 @@ test "$(git rev-parse HEAD)" = 'f0f4ee753c305c59f4c5efcdced7d4d14d7821d3' && pri
 test "$(git rev-parse HEAD)" = 'f0f4ee753c305c59f4c5efcdced7d4d14d7821d3' && npm run verify:admin-staging-config:compat && npx wrangler deploy --config wrangler.admin.staging.compat.jsonc --keep-vars
 ```
 
-## 応募受付停止switch候補のstaging設定案
+## 応募受付停止switch候補のstaging設定計画（実施前記録）
 
-staging対象のruntime candidateは `f02421d4cadacc0f8043950e276de368558d86d8`。最新PR headがこのSHAのdocs-only子孫になった場合も、stagingのBuild/Deploy SHA guardとstaging refはこのruntime candidateへ固定する。以下はこのSHAのGitHub CI success後に適用する**未適用のstaging専用設定案**である。Production branch、Build SHA guard、Deploy SHA guard、staging refをこの完全SHAへ揃える。Build/Deploy commandのほかの部分は現在値から変更しない。
+staging対象のruntime candidateは `f02421d4cadacc0f8043950e276de368558d86d8`。以下はBuild/Deploy前のstaging専用設定計画と、実行時に使用したSHA guardである。設定変更と配信の実績は後続の「runtime候補staging Build結果」へ記録する。Build/Deploy commandのほかの部分は変更しない。
 
 Build commandのSHA guard:
 
@@ -119,3 +119,14 @@ test "$(git rev-parse HEAD)" = 'f02421d4cadacc0f8043950e276de368558d86d8' && npm
 影響範囲はstaging Worker `atlasez-admin-release-staging`と専用D1だけ。migration、Cron、メール、Discord、本番Worker/Route/D1/secretsは変更しない。Build/Deploy前にGitHub CI success、Build設定のAccount/Worker/repository、専用D1 binding、production比較用Build variablesをread-backする。失敗・SHA不一致時はDeployせず、原因とrunを記録する。既存のactive staging Versionはread-onlyで照合し、推測によるrollback/promoteは行わない。
 
 今回のruntime variable `ADMIN_APPLICATION_INTAKE_MODE`はWrangler設定へ追加しない。Dashboard runtime変数の `open → paused → open` を受入する際は、staging Workerだけに適用し、変数設定後のWorker Version、3書込経路の503、DB未更新、応募画面案内を確認する。
+
+## 2026-11-28 runtime候補staging Build結果
+
+最新PR head `bc2b55761f298b67ae65f1ae013182990aeba5c6` とruntime candidate `f02421d4cadacc0f8043950e276de368558d86d8` のGitHub CI success後、release staging専用Build guardをcandidate SHAへ合わせ、staging専用refをfast-forwardしてWorkers Buildsを実行した。
+
+- Workers Build [`abebebec-31d3-49ba-96d4-5e6595f6c68f`](https://dash.cloudflare.com/812021e62fa20465950b61be55dfe064/workers/services/view/atlasez-admin-release-staging/production/builds/abebebec-31d3-49ba-96d4-5e6595f6c68f) はbranch `codex/staging-intake-649`、checkout/guard SHA `f02421d4cadacc0f8043950e276de368558d86d8`。Initializing、Cloning、Installing、Building、Deployingが成功。
+- Build logの `verify:build-info` は同SHAを確認。公開 [staging build-info.json](https://atlasez-admin-release-staging.atlasez-adm.workers.dev/build-info.json) はcommit `f02421d4cadacc0f8043950e276de368558d86d8`、target `admin`、builtAt `2026-11-28T13:24:12.476Z`。refは `unknown` のため、branchはBuild recordで確認。
+- Worker `atlasez-admin-release-staging` Version `56afd06e-5679-4cee-98f9-6330ac0504fd` は100%配信、Ready。専用D1 bindingは維持され、Build中にmigrationは実行されていない。
+- この変更はstaging Worker/D1だけに適用。production Worker/Route/D1/secrets、Cron、メール、Discordは変更していない。stagingの認証allowlistは未設定で、pause switch runtime演習、role別OAuth受入は未完了。
+
+次の受入操作はDashboard上のruntime variable `ADMIN_APPLICATION_INTAKE_MODE` をstaging Workerに設定する。値を切り替えるたびWorker Versionが変わるため、`open`、`paused`、`open`各段階のVersionを記録し、3書込経路の503/DB不更新と画面状態を同じ合成データの隔離状態で確認する。role別API確認ではmemberとmanager/reviewerの別々の合成Google identityを使う。
