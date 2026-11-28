@@ -213,6 +213,7 @@ test("応募者・メンバー対応は応募状態と確認予定を日本語�
   await expect(
     page.getByRole("heading", { name: "応募者・メンバー対応" }),
   ).toBeVisible();
+  await expect(page.locator(".intake header p")).toHaveCount(0);
 
   const applicant = page.locator('[data-entry="applicant@example.test"]');
   await expect(applicant).toContainText("応募：受け入れ済み");

@@ -4,12 +4,11 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
 // All project cards are built once; the browser resolves the requested project.
 const project = "atlas";
 const projectSite = "atlas";
-const projectLabel = '学習サイト「アトラス」';
 ---
 
 <AdminLayout title="管理トップ" description="管理機能の入口">
   <main class="management-home" data-management-home data-admin-load-surface data-project={project} aria-busy="true">
-    <header><p data-management-project-label hidden>{projectLabel}</p><h1>管理トップ</h1></header>
+    <header><h1 data-management-title>管理トップ</h1></header>
     <section aria-label="管理機能">
       <a href={`/admin/permissions/?project=${project}`} data-manager-only data-admin-site={projectSite} hidden><strong>権限管理</strong><ul class="role-tags"><li>全分野管理者</li></ul><span aria-label="権限管理を開く">→</span></a>
       <a data-management-project="atlas" href="/admin/member-management/?project=atlas" data-manager-only data-admin-site="atlas" hidden><strong>運営メンバー管理</strong><ul class="role-tags"><li>全分野管理者</li></ul><span aria-label="運営メンバー管理を開く">→</span></a>
@@ -46,11 +45,8 @@ const projectLabel = '学習サイト「アトラス」';
     const project = resolveAdminManagementProject(new URLSearchParams(location.search).get('project'));
     const {site: projectSite, label: projectLabel} = adminManagementProjects[project];
     managementHome.dataset.project = project;
-    const label = managementHome.querySelector<HTMLElement>('[data-management-project-label]');
-    if (label) {
-      label.textContent = projectLabel;
-      label.hidden = project === 'atlas';
-    }
+    const title = managementHome.querySelector<HTMLElement>('[data-management-title]');
+    if (title) title.textContent = project === 'atlas' ? '管理トップ' : `${projectLabel}：管理トップ`;
     managementHome.querySelectorAll<HTMLElement>('[data-management-project]').forEach(item => {
       const target = item.dataset.managementProject;
       // Remove unsupported cards so the shared navigation permission refresh

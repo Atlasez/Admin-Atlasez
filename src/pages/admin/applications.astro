@@ -19,12 +19,11 @@ const projectLabel = selectedProject?.[1] ?? "";
       <h1>{selectedProject ? `${projectLabel}：応募管理` : "応募管理"}</h1>
     </header>
     <section class="project-picker" hidden={Boolean(selectedProject)} aria-labelledby="project-picker-title">
-      <p>プロジェクトを選択</p>
       <h2 id="project-picker-title">確認する応募先を選んでください</h2>
       <span>プロジェクトをまたいだ一括表示は行わず、各運営ページから個別に確認します。</span>
     </section>
     <section class="application-flow" aria-labelledby="application-flow-title" hidden={!selectedProject}>
-      <div class="flow-heading"><div><p>参加手続き</p><h2 id="application-flow-title">応募から参加までの流れ</h2></div><span>各段階の確認内容を見ながら対応できます。</span></div>
+      <div class="flow-heading"><h2 id="application-flow-title">応募から参加までの流れ</h2><span>各段階の確認内容を見ながら対応できます。</span></div>
       <ol class="flow-steps">
         <li><span class="flow-step-number">1</span><div><strong>応募内容を確認</strong><small>希望分野、書きたい記事、参加理由を確認します。</small></div></li>
         <li><span class="flow-step-number">2</span><div><strong>確認中に変更</strong><small>追加確認が必要な応募を確認中として整理します。</small></div></li>
@@ -33,7 +32,7 @@ const projectLabel = selectedProject?.[1] ?? "";
       </ol>
     </section>
     <section class="application-overview" aria-labelledby="application-list-title" hidden={!selectedProject}>
-      <div class="section-heading"><div><p>応募状況</p><h2 id="application-list-title">応募一覧</h2></div><span data-total-count>—</span></div>
+      <div class="section-heading"><h2 id="application-list-title">応募一覧</h2><span data-total-count>—</span></div>
       <div class="summary-grid" aria-label="応募状況">
         <div class="summary-card summary-card--new"><strong data-summary-new>0</strong><span>新規</span></div>
         <div class="summary-card summary-card--reviewing"><strong data-summary-reviewing>0</strong><span>確認中</span></div>
@@ -652,7 +651,7 @@ const projectLabel = selectedProject?.[1] ?? "";
       return `<div class="actions"><div class="action-status"><span class="action-caption">参加状況</span><span class="badge" data-state="${esc(provisioningState)}">${esc(status)}・${esc(provisioningLabel[provisioningState]??provisioningState)}${esc(retryNote)}</span></div>${tags}<a class="button application-detail-link" href="${esc(detailPath)}">応募者対応を開く →</a>${hasConflict?`<p class="application-state-conflict" role="alert">要確認：審査結果「${esc(decisionLabel)}」と応募状態「${esc(statusLabel)}」が一致していません。応募者対応で記録を確認してください。</p>`:''}</div>`;
     };
     const interviewSummary=(application:any)=>{const interview=interviewFor(application);const when=interview.scheduledAt?formatDate(interview.scheduledAt):'日程未設定';const format=interview.mode==='in_person'?'対面':interview.mode==='online'?'オンライン':'';const result=application.interview_decision?`応募結果：${applicationStatusLabels[application.interview_decision]??application.interview_decision}`:'応募結果：未判定';return `<section class="interview-summary" aria-label="面談状況"><div><strong>面談</strong><span>${esc([when,format].filter(Boolean).join(' ・ '))}</span></div><span>${esc(result)} ・ ${interview.notifiedAt?'案内済み':'案内未送信'}</span></section>`};
-    const applicationCard=(application:any)=>{const name=displayName(application);const initial=String(name).trim().slice(0,1)||'？';const email=String(application.email||'');const projectLabel=formLabels[application.project_slug]??application.project_slug??'学習サイト「アトラス」';const subjectTags=String(application.desired_subjects||'').split(',').filter(Boolean).map(subject=>`<span>${esc(subjectLabels[subject]??subject)}</span>`).join('')||'<span>希望未設定</span>';return `<article class="app" data-status="${esc(application.status)}" aria-labelledby="application-${esc(application.id)}-name"><div class="top"><div class="app-identity"><span class="app-avatar" aria-hidden="true">${esc(initial)}</span><div><p class="app-kicker">応募者情報</p><h2 id="application-${esc(application.id)}-name">${esc(name)}</h2>${email?`<a class="app-email" href="mailto:${encodeURIComponent(email)}">${esc(email)}</a>`:''}<p class="app-subline">${esc(formatDate(application.created_at))}</p><span class="app-project">${esc(projectLabel)}</span></div></div>${actions(application)}</div>${interviewSummary(application)}<section class="application-section application-section--subjects" aria-label="希望分野"><div class="application-section-heading"><p>希望分野</p><span>応募者対応で詳細を確認</span></div><div class="facts">${subjectTags}</div></section></article>`};
+    const applicationCard=(application:any)=>{const name=displayName(application);const initial=String(name).trim().slice(0,1)||'？';const email=String(application.email||'');const projectLabel=formLabels[application.project_slug]??application.project_slug??'学習サイト「アトラス」';const subjectTags=String(application.desired_subjects||'').split(',').filter(Boolean).map(subject=>`<span>${esc(subjectLabels[subject]??subject)}</span>`).join('')||'<span>希望未設定</span>';return `<article class="app" data-status="${esc(application.status)}" aria-labelledby="application-${esc(application.id)}-name"><div class="top"><div class="app-identity"><span class="app-avatar" aria-hidden="true">${esc(initial)}</span><div><h2 id="application-${esc(application.id)}-name">${esc(name)}</h2>${email?`<a class="app-email" href="mailto:${encodeURIComponent(email)}">${esc(email)}</a>`:''}<p class="app-subline">${esc(formatDate(application.created_at))}</p><span class="app-project">${esc(projectLabel)}</span></div></div>${actions(application)}</div>${interviewSummary(application)}<section class="application-section application-section--subjects" aria-label="希望分野"><div class="application-section-heading"><h3>希望分野</h3><span>応募者対応で詳細を確認</span></div><div class="facts">${subjectTags}</div></section></article>`};
     let applications:any[]=[];
     let nextCursor:string|null=null;
     let hasMore=false;

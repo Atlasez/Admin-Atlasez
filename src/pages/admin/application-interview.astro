@@ -93,6 +93,7 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
     border-color: color-mix(in srgb, var(--danger) 48%, var(--border-default));
     color: var(--danger);
   }
+  .application-content .application-section-heading h3{font-size:.88rem;margin:0}
 </style>
 
 <script>
@@ -202,10 +203,10 @@ import AdminRetryNotice from "../../components/admin/AdminRetryNotice.astro";
       const provisioningLabels: Record<string, string> = { not_started: "未実行", pending: "Discord同期準備中", synced: "Discord同期済み", skipped: "Discord未連携・未実行", failed: "Discord同期要確認" };
       const provisioningStatus = full.provisioning_status ?? "not_started";
       const canRetryDiscord = full.status === "accepted" && provisioningStatus !== "synced";
-      content.innerHTML = `<div class="application-section-heading"><div><p>応募内容</p><h2>応募者の回答</h2></div><span>${escape(formatDate(full.created_at))}</span></div>
+      content.innerHTML = `<div class="application-section-heading"><h2>応募者の回答</h2><span>${escape(formatDate(full.created_at))}</span></div>
         <div class="application-meta-grid">${meta("所属", `${full.affiliation_type || "未設定"}：${full.institution || "—"}`)}${meta("呼称", full.nickname)}${meta("所属先メール", full.affiliation_email)}${meta("学年", full.grade)}${meta("国・居住地", `${full.country || "—"} / ${full.residence_city || "都市未登録"}`)}${meta("生年月日", full.birth_date)}${meta("タイムゾーン", full.timezone)}${meta("Discord連携", discord)}</div>
         <section class="application-section application-provisioning" aria-label="参加環境の同期状況"><div><span>参加環境</span><strong data-provisioning-status>${escape(provisioningLabels[provisioningStatus] ?? "状態要確認")}</strong></div>${full.provisioning_next_attempt_at ? `<p>次回確認予定：${escape(formatDate(full.provisioning_next_attempt_at))}</p>` : ""}${canRetryDiscord ? `<button class="button button--quiet" type="button" data-discord-retry>Discord情報を再確認</button>` : ""}</section>
-        <section class="application-section application-section--subjects" aria-label="希望分野"><div class="application-section-heading"><p>希望分野</p><span>担当候補</span></div><div class="facts">${subjectTags}</div></section>
+        <section class="application-section application-section--subjects" aria-label="希望分野"><div class="application-section-heading"><h3>希望分野</h3><span>担当候補</span></div><div class="facts">${subjectTags}</div></section>
         <div class="application-response-grid"><div class="response-block"><h3>書きたい記事・テーマ</h3><pre>${escape(full.article_ideas || "—")}</pre></div><div class="response-block"><h3>できること・関心</h3><pre>${escape(full.interests || "—")}</pre></div><div class="response-block response-block--wide"><h3>参加理由・自己紹介</h3><pre>${escape(full.message || "—")}</pre></div>${full.availability_note ? answer("参加可能な時間帯", full.availability_note) : ""}</div>
         <details class="application-original-fields"><summary>応募フォームの詳細を開く</summary><div class="application-response-grid">${answer("知ったきっかけ", full.referral_source)}${answer("現在のサークル・学生団体", full.current_organizations)}${answer("参加理由", full.motivation_reasons)}${answer("希望担当", full.desired_roles)}${answer("面談候補日", full.interview_availability)}${answer("質問", full.applicant_questions)}${extraAnswers}</div></details>
         <details class="application-original-fields" aria-label="応募関連メールの状態"><summary>応募関連メールの状況</summary>${deliveries ? `<ul class="delivery-list">${deliveries}</ul><p class="field-help">「Resend受付済み」は送信APIの受付を示し、受信箱への到達確認ではありません。</p>` : `<p class="field-help">配信記録はありません。応募の保存状態を示すものではないため、応募内容と管理画面通知も確認してください。</p>`}</details>
