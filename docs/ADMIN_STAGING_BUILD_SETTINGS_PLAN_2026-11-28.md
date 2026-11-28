@@ -17,7 +17,7 @@ Cloudflare staging Worker `atlasez-admin-release-staging` は、GitHub branch `c
 
 Build run `6c476de7-d452-4dc3-8e82-688d7da5391f` はproduction比較用Build環境変数が未設定で停止した。run `d1f365bc-cc59-403a-84f8-f15680bfc381` はrelease staging D1をlegacy staging D1比較値へ誤設定したため、隔離preflightが停止した。D1一覧をread-onlyで照合して比較値を修正後、run `05248d8c-ee60-4afc-a813-807cf8fd7bd2` がpreflight、Build、Deployとも成功した。比較用D1 IDなどの値はCloudflare Build環境にだけ置き、この文書、repository、PR、Issueには記録しない。
 
-## 候補とCloudflare設定
+## 前回Build候補とCloudflare設定
 
 - 対象Worker: `atlasez-admin-release-staging`
 - Repository: `Atlasez/Admin-Atlasez`
@@ -67,3 +67,29 @@ Workers Builds runのbranch/commit、Build/Deploy結果、Worker Version、100% 
 - Deploy command SHA guard: `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718`
 
 復旧後はBuild設定、active staging Version、Worker/D1 bindingをread-onlyで照合する。0144は追加型schemaのため逆migrationで削除せず、必要な修正はstaging上のforward-fixとして扱う。本番Worker/D1はこの復旧手順の対象外。
+
+## 2026-11-28 main追従後の本番確認
+
+- GitHub main `76e5fad87e01f6894d3917bec6bf494e99ebe888` のproduction Workers Build `76517dd7-8166-41d7-81b9-bf5f0dbd46e2` はBuild/Deployとも成功。
+- Worker `atlasez-admin` のVersion `902fd2f0-e906-4800-b353-13afb355e969` は100% traffic、Ready。公開 `https://admin.atlasez.org/build-info.json` のcommitはmain SHAと一致。
+- 認証済みChromeでポータル、タスク、カレンダー、プロフィール、`/admin/manage/?project=atlas`、記事一覧、記事削除申請を確認し、各画面が表示されることを確認した。
+- PR #649 runtime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` はmainを取り込み、GitHub CI run [46139876980](https://github.com/Atlasez/Admin-Atlesez/actions/runs/46139876980) が全job success。今回の記録更新はdocs-onlyで、最新head CIは更新後に確認する。
+- stagingは前回のBuild SHA `af2c2ae17aa14c6943e60414bcc31db738052259` / Version `f07af8b2` を100%配信中。staging専用D1のmigration ledgerはread-onlyで確認し、未適用migrationなし。新しいruntime候補はまだBuildしていない。
+
+## 次回staging Buildの設定計画
+
+この設定変更はPR #649で計画・復旧方法を記録し、PRの最新head CIが成功した後に行う。Build/Deploy SHA guardをCI成功済みruntime候補 `f0f4ee753c305c59f4c5efcdced7d4d14d7821d3` に固定し、staging専用ref `codex/staging-intake-649` を同SHAへfast-forwardする。Worker Buildsが対象Worker `atlasez-admin-release-staging` だけをBuild/Deployすることを確認する。
+
+影響範囲はstaging Workerと専用D1だけで、production Worker/Route/D1、production secrets、email/Discord delivery、Cronは変更しない。migrationは実行しない。preflight/Build/Deployが失敗した場合は現行のstaging Version `f07af8b2` がそのまま配信され、productionには影響しない。設定・接続の復旧候補は上記「復旧」に記録した旧staging branch/guardであり、推測によるrollback/promoteやproductionへの手動deployは行わない。
+
+予定Build command:
+
+```bash
+test "$(git rev-parse HEAD)" = 'f0f4ee753c305c59f4c5efcdced7d4d14d7821d3' && printf '%s' "$RELEASE_CONFIG_JSON" > wrangler.admin.staging.compat.jsonc && npm ci && npm run verify:admin-staging-config:compat && ATLASEZ_BUILD_TARGET=admin SITE_URL=https://atlasez-admin-release-staging.atlasez-adm.workers.dev BASE_PATH=/ npm run build && npm run verify:build-info
+```
+
+予定Deploy command:
+
+```bash
+test "$(git rev-parse HEAD)" = 'f0f4ee753c305c59f4c5efcdced7d4d14d7821d3' && npm run verify:admin-staging-config:compat && npx wrangler deploy --config wrangler.admin.staging.compat.jsonc --keep-vars
+```
