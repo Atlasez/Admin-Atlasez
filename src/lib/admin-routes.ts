@@ -269,6 +269,7 @@ const adminPageNames = [
   "profile-requests",
   "project-profile-requests",
   "publication-runs",
+  "deletion-requests",
   "secretariat",
   "co-working",
   "permissions",

@@ -50,6 +50,67 @@ function fixture() {
 }
 
 describe("editorial archive trash", () => {
+  it("keeps deletion review scoped and refuses approval until a public article is withdrawn", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(archivedAt));
+    const { db, request, archive } = fixture();
+    const coordinator = "deletion-coordinator@atlasez.test";
+    const otherCoordinator = "other-coordinator@atlasez.test";
+    const appoint = db.prepare(
+      "INSERT INTO editorial_workflow_roles(role,subject,email,created_at,created_by) VALUES ('subject-coordinator',?,?,?,?)",
+    );
+    appoint.run("mathematics", coordinator, archivedAt, global);
+    appoint.run("physics", otherCoordinator, archivedAt, global);
+    archive(fileA, "mathematics");
+    db.prepare(
+      "UPDATE editorial_documents SET archived_at=NULL, archive_expires_at=NULL, current_version_id='v1', published_version_id='v1', published_at=? WHERE id=?",
+    ).run(archivedAt, fileA);
+    db.prepare(
+      "UPDATE admin_notification_global_cutoff SET cleared_before=?",
+    ).run("2026-09-30T01:00:00.000Z");
+    const path = `/api/admin/editor/documents/${fileA}/deletion-request`;
+    expect(
+      (await request(path, editor, { expectedVersionId: "v0" })).status,
+    ).toBe(409);
+    const response = await request(path, editor, { expectedVersionId: "v1" });
+    expect(response.status).toBe(201);
+    const deletion = (await response.json()) as { request: { id: string } };
+    const review = `/api/admin/editor/deletion-requests/${deletion.request.id}`;
+    const decision = { decision: "approved" };
+    const queue = "/api/admin/editor/deletion-requests";
+    expect((await request(review, otherCoordinator, decision)).status).toBe(
+      403,
+    );
+    expect(await (await request(queue, otherCoordinator)).json()).toEqual({
+      requests: [],
+    });
+    const assignedQueue = await request(queue, coordinator);
+    expect((await assignedQueue.json()).requests).toMatchObject([
+      { id: deletion.request.id },
+    ]);
+    expect((await request("/admin/deletion-requests/", operator)).status).toBe(
+      200,
+    );
+    expect(
+      (await request(`/admin/editor/?document=${fileA}`, operator)).status,
+    ).toBe(200);
+    expect(
+      JSON.stringify(
+        await (await request("/api/admin/notifications", operator)).json(),
+      ),
+    ).toContain(deletion.request.id);
+    const blocked = await request(review, coordinator, decision);
+    expect(blocked.status).toBe(409);
+    expect(await blocked.json()).toMatchObject({
+      error: expect.stringContaining("公開停止"),
+    });
+    expect(
+      db
+        .prepare("SELECT deleted_at FROM editorial_documents WHERE id=?")
+        .get(fileA),
+    ).toMatchObject({ deleted_at: null });
+  });
+
   it.each(["/admin/articles/?trash=1", `/admin/editor/?document=${fileA}`])(
     "keeps the archive destination %s through login",
     async (path) => {

@@ -325,9 +325,59 @@ function splitBytesRequest(
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("記事公開候補の永続化と切替復旧", () => {
+  it("候補照合の失敗を分類し相関ID付きで記録する", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ success: false }), { status: 403 }),
+        ),
+    );
+    const pending: Promise<unknown>[] = [];
+    const database = {
+      prepare: () => ({
+        bind: () => ({ all: async () => ({ results: [] }) }),
+      }),
+    };
+
+    await worker.scheduled(
+      { cron: "*/1 * * * *" },
+      {
+        REPORTS: database,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+      } as never,
+      {
+        waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+      } as never,
+    );
+    await Promise.all(pending);
+
+    const eventText = errorLog.mock.calls
+      .map(([message]) => message)
+      .find(
+        (message): message is string =>
+          typeof message === "string" &&
+          message.includes("editorial_release_reconciliation_failed"),
+      );
+    expect(eventText).toBeDefined();
+    const event = JSON.parse(eventText!);
+    expect(event).toMatchObject({
+      event: "editorial_release_reconciliation_failed",
+      failureKind: "configuration",
+      errorCode: "cloudflare_deployment_lookup_failed",
+      retryable: false,
+    });
+    expect(event.correlationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+  });
+
   it("Content-Lengthのない過大な候補・有効化Webhookを読み切る前に停止する", async () => {
     const cloudflareFetch = vi.fn();
     vi.stubGlobal("fetch", cloudflareFetch);
@@ -587,6 +637,124 @@ describe("記事公開候補の永続化と切替復旧", () => {
     expect(savedArticle?.bindings).not.toContain(duplicateDocumentId);
   });
 
+  it("削除済み記事を下書きとして版履歴へ解決し、後続候補の登録を続ける", async () => {
+    const database = new ReleaseDatabase();
+    const deletedDocumentId = "44444444-4444-4444-8444-444444444444";
+    const deletedVersionId = "f3aa94a0-fd78-4d4a-bf88-7284c5cebf57";
+    const deletedDraft = {
+      articleId: "ja-math-set-theory-retired-note",
+      path: "src/content/articles/jpn/mathematics/set-theory/retired-note.md",
+      status: "draft",
+      versionId: deletedVersionId,
+    };
+    database.documentRows.push({
+      id: deletedDocumentId,
+      source_article_id: deletedDraft.articleId,
+      locale: "ja",
+      subject: "mathematics",
+      category: "set-theory",
+      slug: "retired-note",
+      current_version_id: deletedVersionId,
+      published_version_id: null,
+      deleted_at: "2026-11-22T00:00:00.000Z",
+    });
+    database.revisionRows.push({
+      id: deletedVersionId,
+      document_id: deletedDocumentId,
+    });
+    database.catalogRows.push({
+      path: deletedDraft.path,
+      identity_key: "ja/mathematics/set-theory/retired-note",
+      repository: "Atlasez/Atlasez01",
+      source_article_id: deletedDraft.articleId,
+      document_id: deletedDocumentId,
+    });
+    const body = JSON.stringify(candidatePayload([article, deletedDraft]));
+    vi.stubGlobal("fetch", vi.fn(currentDeploymentResponse));
+
+    const response = await worker.fetch(
+      new Request(
+        "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+        {
+          method: "POST",
+          headers: await signedHeaders(body),
+          body,
+        },
+      ),
+      {
+        REPORTS: database,
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+        GITHUB_REPOSITORY: "Atlasez/Atlasez01",
+      } as never,
+    );
+
+    const responseBody = await response.json();
+    expect(response.status, JSON.stringify(responseBody)).toBe(200);
+    const savedArticles = database.batches
+      .flat()
+      .find(({ query }) =>
+        query.includes("INSERT INTO editorial_release_candidate_articles"),
+      );
+    expect(savedArticles?.bindings).toContain(deletedDocumentId);
+    expect(savedArticles?.bindings).toContain(deletedVersionId);
+  });
+
+  it("削除済み記事が公開状態で候補に含まれたらD1登録前に拒否する", async () => {
+    const database = new ReleaseDatabase();
+    const deletedDocumentId = "44444444-4444-4444-8444-444444444444";
+    const deletedVersionId = "f3aa94a0-fd78-4d4a-bf88-7284c5cebf57";
+    const deletedArticle = {
+      articleId: "ja-math-set-theory-retired-note",
+      path: "src/content/articles/jpn/mathematics/set-theory/retired-note.md",
+      status: "published",
+      versionId: deletedVersionId,
+    };
+    database.documentRows.push({
+      id: deletedDocumentId,
+      source_article_id: deletedArticle.articleId,
+      locale: "ja",
+      subject: "mathematics",
+      category: "set-theory",
+      slug: "retired-note",
+      current_version_id: deletedVersionId,
+      published_version_id: null,
+      deleted_at: "2026-11-22T00:00:00.000Z",
+    });
+    database.catalogRows.push({
+      path: deletedArticle.path,
+      identity_key: "ja/mathematics/set-theory/retired-note",
+      repository: "Atlasez/Atlasez01",
+      source_article_id: deletedArticle.articleId,
+      document_id: deletedDocumentId,
+    });
+    const body = JSON.stringify(candidatePayload([article, deletedArticle]));
+    vi.stubGlobal("fetch", vi.fn(currentDeploymentResponse));
+
+    const response = await worker.fetch(
+      new Request(
+        "https://admin.atlasez.org/api/internal/editorial-release/candidate",
+        {
+          method: "POST",
+          headers: await signedHeaders(body),
+          body,
+        },
+      ),
+      {
+        REPORTS: database,
+        EDITORIAL_RELEASE_WEBHOOK_SECRET: secret,
+        CLOUDFLARE_WORKERS_READ_TOKEN: cloudflareReadToken,
+        GITHUB_REPOSITORY: "Atlasez/Atlasez01",
+      } as never,
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "release_deleted_article",
+    });
+    expect(database.batches).toHaveLength(0);
+  });
+
   it("41件を超える記事版をD1の100 bind上限内で候補登録する", async () => {
     const entries = Array.from({ length: 201 }, (_, index) => {
       const sequence = String(index + 1).padStart(12, "0");
@@ -822,13 +990,17 @@ describe("記事公開候補の永続化と切替復旧", () => {
       } else {
         expect(evidence).toBeUndefined();
       }
-      expect(log).toHaveBeenCalledWith(
-        JSON.stringify({
-          event: "editorial_release_reconciliation_failed",
-          code,
-          upstreamStatus: status,
-        }),
+      const reconciliationLog = log.mock.calls.find(
+        ([message]) =>
+          typeof message === "string" &&
+          message.includes("editorial_release_reconciliation_failed"),
       );
+      expect(reconciliationLog).toBeDefined();
+      expect(JSON.parse(reconciliationLog![0] as string)).toMatchObject({
+        event: "editorial_release_reconciliation_failed",
+        code,
+        upstreamStatus: status,
+      });
       expect(JSON.stringify(log.mock.calls)).not.toContain(
         privateProviderMessage,
       );
@@ -926,13 +1098,17 @@ describe("記事公開候補の永続化と切替復旧", () => {
     });
     await Promise.all(pending);
     expect(database.historyRecorded).toBe(false);
-    expect(log).toHaveBeenCalledWith(
-      JSON.stringify({
-        event: "editorial_release_reconciliation_failed",
-        code: "partial_failure",
-        upstreamStatus: null,
-      }),
+    const reconciliationLog = log.mock.calls.find(
+      ([message]) =>
+        typeof message === "string" &&
+        message.includes("editorial_release_reconciliation_failed"),
     );
+    expect(reconciliationLog).toBeDefined();
+    expect(JSON.parse(reconciliationLog![0] as string)).toMatchObject({
+      event: "editorial_release_reconciliation_failed",
+      code: "partial_failure",
+      upstreamStatus: null,
+    });
 
     await worker.scheduled({ cron: "*/1 * * * *" }, env, {
       waitUntil: (promise: Promise<unknown>) => pending.push(promise),
