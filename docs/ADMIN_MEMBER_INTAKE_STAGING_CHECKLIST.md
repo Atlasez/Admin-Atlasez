@@ -1,36 +1,39 @@
 # ADMINメンバー受入 staging checklist
 
-更新日: 2026-11-27
+更新日: 2026-11-28
 
-状態: PR #649は最新headの必須CIと独立レビュー待ち。Cloudflare stagingのBuild branch/SHA guardがPR候補と一致しないため、配信・実利用者受入・本番migration/deployは未実施。読み取り専用の実測差分はreadiness acceptanceとIssue #647へ記録する。
+状態: PR #649 head `e9b40d3f284577a0af652e9d180ed2fcc4d4594b` の必須CIは成功し、独立レビュー担当は所有者指示で不要。production 0141とrelease staging D1の0144はバックアップ・隔離復元後に適用済み。staging WorkerのBuild branch/SHA guardは候補と不一致で、OAuth test-user allowlistも未設定のため、staging配信・role別受入・本番Worker deploy・実利用者受入は未完了。
 
 ## 現在の確認済み進捗
 
 - [x] main基準のPR #649を作成し、応募・審査・role境界・staging手順・migration検証を統合。
 - [x] mainの記事アーカイブ承認フローを維持し、別系統の記事削除migrationと分離。
 - [x] PRとIssueにはsecret値、実利用者情報を記録しない。staging Discordの本番比較値は外部Worker設定から読み、欠落時は有効化しない。
-- [x] Cloudflare stagingをread-onlyで再確認。WorkerはPR作業branchではなく `codex/release-staging-647` に接続。Build settingsのSHA guardは `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718`、確認した失敗Buildのコマンドは `f7a3d4edf70d4a0f8736f4d1b4b12d9f8011ef4d` を要求。cloneされたSHAはログから確認できず、PR headとの一致も未確認。
-- [x] staging用OAuth secretの登録を確認。allowlistは未設定。メール/Discord deliveryはdisabled、Resend/Discord credentialは未設定。Cron triggerは未設定。secret値はPRやIssueへ記録しない。
-- [x] 以前のread-only migration ledger確認で専用D1が0140〜0143、mainの0144は未適用と確認。次のmigration判断前にledgerを再取得する。
-- [ ] 最新PR headのCIと独立レビューを完了する。
+- [x] Cloudflare stagingをread-onlyで再確認。Workerは `codex/release-staging-647` に接続し、Build settingsのSHA guardは `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718`、直近の失敗Build commandは旧SHA `f7a3d4edf70d4a0f8736f4d1b4b12d9f8011ef4d` を要求する。候補headとの一致を確認できず、Cloudflare設定は変更していない。
+- [x] staging用OAuth secretの存在、test-user allowlist未設定、email/Discord delivery disabled、Resend/Discord credential未設定、Cron trigger未設定をread-only確認。secret値は記録しない。
+- [x] production D1の0141適用前exportを隔離復元し、整合性・外部キー・0141適用後の集計を確認した上で、所有者承認により本番0141を適用。直後のmigration ledgerは未適用なし。
+- [x] release staging D1のmigration ledgerで0141適用済み・0144未適用を確認。バックアップと隔離復元後に0144を適用し、直後のledger、table、indexをread-back確認。
+- [x] PR #649 head `e9b40d3f` の必須CIとno-Cron staging dry-runが成功。dry-runはWorker deployおよびD1 migrationを行っていない。
+- [x] 独立レビュー担当は所有者指示で不要。staging設定変更、配信、受入、限定運用GOは未承認・未実施。
 
 ## 1. コード・レビュー・migration
 
-- [ ] 独立レビューでmigration順、応募/role認可、外部通知の副作用、運用文書を確認する。
-- [ ] stagingを変更する前に、WorkerのGit branch/Build SHA guardをレビュー済みPR headへ整合する。現在の設定差が残る間は配信しない。
+- [ ] Cloudflare staging Build設定を候補SHAに整合する変更計画をPRでレビューする。現在のbranch/SHA guardとの不一致が解消するまで配信しない。
+- [ ] test-user allowlistを所有者が承認したsynthetic Google accountに限定し、secret名をread-backする。許可アカウント未設定のままstagingログイン試験を行わない。
+- [ ] Build設定、OAuth callback、cookie domain、CORS、redirect allowlistをstaging専用でread-back確認する。
 - [ ] staging配信後、公開build-info/commit、D1 binding、migration ledgerをread-onlyで再取得する。PR headとの不一致があれば停止する。
-- [ ] staging D1の0141適用状態とmainの0144を照合する。0144適用はbackup/read-backと明示承認後に別作業で行う。
+- [x] staging D1の0141/0144適用状態をread-back照合。0144はbackup/隔離restore後に適用済み。
 - [ ] 本番D1のmigration適用は、このstagingチェックリストの完了だけでは許可しない。
 
 ## 2. stagingの分離確認と配信
 
 - [x] staging専用Worker、reports用D1 binding、OAuth secretの存在をread-onlyで確認。
 - [ ] staging origin、OAuth callback、cookie domain、CORS、redirect allowlistがstaging専用で一致することを確認する。
-- [ ] production比較値を外部環境変数から与える。値はrepository、PR、Issueへ保存しない: ATLASEZ_PRODUCTION_ADMIN_ORIGIN、ATLASEZ_PRODUCTION_D1_NAME、ATLASEZ_PRODUCTION_D1_ID、ATLASEZ_PRODUCTION_DISCORD_GUILD_ID、ATLASEZ_PRODUCTION_DISCORD_CLIENT_ID。
+- [x] production比較値を外部環境からstaging isolation preflightへ与えた。値はrepository、PR、Issueへ保存しない。
 - [ ] Discord stagingのruntime guard用にATLASEZ_PRODUCTION_DISCORD_GUILD_IDとATLASEZ_PRODUCTION_DISCORD_CLIENT_IDをstaging Workerのsecret storeへ設定し、secret値を表示せず名前だけread-backする。どちらかが未設定ならstaging Discordを有効化しない。
-- [ ] release staging利用時は既存staging D1との重複を避けるためATLASEZ_EXISTING_STAGING_D1_IDも外部環境から渡す。
+- [x] release staging用D1と既存staging D1が異なることをread-onlyで照合し、isolation preflightへ渡した。
 - [ ] operatorが承認したsynthetic accountだけをstaging allowlistに設定する。現状はallowlist未設定。
-- [ ] exact commit SHAを確認用環境変数へ設定し、dry-runとread-back結果を記録する。branch、SHA guard、CIが揃うまでdeployしない。
+- [x] exact commit SHA `e9b40d3f284577a0af652e9d180ed2fcc4d4594b` のno-Cron dry-runが成功。branch/SHA guardのずれが残る間はdeployしない。
 - [ ] Resend sandboxとDiscord test guildのcredential、送信先、停止方法をread-backする。未設定・未承認の通知は送らない。
 - [ ] Workerのemail/Discord deliveryがdisabledであることを維持し、sandboxの受信確認前に有効化しない。
 

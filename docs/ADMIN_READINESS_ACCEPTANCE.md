@@ -5,32 +5,31 @@
 ## 現在の状況
 
 - mainには記事アーカイブの承認フローが含まれる。メンバー受入候補は別系統の記事削除フローと分離している。
-- main基準の受入候補はPR [#649](https://github.com/Atlasez/Admin-Atlasez/pull/649)。main baseは `2b407b4374620cebd1e76f8eaa93355ae5e75ce8`。独立レビュー待ち。
-- コードを含むhead `164b35af1a68eec2bfac0715e6aa17916571c5ac` のCI run [46014583220](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46014583220) はsuccess。最新PR headのCI状況とレビュー状態はPR #649とIssue #647に記録する。
-- Cloudflareの読み取り専用確認で、staging WorkerはPRの作業ブランチではなく `codex/release-staging-647` に接続していた。Build settingsのSHA pin `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718` はGitHub上の同branch先端と一致する。一方、PR head `555babc2fbd006fabc84cab7a2a2f35b503c2075` とのcompareはdiverged（staging branchが20 commit先行、139 commit遅れ）。確認した過去の失敗Build画面は旧SHA `f7a3d4edf70d4a0f8736f4d1b4b12d9f8011ef4d` を要求していたが、ログは一般的なcommand failureだけで、実clone SHAや失敗原因は確認できない。既存branchを直接更新・resetせず、独立レビュー後にレビュー済みPR headから専用staging refを用意して、設定・dry-run・read-backを照合してから配信する。
-- 同Workerの設定ではstaging用OAuth secretが登録済み。synthetic test-user allowlistは未設定。メール/Discord deliveryはdisabled、Resend/Discord credentialsは未設定、Cron triggerは未設定。画面上のD1 bindingはstaging reports専用。secret値は記録しない。
-- 本番D1は記事アーカイブ用の0144を適用済み。受入用の0141は未適用。隔離SQLiteでは0144の後に0141を適用して既存のアーカイブ申請が残ることと、適用前の復元点に戻せることを検証した。staging専用D1の0144は適用前にledgerを再確認する。
+- main基準の受入候補はPR [#649](https://github.com/Atlasez/Admin-Atlasez/pull/649)。対象headは `e9b40d3f284577a0af652e9d180ed2fcc4d4594b`、base mainは `a902f54059ec032fe49b6aea2464e8e5d6c5198a`。GitHub CI run [46126987210](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46126987210) はsuccess。独立レビュー担当は所有者指示で不要だが、PRはstaging受入・運営GO前のため未merge。
+- Cloudflare staging Workerは `codex/release-staging-647` に接続し、Build設定のSHA pin `a4dcfc799c0e0ef5b2fb14f96da21e39dd9ad718` とBuild commandの旧SHA `f7a3d4edf70d4a0f8736f4d1b4b12d9f8011ef4d` は候補headと一致しない。候補head `e9b40d3f` のno-Cron dry-runは成功したが、Workerへは配信していない。Cloudflare Build設定は変更していない。
+- staging専用Worker/D1 bindingとOAuth secretを確認。test-user allowlistは未設定、email/Discord deliveryはdisabled、Resend/Discord credentialsは未設定、Cron triggerも未設定。synthetic Google accountを許可するまで認証済み受入はできない。
+- 本番D1は0144適用済み。0141は2026-11-28に、適用直前のledger確認、所有者限定backup、隔離SQLite restoreと0141適用検証、D1所有者の明示承認を経て適用した。直後のread-backは0141/0144適用済み、未適用migrationなし。
+- release staging D1は0141適用済み・0144未適用を確認後、backup/隔離restoreで既存99 tablesと行数維持を確認し、0144を適用した。直後のread-backで0141/0144、archive request tableと3 indexを確認した。
 - 個人情報保持のOPSD-03は未承認。180日は候補で本番方針ではない。定期処理も `deleteTerminalApplications: false` で終端応募の自動削除を停止している。保持方針・公開説明・backup上の削除時期が合うまで有効化しない。
 - 実stagingのrole別操作、通知到達、backup復元、本番D1 ledger再確認、本番migration/deploy、実利用者受入は未完了。
 
 ## リリースゲート
 
-1. **ブランチ・CI・レビュー** — head `164b35a` のCI run [46014583220](https://github.com/Atlasez/Admin-Atlasez/actions/runs/46014583220) はsuccess。独立したコードレビュー待ち。migration順、認可境界、外部通知の副作用、運用手順を独立レビューする。
-2. **staging構成** — staging資源は専用だが、Workerの接続branchとSHA guardがPR候補と不一致。allowlistと通知credentialが未設定。Build設定をレビュー済みPR headへ整合し、deploy後にcommit、D1 binding、migration ledger、OAuth callback等をread-onlyで再照合する。
-3. **実ユーザー受入** — 未着手。synthetic accountで応募・審査・招待・初回ログイン・role別画面/API・停止/復帰・監査履歴を確認する。通知は承認済みsandboxに限る。
+1. **ブランチ・CI・レビュー** — head `e9b40d3f` のCIはsuccess。独立reviewerは所有者指示で不要。main mergeはstaging受入・運営GO待ち。
+2. **staging構成** — 専用資源だがBuild branch/SHA guardは候補と不一致で、test-user allowlistもない。Cloudflare設定変更の値・影響・復旧方法をPRでレビューし、設定を整合してから配信する。
+3. **実ユーザー受入** — 未着手。所有者承認済みsynthetic Google accountで応募・審査・招待・初回ログイン・role別画面/API・停止/復帰・監査履歴を確認する。通知は承認済みsandboxに限る。
 4. **運営準備** — 担当と運用条件の決定待ち。主担当/代理、対応期限、問い合わせ先、個人情報保持期間、権限表、停止/復旧、backupのRPO/RTOを決めて記録する。
-5. **データ移行** — 本番D1 ledgerは適用判断時点で未確認。適用時点のmigration履歴を再取得し、backupと隔離restoreを検証する。D1所有者の明示承認後に別作業で適用する。
+5. **データ移行** — production 0141はowner approval、backup、isolated restore後に適用・read-back済み。これは定期backupや運用SLO、本番Worker deployの承認を意味しない。
 6. **本番GO** — 未承認・未実施。全証跡を責任者が確認し、対象commit、戻し方、監視時間、担当者を記録してから判断する。
 
 ## 次に行う順序
 
-1. 最新headのCIを完了し、PR #649を独立レビューする。
-2. レビュー済みの正確なheadへstaging Build branch/SHA guardを整合し、stagingだけに配信してread-backでcommitとD1 bindingを照合する。
-3. test-user allowlistを承認済みsynthetic accountに限定して設定し、role別の実操作を確認する。
-4. 通知はsandbox設定・受信先・停止方法を読み合わせた後だけ検証する。
-5. 運営体制と個人情報保持条件を決め、D1 backup/隔離restoreを確認する。
-6. 本番D1 ledgerをその時点で再取得し、必要なmigrationをD1所有者承認後に別作業で行う。
-7. 責任者が証跡を見て限定招待のGOを記録する。
+1. staging Google OAuthで使うsynthetic test accountを所有者が指定・承認する。
+2. Cloudflare staging Build設定を候補SHAへ整合する設定変更PRをレビューし、専用refを配信してread-backする。
+3. allowlistアカウントでrole別受入を行い、通知とCronは別途承認済みsandboxでのみ確認する。
+4. 運営体制・保持期間・停止/復旧・backup SLOを決め、公開説明に反映する。
+5. すべての受入証跡と担当者を確認して本番GOを記録し、PR #649をmergeする。
+6. Workers Buildsがmainから正確なSHAを配信したことを確認し、認証済みChromeで主要ADMIN画面を再確認する。
 
 ## 停止条件
 
