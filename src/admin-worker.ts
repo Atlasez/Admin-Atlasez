@@ -17614,7 +17614,12 @@ async function listEditorialRevisions(
   if (!document)
     return json({ error: "この原稿を閲覧する権限がありません。" }, 403);
   if (document.deleted_at) return json({ error: "削除済みの記事です。" }, 410);
-  const canReview = await canReadEditorialDocumentOrArchiveApprover(env, scope, { ...document, id: documentId });
+  const canReview =
+    canReviewDocument(scope, document) ||
+    (await canReviewPendingEditorialArchiveRequest(env, scope, {
+      id: documentId,
+      subject: document.subject,
+    }));
   const readOnly =
     !canReview &&
     (await canReadEditorialDocumentForDeletionReview(env, scope, documentId));
