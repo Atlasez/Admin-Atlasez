@@ -904,7 +904,11 @@ test.describe("A/D 原稿一覧の作業導線", () => {
       if (!localStorage.getItem("atlasez-admin-article-filters")) {
         localStorage.setItem(
           "atlasez-admin-article-filters",
-          JSON.stringify({ management: "unregistered", workflow: "all" }),
+          JSON.stringify({
+            management: "unregistered",
+            workflow: "all",
+            archive: "all",
+          }),
         );
       }
     });
@@ -975,7 +979,7 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(page.locator("[data-subject]")).toHaveValue("all");
     await expect(page.locator("[data-status]")).toHaveValue("all");
     await expect(page.locator("[data-test]")).toHaveValue("exclude");
-    await expect(page.locator("[data-archive]")).toHaveValue("active");
+    await expect(page.locator("[data-archive]")).toHaveCount(0);
     await expect(page.locator("[data-scope-note]")).toHaveText(
       "担当範囲：数学（1分野）",
     );
@@ -1190,7 +1194,7 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     );
   });
 
-  test("D-4: 編集画面で申請し、運営内運営の承認後に一覧から復元できる", async ({
+  test("D-4: 編集画面から申請し、運営内運営の承認後はゴミ箱にだけ表示される", async ({
     page,
   }) => {
     const activeId = "11111111-1111-4111-8111-111111111111";
@@ -1239,9 +1243,17 @@ test.describe("A/D 原稿一覧の作業導線", () => {
       archivedIds,
     });
     page.on("dialog", (dialog) => dialog.accept());
+    await page.addInitScript(() => {
+      if (!localStorage.getItem("atlasez-admin-article-filters")) {
+        localStorage.setItem(
+          "atlasez-admin-article-filters",
+          JSON.stringify({ archive: "archived" }),
+        );
+      }
+    });
 
     await page.goto("admin/articles/?verify=archive");
-    await expect(page.locator("[data-archive]")).toHaveValue("active");
+    await expect(page.locator("[data-archive]")).toHaveCount(0);
     await expect(page.locator("[data-list] .article")).toHaveCount(1);
     await expect(page.locator("[data-list]")).toContainText("整理前の下書き");
     await expect(page.locator("[data-list]")).not.toContainText(
@@ -1249,6 +1261,9 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     );
     const activeRow = page.locator(`[data-document-id="${activeId}"]`);
     await expect(activeRow.locator("[data-archive-action]")).toHaveCount(0);
+    await expect(page.locator("[data-list]")).not.toContainText(
+      /アーカイブ済み|復元期限|今すぐ削除/,
+    );
 
     await page.goto(`admin/editor/?document=${activeId}`);
     await expect(page.locator("[data-document-form]")).toBeVisible();
@@ -1283,11 +1298,19 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(page.locator("[data-list]")).not.toContainText(
       "整理前の下書き",
     );
-    await page.locator(".advanced-filters > summary").click();
-    await page.locator("[data-archive]").selectOption("archived");
+    await page.getByRole("link", { name: "記事のゴミ箱" }).click();
+    await expect(
+      page.getByRole("heading", { name: "記事のゴミ箱" }),
+    ).toBeVisible();
     await expect(page.locator("[data-list] .article")).toHaveCount(2);
     await expect(page.locator("[data-list]")).toContainText("整理前の下書き");
     await expect(page.locator("[data-list]")).toContainText("保管中の下書き");
+    await expect(activeRow).toContainText("アーカイブ済み");
+    await expect(activeRow).toContainText("復元期限");
+    await page.locator("[data-reset-filters]").click();
+    await expect(page).toHaveURL(/\/admin\/articles\/\?trash=1#article-list$/);
+    await page.reload();
+    await expect(page.locator("[data-list] .article")).toHaveCount(2);
     await page
       .locator(
         `[data-document-id="${activeId}"] [data-archive-action="unarchive"]`,
@@ -1297,6 +1320,12 @@ test.describe("A/D 原稿一覧の作業導線", () => {
     await expect(page.locator("[data-list]")).toContainText("保管中の下書き");
     await expect(page.locator("[data-list]")).not.toContainText(
       "整理前の下書き",
+    );
+    await page.getByRole("link", { name: "記事一覧に戻る" }).click();
+    await expect(page.locator("[data-list] .article")).toHaveCount(1);
+    await expect(activeRow).toBeVisible();
+    await expect(page.locator("[data-list]")).not.toContainText(
+      /保管中の下書き|アーカイブ済み|復元期限|今すぐ削除/,
     );
   });
 
