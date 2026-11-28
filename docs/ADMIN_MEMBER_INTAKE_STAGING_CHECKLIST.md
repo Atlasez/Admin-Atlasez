@@ -2,7 +2,7 @@
 
 更新日: 2026-11-28
 
-状態: コード候補 `e9b40d3f284577a0af652e9d180ed2fcc4d4594b` の必須CIは成功。現在のPRにはdocs-onlyの受入記録が追加され、最新headのCIを再実行中。独立レビュー担当は所有者指示で不要。production 0141とrelease staging D1の0144はバックアップ・隔離復元後に適用済み。staging WorkerのBuild branch/SHA guardは候補と不一致で、OAuth test-user allowlistも未設定のため、staging配信・role別受入・本番Worker deploy・実利用者受入は未完了。
+状態: コード候補 `e9b40d3f284577a0af652e9d180ed2fcc4d4594b` とstaging候補 `99b8139dd9585840fc4f555789de1a5a4bc75217` の必須CIは成功。docs-only更新のmerge可否は最新PR checksが成功したことを確認する。独立レビュー担当は所有者指示で不要。production 0141とrelease staging D1の0144はバックアップ・隔離復元後に適用済み。candidate branch `codex/staging-intake-649` は作成済みだが、staging WorkerのBuild branch/SHA guardは候補と不一致で、OAuth test-user allowlistも未設定のため、staging配信・role別受入・本番Worker deploy・実利用者受入は未完了。
 
 ## 現在の確認済み進捗
 
@@ -13,7 +13,8 @@
 - [x] staging用OAuth secretの存在、test-user allowlist未設定、email/Discord delivery disabled、Resend/Discord credential未設定、Cron trigger未設定をread-only確認。secret値は記録しない。
 - [x] production D1の0141適用前exportを隔離復元し、整合性・外部キー・0141適用後の集計を確認した上で、所有者承認により本番0141を適用。直後のmigration ledgerは未適用なし。
 - [x] release staging D1のmigration ledgerで0141適用済み・0144未適用を確認。バックアップと隔離復元後に0144を適用し、直後のledger、table、indexをread-back確認。
-- [x] コード候補 `e9b40d3f` の必須CIとno-Cron staging dry-runが成功。dry-runはWorker deployおよびD1 migrationを行っていない。現在のdocs-only更新については最新headのCIを再実行中。
+- [x] コード候補 `e9b40d3f` とstaging candidate SHA `99b8139dd9585840fc4f555789de1a5a4bc75217` の必須CIが成功。専用ref作成と同SHAのno-Cron staging dry-runを確認。dry-runはWorker deployおよびD1 migrationを行っておらず、専用refはCloudflare Workerへまだ接続していない。
+- [x] 2026-11-28にproduction migration 0141 read-back後のbuild-infoと、ポータル、タスク、カレンダー、プロフィール、管理トップ、記事一覧を認証済みChromeで再確認。主要画面はログイン状態で表示され、読み込み残り・画面エラーなし。
 - [x] 独立レビュー担当は所有者指示で不要。staging設定変更、配信、受入、限定運用GOは未承認・未実施。
 
 ## 1. コード・レビュー・migration
