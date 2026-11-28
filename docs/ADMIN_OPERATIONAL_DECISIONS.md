@@ -9,13 +9,13 @@ OPSD-01〜09を承認可能な記入欄、staging準備、合成アカウント�
 
 ## 既に明示された方針
 
-| 項目                   | 決定済みの扱い                                                                              |
-| ---------------------- | ------------------------------------------------------------------------------------------- |
-| GitHubレビュー承認     | required approving reviewsを必須化・増加しない。現在の設定を維持する。                      |
-| ADMIN本番配信          | 正本はGitHub main。Workers Builds復旧はIssue #509で追跡し、別配信経路を作らない。           |
-| 本番データ・外部副作用 | 明示承認なしで本番D1・設定・配信、実招待/応募/メール/Discord/記事公開を操作しない。         |
-| 隔離受入環境           | 専用検証環境と合成roleアカウントは未準備。Chromeのrole別受入は用意されるまで未検証とする。  |
-| PR #529 試作の対象     | XAI試作とポータル試作は開発者だけに限定する。修正PRは通常フローに載せ、本番へは反映しない。 |
+| 項目                   | 決定済みの扱い                                                                                            |
+| ---------------------- | --------------------------------------------------------------------------------------------------------- |
+| GitHubレビュー承認     | required approving reviewsを必須化・増加しない。現在の設定を維持する。                                    |
+| ADMIN本番配信          | 正本はGitHub main。Workers Builds復旧はIssue #509で追跡し、別配信経路を作らない。                         |
+| 本番データ・外部副作用 | 明示承認なしで本番D1・設定・配信、実招待/応募/メール/Discord/記事公開を操作しない。                       |
+| 隔離受入環境           | 専用staging Worker/D1とmember用synthetic loginは確認済み。manager/reviewer identityとrole別受入は未完了。 |
+| PR #529 試作の対象     | XAI試作とポータル試作は開発者だけに限定する。修正PRは通常フローに載せ、本番へは反映しない。               |
 
 ## 決定が必要な項目
 
@@ -29,7 +29,7 @@ OPSD-01〜09を承認可能な記入欄、staging準備、合成アカウント�
 | OPSD-06 | メール/Discord/Cron/公開処理の異常判定時間、queue確認頻度、滞留/再試行閾値、通知先が未決定。diagnosticsは観測可能な履歴だけが実成功の証拠。                                                     | 1. 営業日ごとに担当が確認 2. 閾値で自動alertを追加 3. 併用。手動確認は実装を増やさないが不在や確認漏れが起きる。自動通知は設定・宛先・重複抑止・受信実証が必要。                                                                                             | 最終成功・最古滞留・再試行枯渇・provider最終状態をどの画面/記録で確認し、何時間で誰に連絡するか定める。設定存在だけを正常と扱わない。                                         | 運営責任者・各外部サービス担当。sandboxの失敗→alert受信→引継ぎ確認と担当表。                                | 限定運用は確認者/頻度が決まるまでNo-Go。一般募集は閾値/受信実証も必要。       |
 | OPSD-07 | D1障害や誤公開時の停止権限、Cloudflare/GitHubへの連絡先、Deploy/Cron/両Worker/書込の停止順、復旧承認者が未確定。復旧文書は別途承認済み停止手順を前提とする。                                    | 1. 指定operatorが停止し運営責任者が復旧承認 2. 二名確認後に停止/復旧 3. 停止権限者へ即時エスカレーション。停止を遅らせると影響が続き、無権限操作は別障害を起こす。                                                                                           | 誰が止められるか、どの事象で止めるか、共有D1を使うWorker/Cronの影響、段階再開、復旧承認を机上演習する。権限/連絡先が未定の間は本番操作を試行しない。                          | 運営責任者・Cloudflare管理者・D1運用担当。承認済み停止表、連絡先、隔離机上演習記録。                        | 限定運用・一般募集ともNo-Go。                                                 |
 | OPSD-08 | 休止/退会時のDiscord role削除または維持、Atlasだけの除外、再開時の再付与が未定義（監査OPS-18）。                                                                                                | 1. 休止/退会時に全role解除 2. Atlas内scopeだけ停止しDiscord role維持 3. 対象projectのroleだけ解除。外部チャンネルアクセス、復帰負担、連携喪失後の照合難度が変わる。                                                                                          | 休止、project離脱、Atlas運営終了、恒久退会を別状態として定義し、本人案内、Bot失敗、連携解除順、復帰時のrole再照合を含める。                                                   | 運営責任者・Discord管理者。状態ごとの表、合成アカウントの解除/再開受入。                                    | Discord連携を使う運用はNo-Go。                                                |
-| OPSD-09 | role別Chrome受入に使う隔離環境・Google/Discord合成アカウントは未準備。実Chromeに表示中のsessionはrole/試験用の適格性を証明しない。                                                              | 1. D1/Workerを分けたsandbox 2. 本番内の専用test account（合成データ限定）3. 自動API/E2Eだけ。sandboxは環境差があり、本番accountは誤操作と実通知の危険、自動のみはOAuth/providerを証明しない。                                                                | 本番共有D1・外部通知から隔離した環境を用意し、role所有者・合成ID・初期データ・cleanup責任を決める。OAuth/外部送信が必要な場合は専用sinkと受信確認を別途準備する。             | ADMIN maintainer・各role owner。環境識別、秘密値なしの合成account一覧、role matrix、初期化/復旧証拠。       | Chrome role受入は未検証。実ユーザーで代用しない。                             |
+| OPSD-09 | release staging Worker/D1とmember用synthetic loginは確認済み。manager/reviewer identity、専用role grant、Discord合成identityは未確認。実Chromeの他セッションはrole/試験用の適格性を証明しない。 | 1. D1/Workerを分けたsandbox 2. 本番内の専用test account（合成データ限定）3. 自動API/E2Eだけ。sandboxは環境差があり、本番accountは誤操作と実通知の危険、自動のみはOAuth/providerを証明しない。                                                                | 本番共有D1・外部通知から隔離した環境を用意し、role所有者・合成ID・初期データ・cleanup責任を決める。OAuth/外部送信が必要な場合は専用sinkと受信確認を別途準備する。             | ADMIN maintainer・各role owner。環境識別、秘密値なしの合成account一覧、role matrix、初期化/復旧証拠。       | Chrome role受入は未完了。実利用者で代用しない。                               |
 
 ## 運用開始前の決定記入
 
@@ -67,12 +67,12 @@ OPSD-01〜09を承認可能な記入欄、staging準備、合成アカウント�
 | 緊急停止             | 不正閲覧・project間の情報露出、応募データ破損疑い、D1書込の継続失敗、通知の誤送信、上記の滞留上限到達で、新規受付・影響する通知/Cronを停止する。運営当番が停止し、運営責任者とCloudflare/D1担当へ即時連絡する。再開は原因修正、隔離受入、queue/データ整合性確認後に運営責任者が承認する。 | PR #649候補に新規応募/profile書込を停止するserver-sideスイッチと応募画面案内を実装。unit/E2E確認後も、staging runtime設定、停止・再開演習、停止権限者の承認が完了するまでは運用可能と扱わない。既存queue/Cron/通知は別途停止判断が必要。 |
 | backup・復旧         | 日次の暗号化export、最大35日保持、最終成功から26時間超でowner/代理へ通知を候補とする。目標はRPO 24時間・RTO 4時間とする。                                                                                                                                                                 | R2 bucket、schedule、manifest、失敗通知、最新本番export、隔離restoreの実測が未整備。目標値は合意・実績ではない。非本番で負荷を測り、隔離restore時間が目標内と確認できるまで復旧可能とは扱わない。                                        |
 
-### 応募受付の緊急停止スイッチ — 実装候補・未受入
+### 応募受付の緊急停止スイッチ — 実装済み・staging runtime切替確認済み／live API受入待ち
 
 PR #649ではWorker runtime variable `ADMIN_APPLICATION_INTAKE_MODE` を追加する。値が正確に `open` の場合だけ応募を受け付け、`paused`、未知の値、空文字は停止扱いにする。未設定時は既存環境との互換性のため `open` として扱う。停止中は `/api/application-profile`、`/api/apply`、`/api/public/applications` の書込をHTTP 503 / `APPLICATION_INTAKE_PAUSED` で拒否し、応募フォームに停止案内を表示する。応募画面の表示制御は補助であり、Worker側の拒否が強制境界となる。
 
 停止時はCloudflare Dashboardで対象Workerの **Settings → Variables and Secrets** に `ADMIN_APPLICATION_INTAKE_MODE=paused` を設定し、変更後のWorker Versionを確認する。再開は原因修正、隔離受入、応募・通知queue/DB整合性の確認後に運営責任者が承認してから `open` に戻す。変数はWrangler設定ファイルに含めず、`--keep-vars` を維持して次回コード配信でDashboard値を消さない。停止/再開に伴うDashboard設定変更も、AGENTS.mdに従って値・影響・復旧方法をPRで先にレビューし、Worker名・Version・時刻を記録する。
 
-このスイッチは新規応募と応募profileの書込だけを止める。既存応募の処理、Cron、メール、Discord、他のADMIN書込を止めない。事象がそれらに及ぶ場合は、それぞれの配信/Cronを別途止める権限と手順を先に決める。stagingで `open → paused → open`、3書込経路の503、DB未更新、応募画面の表示を確認し、Cloudflare Versionと時刻を記録するまで運用受入済みとしない。
+このスイッチは新規応募と応募profileの書込だけを止める。既存応募の処理、Cron、メール、Discord、他のADMIN書込を止めない。事象がそれらに及ぶ場合は、それぞれの配信/Cronを別途止める権限と手順を先に決める。stagingでは `open → paused → open` のruntime値、pause/reopen Version、再開後の公開設定をread-back済み。3書込経路の503とDB不更新はunit testで確認したが、live APIと応募画面の停止表示は未確認のため運用受入済みではない。
 
 これらの推奨値を本番へ適用するには、運営責任者・privacy責任者による決定日付きの承認、必要なコード/公開文書/Cloudflare設定を含むレビュー済みPR、staging証拠、main反映後の確認を別々に完了する。

@@ -130,3 +130,14 @@ test "$(git rev-parse HEAD)" = 'f02421d4cadacc0f8043950e276de368558d86d8' && npm
 - この変更はstaging Worker/D1だけに適用。production Worker/Route/D1/secrets、Cron、メール、Discordは変更していない。stagingの認証allowlistは未設定で、pause switch runtime演習、role別OAuth受入は未完了。
 
 次の受入操作はDashboard上のruntime variable `ADMIN_APPLICATION_INTAKE_MODE` をstaging Workerに設定する。値を切り替えるたびWorker Versionが変わるため、`open`、`paused`、`open`各段階のVersionを記録し、3書込経路の503/DB不更新と画面状態を同じ合成データの隔離状態で確認する。role別API確認ではmemberとmanager/reviewerの別々の合成Google identityを使う。
+
+## 2026-11-28 staging OAuth・受付switchの追加確認
+
+- Cloudflare Dashboardで `ATLASEZ_STAGING_GOOGLE_LOGIN_ALLOWLIST` secretが存在することを確認。値は暗号化されており読み出していないため、登録アカウントの一覧は推定しない。
+- 承認済みmember用synthetic Google identityでstagingへ新規OAuthログインし、本人の既存Atlas応募が保留中であることを表示で確認した。再応募・応募更新・審査操作は行っていない。manager/reviewer用の別synthetic identityはこの作業環境から確認できず、role境界・審査操作は未受入。
+- Dashboard上の受付switchを `paused` にし、Variable read-backで値を確認した。pause Version `bfc0ac21-b0e2-4c27-b5a0-2450ecd74e07` は2026-11-28 13:49:42 UTCに作成され、100%配信。
+- 直後に `open` へ戻した。再開Version `24d40253-fd56-464d-baf2-b8493786d349` は2026-11-28 13:51:53 UTCに作成され、100%配信。公開 `/api/public/application-config` は `{"turnstileSiteKey":"","intakeEnabled":true}` を返し、受付が再開していることを確認した。
+- live APIの3書込経路 (`/api/application-profile`、`/api/apply`、`/api/public/applications`) に対する停止中503/DB不更新は今回直接送信していない。実装のunit testで3経路すべての503/`APPLICATION_INTAKE_PAUSED` とprofile/applicationテーブル不更新を検証済み。member identityには既存応募があるため、live応募を再送しなかった。公開取込経路は別のingest credentialなしで認証を越えて試験しない。
+- 変更対象はstaging Worker runtime variableだけ。Worker/D1 binding、migration、Cron、メール、Discord、本番Worker/Route/D1/secretsは変更していない。停止状態は残していない。
+
+次に必要なのは、別のstaging専用manager/reviewer Google identityのアドレスと、stagingでの専用role設定・審査操作確認である。Chrome account chooserに見える通常利用アカウントを合成identityとして代用しない。
